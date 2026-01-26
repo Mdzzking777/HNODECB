@@ -76,7 +76,7 @@ function retcode_success(sol)
 end
 
 function percent_error_pct(est, truth)
-  return 100.0 * abs((est - truth) / truth)
+  return 100.0 * abs(log10(est / truth))
 end
 
 function relative_rmse_pct(pred, truth, eps)
@@ -142,9 +142,9 @@ function update_ranges!(contact::AbstractVector{Bool})
 end
 
 # Parameter bounds
-ks_bounds = (0.01, 1.0)
-cs_bounds = (1e-7, 1e-5)
-Estar_bounds = (1e5, 1e8)
+ks_bounds = (0.005, 5.0) #true ks = 0.1
+cs_bounds = (5e-8, 5e-6) #true cs = 2.4e-7
+Estar_bounds = (5e5, 5e8) #true Estar = 1.5e7
 
 function sample_log_uniform(rng, lower, upper)
   return exp(rand(rng) * (log(upper) - log(lower)) + log(lower))
@@ -157,6 +157,42 @@ function sample_log_uniform_narrow(rng, lower, upper, log_span)
   log_min = max(log_lower, log_mid - log_span)
   log_max = min(log_upper, log_mid + log_span)
   return exp(rand(rng) * (log_max - log_min) + log_min)
+end
+
+function sample_log_band(rng, lower, upper, band::Symbol)
+  log_lower = log(lower)
+  log_upper = log(upper)
+  log_mid = 0.5 * (log_lower + log_upper)
+  log_range = log_upper - log_lower
+  half = 0.5 * log_range
+  if band == :center
+    span = 0.3 * half
+    return exp(rand(rng) * (2 * span) + (log_mid - span))
+  elseif band == :mid
+    inner = 0.3 * half
+    outer = 0.6 * half
+    if rand(rng) < 0.5
+      return exp(rand(rng) * (outer - inner) + (log_mid - outer))
+    end
+    return exp(rand(rng) * (outer - inner) + (log_mid + inner))
+  elseif band == :outer
+    inner = 0.6 * half
+    outer = 1.0 * half
+    if rand(rng) < 0.5
+      return exp(rand(rng) * (outer - inner) + (log_mid - outer))
+    end
+    return exp(rand(rng) * (outer - inner) + (log_mid + inner))
+  end
+  return sample_log_uniform(rng, lower, upper)
+end
+
+function band_for_run(run_id)
+  if run_id == 1
+    return :center
+  elseif run_id == 2
+    return :mid
+  end
+  return :outer
 end
 
 function initial_theta_from_guess(ks0, cs0, Estar0)
@@ -495,27 +531,37 @@ tspan = (tmp_steps[1], tmp_steps[end])
 update_ranges!(solution_dataframe.contact .== 1)
 
 results = []
+run_summaries = []
 
 learning_rate_adam = 1e-3 
-max_adam_iters = 500
+max_adam_iters = 1000
 max_lbfgs_iters = 1000
+print_interval_adam = 100
+print_interval_lbfgs = 10
 
 rng = Random.default_rng()
 num_initial_guesses = 3
-initial_guess_log_span = 0.5
 
 stage_ref = Ref("adam")
 adam_loss_target = 1e-4
-lbfgs_loss_target = 1e-4
+lbfgs_loss_target = 1e-6
 
 for run_id in 1:num_initial_guesses
-  ks0 = sample_log_uniform_narrow(rng, ks_bounds[1], ks_bounds[2], initial_guess_log_span)
-  cs0 = sample_log_uniform_narrow(rng, cs_bounds[1], cs_bounds[2], initial_guess_log_span)
-  Estar0 = sample_log_uniform_narrow(rng, Estar_bounds[1], Estar_bounds[2], initial_guess_log_span)
+  band = band_for_run(run_id)
+  ks0 = sample_log_band(rng, ks_bounds[1], ks_bounds[2], band)
+  cs0 = sample_log_band(rng, cs_bounds[1], cs_bounds[2], band)
+  Estar0 = sample_log_band(rng, Estar_bounds[1], Estar_bounds[2], band)
   theta0 = initial_theta_from_guess(ks0, cs0, Estar0)
 
-  println("Run ", run_id, " initial guess: ks0=", @sprintf("%.3e", ks0),
-    " cs0=", @sprintf("%.3e", cs0), " Estar0=", @sprintf("%.3e", Estar0))
+  ks0_err = percent_error_pct(ks0, ks)
+  cs0_err = percent_error_pct(cs0, cs)
+  Estar0_err = percent_error_pct(Estar0, Estar)
+  println("Run ", run_id, " initial guess (", band, "): ks0=", @sprintf("%.3e", ks0),
+    " (true=", @sprintf("%.3e", ks), ", ", @sprintf("%.2f", ks0_err), "%)",
+    " cs0=", @sprintf("%.3e", cs0),
+    " (true=", @sprintf("%.3e", cs), ", ", @sprintf("%.2f", cs0_err), "%)",
+    " Estar0=", @sprintf("%.3e", Estar0),
+    " (true=", @sprintf("%.3e", Estar), ", ", @sprintf("%.2f", Estar0_err), "%)")
 
   p0 = ComponentArray(theta0)
   starting_point_in = ComponentVector(p=p0)
@@ -523,17 +569,30 @@ for run_id in 1:num_initial_guesses
   best_training_parameters = [starting_point_in]
   training_epochs = zeros(Int, max_adam_iters)
   training_costs = fill(Inf, max_adam_iters)
+  adam_epoch = Ref(0)
+  lbfgs_epoch = Ref(0)
+  best_loss_ref = Ref(Inf)
+  lbfgs_recent = Float64[]
 
   function callback(θ, l)
-    epoch = extrema(training_epochs)[2] + 1
-    if epoch <= length(training_epochs)
-      training_epochs[epoch] = epoch
-      training_costs[epoch] = l
+    if stage_ref[] == "adam"
+      adam_epoch[] += 1
+      epoch = adam_epoch[]
+      if epoch <= length(training_epochs)
+        training_epochs[epoch] = epoch
+        training_costs[epoch] = l
+      end
+    else
+      lbfgs_epoch[] += 1
+      epoch = lbfgs_epoch[]
     end
-    if epoch == 1 || l < minimum(training_costs[1:(epoch-1)])
+    if l < best_loss_ref[]
+      best_loss_ref[] = l
       best_training_parameters[1] = deepcopy(θ)
     end
-    if epoch % 100 == 0
+    if epoch == 1 ||
+       (stage_ref[] == "adam" && epoch % print_interval_adam == 0) ||
+       (stage_ref[] == "lbfgs" && epoch % print_interval_lbfgs == 0)
       comps = last_loss_components[]
       p_est = build_parameter_vector(θ.p)
       ks_est = p_est[10]
@@ -542,11 +601,24 @@ for run_id in 1:num_initial_guesses
       ks_err = percent_error_pct(ks_est, ks)
       cs_err = percent_error_pct(cs_est, cs)
       Estar_err = percent_error_pct(Estar_est, Estar)
-      println("Run ", run_id, " Epoch ", epoch, " -- cost: ", l,
+      println("Run ", run_id, " ", stage_ref[], " Epoch ", epoch, " -- cost: ", l,
         " | state=", comps.state, " x2dot=", comps.x2dot, " cont=", comps.continuity,
         " | ks=", @sprintf("%.3e", ks_est), " (", @sprintf("%.2f", ks_err), "%)",
         " cs=", @sprintf("%.3e", cs_est), " (", @sprintf("%.2f", cs_err), "%)",
         " Estar=", @sprintf("%.3e", Estar_est), " (", @sprintf("%.2f", Estar_err), "%)")
+    end
+    if stage_ref[] == "lbfgs"
+      push!(lbfgs_recent, l)
+      if length(lbfgs_recent) > 10
+        deleteat!(lbfgs_recent, 1)
+      end
+      if length(lbfgs_recent) == 10
+        window_improve = maximum(lbfgs_recent) - minimum(lbfgs_recent)
+        if window_improve < 1e-8
+          println("Run ", run_id, " LBFGS plateau stop: last10 Δ=", window_improve)
+          return true
+        end
+      end
     end
     if stage_ref[] == "adam" && l < adam_loss_target
       println("Run ", run_id, " Adam early stop at epoch ", epoch, " (loss=", l, ")")
@@ -575,11 +647,39 @@ for run_id in 1:num_initial_guesses
   validation_resulting_cost = validation_loss_function(best_parameterization, validation_solution_dataframe)
 
   p_est = build_parameter_vector(best_parameterization.p)
+  best_loss = loss_multiple_shooting(best_parameterization)
+  ks_est = p_est[10]
+  cs_est = p_est[11]
+  Estar_est = p_est[9]
+  ks_err = percent_error_pct(ks_est, ks)
+  cs_err = percent_error_pct(cs_est, cs)
+  Estar_err = percent_error_pct(Estar_est, Estar)
+  println("Run ", run_id, " summary: best_loss=", best_loss,
+    " | ks=", @sprintf("%.3e", ks_est), " (", @sprintf("%.2f", ks_err), "%)",
+    " cs=", @sprintf("%.3e", cs_est), " (", @sprintf("%.2f", cs_err), "%)",
+    " Estar=", @sprintf("%.3e", Estar_est), " (", @sprintf("%.2f", Estar_err), "%)",
+    " | initial guess ks0=", @sprintf("%.3e", ks0),
+    " cs0=", @sprintf("%.3e", cs0), " Estar0=", @sprintf("%.3e", Estar0))
+  push!(run_summaries, (
+    run_id=run_id,
+    best_loss=best_loss,
+    ks=ks_est,
+    cs=cs_est,
+    Estar=Estar_est,
+    ks_err=ks_err,
+    cs_err=cs_err,
+    Estar_err=Estar_err,
+    ks0=ks0,
+    cs0=cs0,
+    Estar0=Estar0
+  ))
   result = (
     parameters_training=p_est,
     initial_state_training=ode_data[:, 1],
     validation_resulting_cost=validation_resulting_cost,
     initial_guess=(ks0=ks0, cs0=cs0, Estar0=Estar0),
+    best_loss=best_loss,
+    parameter_errors=(ks_err=ks_err, cs_err=cs_err, Estar_err=Estar_err),
     status="success"
   )
 
@@ -589,6 +689,15 @@ end
 serialize(folder_name * "/" * result_name_string, results)
 
 if !isempty(results)
+  println("Run summaries:")
+  for s in run_summaries
+    println("Run ", s.run_id, " best_loss=", s.best_loss,
+      " | ks=", @sprintf("%.3e", s.ks), " (", @sprintf("%.2f", s.ks_err), "%)",
+      " cs=", @sprintf("%.3e", s.cs), " (", @sprintf("%.2f", s.cs_err), "%)",
+      " Estar=", @sprintf("%.3e", s.Estar), " (", @sprintf("%.2f", s.Estar_err), "%)",
+      " | initial guess ks0=", @sprintf("%.3e", s.ks0),
+      " cs0=", @sprintf("%.3e", s.cs0), " Estar0=", @sprintf("%.3e", s.Estar0))
+  end
   validation_costs = [r.validation_resulting_cost for r in results]
   best_idx = argmin(validation_costs)
   best = results[best_idx]
