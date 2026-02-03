@@ -1,7 +1,8 @@
 #=
 Stage 1 (global coarse search) for AFM DMT-KV mechanistic parameters.
-Simplified loss: state (x1,x2) + contact x2dot + sparse x3_obs.
-Uses oracle u0 at each segment start (data-derived), no continuity term.
+Single shooting over the full post-contact trajectory.
+Simplified loss: state (x1,x2) + contact x2dot + sparse x3_obs (+ x3_init, range prior).
+Does not use oracle x3 beyond the explicitly allowed initial condition.
 =#
 
 cd(@__DIR__)
@@ -57,6 +58,9 @@ x3_range_center = 0.0
 x3_range_amp = 20e-9
 x3_range_eps = 1e-9
 x3_range_weight = 1.0
+# x3 initial condition at first-contact is assumed known in scenario 01
+x3_init_known = ode_data[3, 1]
+x3_init_weight = x3_contact_weight
 
 integrator = Rosenbrock23(autodiff=false)
 abstol = 1e-8
@@ -163,7 +167,7 @@ function build_contact_ranges(contact::AbstractVector{Bool}, small_size::Int, la
   return ranges, labels
 end
 
-function build_x3_observation_mask(contact::AbstractVector{Bool}, fraction::Float64, rng)
+function build_x3_observation_mask(contact::AbstractVector{Bool}, fraction::Float64)
   n = length(contact)
   mask = falses(n)
   if n == 0
@@ -171,22 +175,13 @@ function build_x3_observation_mask(contact::AbstractVector{Bool}, fraction::Floa
   end
 
   n_obs = max(1, round(Int, n * fraction))
-  contact_idx = findall(contact)
-  noncontact_idx = findall(.!contact)
-  contact_ratio = isempty(contact_idx) ? 0.0 : length(contact_idx) / n
-  n_contact = round(Int, n_obs * contact_ratio)
-  if !isempty(contact_idx)
-    n_contact = max(n_contact, 1)
-  end
-  n_contact = min(n_contact, n_obs)
-  n_noncontact = n_obs - n_contact
-
-  if n_contact > 0 && !isempty(contact_idx)
-    mask[shuffle(rng, contact_idx)[1:n_contact]] .= true
-  end
-  if n_noncontact > 0 && !isempty(noncontact_idx)
-    mask[shuffle(rng, noncontact_idx)[1:n_noncontact]] .= true
-  end
+  # Deterministic, fixed-spacing sampling (no randomness)
+  idx = round.(Int, range(1, n, length=n_obs))
+  idx = clamp.(idx, 1, n)
+  idx = unique(idx)
+  mask[idx] .= true
+  # Always include the first-contact point as observed
+  mask[1] = true
 
   return mask
 end
@@ -196,8 +191,9 @@ function make_parameter_vector(ks, cs, Estar)
 end
 
 function evaluate_loss(p_est, ranges, range_is_contact, x3_obs_mask, x3_obs_weights)
+  # Single shooting: ranges are ignored; kept only for interface compatibility.
   if any(x -> !isfinite(x), p_est)
-    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_init=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
   end
   ks_est = p_est[10]
   cs_est = p_est[11]
@@ -205,96 +201,79 @@ function evaluate_loss(p_est, ranges, range_is_contact, x3_obs_mask, x3_obs_weig
   if ks_est < ks_bounds[1] || ks_est > ks_bounds[2] ||
      cs_est < cs_bounds[1] || cs_est > cs_bounds[2] ||
      Estar_est < Estar_bounds[1] || Estar_est > Estar_bounds[2]
-    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_init=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
   end
 
-  state_loss = 0.0
-  x2dot_loss = 0.0
-  x3_obs_loss = 0.0
-  x3_range_loss = 0.0
-  x1_err_sum = 0.0
-  x1_truth_sum = 0.0
-  x3_err_sum = 0.0
-  x3_truth_sum = 0.0
-  count_sum = 0
-  state_weight_sum = 0.0
-  x2dot_weight_sum = 0.0
-  x3_weight_sum = 0.0
-  x3_range_weight_sum = 0.0
-
-  for (i, rg) in enumerate(ranges)
-    t0 = tmp_steps[first(rg)]
-    t1 = tmp_steps[last(rg)]
-    u0 = ode_data[:, first(rg)]
-    prob = ODEProblem{true}(ground_truth_function, u0, (t0, t1), p_est)
-    sol = solve(prob, integrator; saveat=tmp_steps[rg], abstol=abstol, reltol=reltol)
-    if !retcode_success(sol)
-      return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
-    end
-    uhat = Array(sol)
-    if size(uhat, 2) != length(rg)
-      return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
-    end
-
-    weight = range_is_contact[i] ? contact_loss_weight : noncontact_loss_weight
-    state_err = sum(abs2.((ode_data[1:2, rg] .- uhat[1:2, :]) ./ state12_scale))
-    state_loss += weight * (state_err / length(rg))
-    state_weight_sum += weight
-
-    if range_is_contact[i]
-      x2dot_pred = [x2dot_rhs(uhat[:, j], p_est, tmp_steps[idx]) for (j, idx) in enumerate(rg)]
-      if any(x -> !isfinite(x), x2dot_pred)
-        return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
-      end
-      x2dot_err = sum(abs2.((x2dot_data[rg] .- x2dot_pred) ./ x2dot_scale))
-      x2dot_loss += weight * (x2dot_err / length(rg))
-      x2dot_weight_sum += weight
-    end
-
-    x1_err_sum += sum(abs2.(ode_data[1, rg] .- uhat[1, :]))
-    x1_truth_sum += sum(abs2.(ode_data[1, rg]))
-    x3_err_sum += sum(abs2.(ode_data[3, rg] .- uhat[3, :]))
-    x3_truth_sum += sum(abs2.(ode_data[3, rg]))
-    count_sum += length(rg)
-
-    local_mask = x3_obs_mask[rg]
-    if any(local_mask)
-      local_idx = findall(local_mask)
-      global_idx = rg[local_idx]
-      weights = x3_obs_weights[global_idx]
-      x3_err = sum(weights .* abs2.((ode_data[3, global_idx] .- uhat[3, local_idx]) ./ x3_scale))
-      x3_obs_loss += x3_err
-      x3_weight_sum += sum(weights)
-    end
-
-    exceed = abs.(uhat[3, :]) .- x3_range_amp
-    range_pen = sum(abs2.(softplus.(exceed, x3_range_eps) ./ x3_scale)) / length(rg)
-    x3_range_loss += weight * range_pen
-    x3_range_weight_sum += weight
+  u0 = [ode_data[1, 1], ode_data[2, 1], x3_init_known]
+  prob = ODEProblem{true}(ground_truth_function, u0, tspan, p_est)
+  sol = solve(prob, integrator; saveat=tmp_steps, abstol=abstol, reltol=reltol)
+  if !retcode_success(sol)
+    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_init=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+  end
+  uhat = Array(sol)
+  if size(uhat, 2) != length(tmp_steps)
+    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_init=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
   end
 
-  state_loss = state_weight_sum > 0 ? state_loss / state_weight_sum : Inf
-  x2dot_loss = x2dot_weight_sum > 0 ? x2dot_loss / x2dot_weight_sum : 0.0
-  x3_obs_loss = x3_weight_sum > 0 ? x3_obs_loss / x3_weight_sum : 0.0
-  x3_range_loss = x3_range_weight_sum > 0 ? x3_range_weight * (x3_range_loss / x3_range_weight_sum) : 0.0
+  weights_val = ifelse.(contact_mask, contact_loss_weight, noncontact_loss_weight)
+  weights_sum = sum(weights_val)
+  if !isfinite(weights_sum) || weights_sum <= 0
+    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_init=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+  end
 
-  x1_rec = count_sum > 0 ? relative_rmse_pct(x1_err_sum, x1_truth_sum, count_sum, scale_eps) : Inf
-  x3_rec = count_sum > 0 ? relative_rmse_pct(x3_err_sum, x3_truth_sum, count_sum, scale_eps) : Inf
+  state_err_per_t = vec(sum(abs2.((ode_data[1:2, :] .- uhat[1:2, :]) ./ state12_scale), dims=1))
+  state_loss = sum(weights_val .* state_err_per_t) / weights_sum
 
-  total = state_loss + x2dot_loss + x3_obs_loss + x3_range_loss
-  return total, (state=state_loss, x2dot=x2dot_loss, x3_obs=x3_obs_loss, x3_range=x3_range_loss,
+  contact_idx = findall(contact_mask)
+  if isempty(contact_idx)
+    x2dot_loss = 0.0
+  else
+    x2dot_pred = [x2dot_rhs(uhat[:, j], p_est, tmp_steps[j]) for j in eachindex(tmp_steps)]
+    if any(x -> !isfinite(x), x2dot_pred)
+      return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_init=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+    end
+    x2dot_err = abs2.((x2dot_data[contact_idx] .- x2dot_pred[contact_idx]) ./ x2dot_scale)
+    x2dot_w = weights_val[contact_idx]
+    x2dot_loss = sum(x2dot_w .* x2dot_err) / sum(x2dot_w)
+  end
+
+  obs_idx = findall(x3_obs_mask)
+  if isempty(obs_idx)
+    x3_obs_loss = 0.0
+  else
+    x3_obs_err = abs2.((ode_data[3, obs_idx] .- uhat[3, obs_idx]) ./ x3_scale)
+    x3_obs_w = x3_obs_weights[obs_idx]
+    x3_obs_loss = sum(x3_obs_w .* x3_obs_err) / sum(x3_obs_w)
+  end
+
+  x3_init_loss = x3_init_weight * abs2.((uhat[3, 1] - x3_init_known) / x3_scale)
+
+  exceed = abs.(uhat[3, :]) .- x3_range_amp
+  range_pen_per_t = abs2.(softplus.(exceed, x3_range_eps) ./ x3_scale)
+  x3_range_loss = x3_range_weight * (sum(weights_val .* range_pen_per_t) / weights_sum)
+
+  x1_err_sum = sum(abs2.(ode_data[1, :] .- uhat[1, :]))
+  x1_truth_sum = sum(abs2.(ode_data[1, :]))
+  x3_err_sum = sum(abs2.(ode_data[3, :] .- uhat[3, :]))
+  x3_truth_sum = sum(abs2.(ode_data[3, :]))
+  count_sum = length(tmp_steps)
+  x1_rec = relative_rmse_pct(x1_err_sum, x1_truth_sum, count_sum, scale_eps)
+  x3_rec = relative_rmse_pct(x3_err_sum, x3_truth_sum, count_sum, scale_eps)
+
+  total = state_loss + x2dot_loss + x3_obs_loss + x3_init_loss + x3_range_loss
+  return total, (state=state_loss, x2dot=x2dot_loss, x3_obs=x3_obs_loss, x3_init=x3_init_loss, x3_range=x3_range_loss,
     x1_rec=x1_rec, x3_rec=x3_rec)
 end
 
 # Build ranges and x3 sparse observation mask once
 ranges, range_is_contact = build_contact_ranges(contact_mask, small_group_size, large_group_size, boundary_window, min_group_size)
-rng = MersenneTwister(0)
-x3_obs_mask = build_x3_observation_mask(contact_mask, x3_obs_fraction, rng)
+x3_obs_mask = build_x3_observation_mask(contact_mask, x3_obs_fraction)
 x3_obs_weights = ifelse.(contact_mask, x3_contact_weight, x3_noncontact_weight)
 
 # Stage 1: random log-uniform sampling
-num_samples = 200
+num_samples = 1000
 results = Vector{NamedTuple}(undef, num_samples)
+rng = MersenneTwister(0)
 
 function sample_log_uniform(rng, lo, hi)
   return 10.0^(rand(rng) * (log10(hi) - log10(lo)) + log10(lo))
@@ -306,7 +285,7 @@ for i in 1:num_samples
   local Estar = sample_log_uniform(rng, Estar_bounds[1], Estar_bounds[2])
   p_est = make_parameter_vector(ks, cs, Estar)
   loss, comps = evaluate_loss(p_est, ranges, range_is_contact, x3_obs_mask, x3_obs_weights)
-  results[i] = (loss=loss, state=comps.state, x2dot=comps.x2dot, x3_obs=comps.x3_obs, x3_range=comps.x3_range,
+  results[i] = (loss=loss, state=comps.state, x2dot=comps.x2dot, x3_obs=comps.x3_obs, x3_init=comps.x3_init, x3_range=comps.x3_range,
     x1_rec=comps.x1_rec, x3_rec=comps.x3_rec, ks=ks, cs=cs, Estar=Estar)
   if i % 20 == 0
     ks_err = percent_error_pct(ks, ks_true)
@@ -317,6 +296,7 @@ for i in 1:num_samples
       " | state=", @sprintf("%.4e", comps.state),
       " x2dot=", @sprintf("%.4e", comps.x2dot),
       " x3_obs=", @sprintf("%.4e", comps.x3_obs),
+      " x3_init=", @sprintf("%.4e", comps.x3_init),
       " x3_range=", @sprintf("%.4e", comps.x3_range),
       " x3_u0=None cont=None",
       " | ks=", @sprintf("%.3e", ks), " (true=", @sprintf("%.3e", ks_true), ", ", @sprintf("%.2f", ks_err), "%)",
@@ -349,6 +329,7 @@ for i in 1:topn
     " | state=", @sprintf("%.4e", r.state),
     " x2dot=", @sprintf("%.4e", r.x2dot),
     " x3_obs=", @sprintf("%.4e", r.x3_obs),
+    " x3_init=", @sprintf("%.4e", r.x3_init),
     " x3_range=", @sprintf("%.4e", r.x3_range),
     " x3_u0=None cont=None",
     " | ks=", @sprintf("%.3e", r.ks), " (true=", @sprintf("%.3e", ks_true), ", ", @sprintf("%.2f", ks_err), "%)",

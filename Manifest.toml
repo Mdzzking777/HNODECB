@@ -2,7 +2,7 @@
 
 julia_version = "1.9.1"
 manifest_format = "2.0"
-project_hash = "971e8732787c4561d016cd13672a6aed3d6af8cb"
+project_hash = "61929fe04418083b640733012b189bb0dc3db40e"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "f5c25e8a5b29b5e941b7408bc8cc79fea4d9ef9a"
@@ -2346,9 +2346,9 @@ version = "0.6.39"
 
 [[deps.SciMLBase]]
 deps = ["ADTypes", "ArrayInterface", "ChainRulesCore", "CommonSolve", "ConstructionBase", "Distributed", "DocStringExtensions", "EnumX", "FillArrays", "FunctionWrappersWrappers", "IteratorInterfaceExtensions", "LinearAlgebra", "Logging", "Markdown", "PrecompileTools", "Preferences", "RecipesBase", "RecursiveArrayTools", "Reexport", "RuntimeGeneratedFunctions", "SciMLOperators", "StaticArraysCore", "Statistics", "SymbolicIndexingInterface", "Tables", "TruncatedStacktraces", "ZygoteRules"]
-git-tree-sha1 = "6de099dba3c80e23bde1d19011161ea91a23ed6b"
+git-tree-sha1 = "916b8a94c0d61fa5f7c5295649d3746afb866aff"
 uuid = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
-version = "1.98.0"
+version = "1.98.1"
 weakdeps = ["Zygote"]
 
     [deps.SciMLBase.extensions]

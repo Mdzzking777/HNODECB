@@ -66,3 +66,35 @@ function get_uode_model_function(appr_neural_network, state, original_parameters
             @inbounds du[2] += û[1]
         end
 end
+
+"""
+    get_uode_model_function_hertz_nn(appr_neural_network, state)
+
+Returns the model derivative function with the Hertz force term replaced by a neural network.
+The network input is [x1, x2, x3, delta] and the output is scaled by Estar and gated by contact.
+"""
+function get_uode_model_function_hertz_nn(appr_neural_network, state)
+    f(du, u, p, t) =
+        let appr_neural_network = appr_neural_network, st = state
+
+            ode_par = p.ode_par
+            k, wd, m, c, Fd, R, dist, Fad, Estar, ks, cs = ode_par
+
+            # Separation
+            s = dist + u[1] - u[3]
+            delta = softplus(-s, adhesion_transition)
+            delta = ifelse(delta > 0.0, delta, 0.0)
+            w = contact_weight(s, adhesion_transition)
+
+            # NN-based Hertz replacement (scalar output)
+            nn_in = [u[1], u[2], u[3], delta]
+            û = appr_neural_network(nn_in, p.p_net, st)[1]
+            F_hertz = Estar * softplus(û[1], adhesion_transition) * w
+            Fad_eff = Fad * w
+
+            # Tip kinematics
+            @inbounds du[1] = u[2]
+            @inbounds du[2] = (Fd * cos(wd * t) - k * u[1] - c * u[2] + Fad_eff - F_hertz) / m
+            @inbounds du[3] = (Fad_eff - F_hertz - ks * u[3]) / cs
+        end
+end

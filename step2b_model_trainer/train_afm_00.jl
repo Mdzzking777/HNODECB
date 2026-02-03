@@ -654,7 +654,7 @@ for run_id in 1:num_initial_guesses
   ks_err = percent_error_pct(ks_est, ks)
   cs_err = percent_error_pct(cs_est, cs)
   Estar_err = percent_error_pct(Estar_est, Estar)
-  println("Run ", run_id, " summary: best_loss=", best_loss,
+  println("Run ", run_id, " summary: train_loss=", best_loss, " val_loss=", validation_resulting_cost,
     " | ks=", @sprintf("%.3e", ks_est), " (", @sprintf("%.2f", ks_err), "%)",
     " cs=", @sprintf("%.3e", cs_est), " (", @sprintf("%.2f", cs_err), "%)",
     " Estar=", @sprintf("%.3e", Estar_est), " (", @sprintf("%.2f", Estar_err), "%)",
@@ -663,6 +663,7 @@ for run_id in 1:num_initial_guesses
   push!(run_summaries, (
     run_id=run_id,
     best_loss=best_loss,
+    validation_loss=validation_resulting_cost,
     ks=ks_est,
     cs=cs_est,
     Estar=Estar_est,
@@ -691,7 +692,7 @@ serialize(folder_name * "/" * result_name_string, results)
 if !isempty(results)
   println("Run summaries:")
   for s in run_summaries
-    println("Run ", s.run_id, " best_loss=", s.best_loss,
+    println("Run ", s.run_id, " train_loss=", s.best_loss, " val_loss=", s.validation_loss,
       " | ks=", @sprintf("%.3e", s.ks), " (", @sprintf("%.2f", s.ks_err), "%)",
       " cs=", @sprintf("%.3e", s.cs), " (", @sprintf("%.2f", s.cs_err), "%)",
       " Estar=", @sprintf("%.3e", s.Estar), " (", @sprintf("%.2f", s.Estar_err), "%)",
@@ -701,6 +702,8 @@ if !isempty(results)
   validation_costs = [r.validation_resulting_cost for r in results]
   best_idx = argmin(validation_costs)
   best = results[best_idx]
+  best_train_loss = best.best_loss
+  best_val_loss = best.validation_resulting_cost
   p_best = best.parameters_training
   ks_best = p_best[10]
   cs_best = p_best[11]
@@ -725,7 +728,8 @@ if !isempty(results)
     full_sol = nothing
   end
 
-  println("Final best params (run ", best_idx, "): ks=", @sprintf("%.3e", ks_best),
+  println("Final best params (run ", best_idx, "): train_loss=", best_train_loss, " val_loss=", best_val_loss,
+    " | ks=", @sprintf("%.3e", ks_best),
     " (", @sprintf("%.2f", ks_err), "%) cs=", @sprintf("%.3e", cs_best),
     " (", @sprintf("%.2f", cs_err), "%) Estar=", @sprintf("%.3e", Estar_best),
     " (", @sprintf("%.2f", Estar_err), "%)")

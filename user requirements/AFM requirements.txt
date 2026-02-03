@@ -1,0 +1,172 @@
+下面这段是我们项目的“工程级规格说明”（spec），目的是让你在完整阅读本代码库后，能够在不违反方法论边界的前提下，把代码库改造成适用于我们 AFM 3D、部分可观测动力系统的版本。
+请你阅读并理解，而不是立即进行修改。我需要你在完整阅读后，总结并给出合理的工程级建议。
+
+请注意：我们当前阶段是 synthetic data 验证。我们允许使用 ground-truth 仅用于结果可视化误差评估，绝对禁止它参与训练或优化（不能进入 loss、不能用于梯度更新、不能用于参数拟合。这需要你和这个代码库进行对比，它是否是这样的？）。
+
+============================================================
+
+1. 问题概述：3维系统 + 部分可观测（state-level partial observation）
+   ============================================================
+
+系统状态为：
+
+ x1(t) tip 位移（可观测）
+ x2(t) tip 速度（可观测）
+ x3(t) sample motion  样品内部形变自由度（完全不可观测，hidden state）
+
+观测向量为：
+
+ [x1(t), x2(t)]   （任何时刻都只观测这两个）
+ x3(t) 在任何时刻都没有直接测量
+
+这是“维度缺失”的 partial observation，不是“时间上稀疏采样”。
+
+当前验证阶段我们固定：
+
+ x3(0) = 0   （synthetic 阶段可接受且明确的先验）
+
+============================================================
+2) 分段动力系统（非接触  接触）
+===================
+
+系统是混合动力学（hybrid dynamics），分为 Non-Contact 与 Contact 两段。请按下面这种“可读公式格式”理解与实现。
+ s = d+x1-x3;
+delta = -s;
+{A) Non-Contact (非接触)}
+
+x1dot = x2;
+x2dot = (F_d*cos(ωd*t)-k*x1-c*x2)/m;
+x3dot = ks/cs * x3;
+
+
+{B) Contact (接触)}
+
+{Hertz 接触力模型：}
+F_hertz = 4/3 * Estar * R^0.5 *delta^1.5
+
+x1dot = x2;
+x2dot = (F_d*cos(ωd*t) - F_adh +F_hertz - k*x1-c*x2) / m;
+x3dot = (F_adh - F_hertz - ks*x3) / cs;
+
+
+
+
+============================================================
+3) 各项物理意义 + 已知未知（当前阶段设定）
+=========================
+
+我们当前阶段（synthetic validation）的已知未知定义非常严格，请按下面表执行：
+
+【状态】
+
+ x1(t) tip displacement，可观测（已知观测）
+ x2(t) tip velocity，可通过x1求得（已知观测,注意其平滑性）
+x2dot(t) tip acceleration, state-space equation的LHS，可通过x1求得（已知观测,注意其平滑性）
+ x3(t) sample motion  internal deformation，不可观测（未知，需要估计）
+ x3dot(t) 因为 x3 未知，x3dot 自然未知（由估计模型产生）
+
+【已知物理参数（当前阶段全部视为已知常量或已知输入）】
+
+ m 等效质量(tip effective mass），已知
+ k tip 等效刚度（tip effective linear stiffness），已知
+ c tip 等效阻尼（tip effective linear damping），已知
+ F_d drive force amplitude，已知
+ ωd drive angular frequency，已知
+ R tip radius，已知
+ d total distance，已知
+ F_adh adhesion force（范德华黏附力，VdW adhesion），已知
+
+【当前阶段未知参数】
+
+ Estar effective modulus（Hertz 模型中的 E），未知（需要估计）
+ ks sample stiffness parameter（样品内部等效弹性参数），未知（需要估计）
+ cs sample damping viscous parameter（样品内部等效黏性参数），未知（需要估计）
+
+【模型项（当前阶段：结构已知，但含未知参数hidden state）】
+
+ F_hertz : Hertz contact model force
+
+  其中 Estar 未知，x3 未知；R、d、x1 已知（x1为观测），且整个F_hertz的方程框架已知
+
+============================================================
+
+============================================================
+4) 方法论红线（必须严格遵守）
+================
+
+允许：
+
+ 使用 ground-truth x3(t)、ground-truth F_hertz 仅用于：
+
+  1. 画图对比（visualization）
+  2. 计算误差指标（evaluation）
+  3. 做 baseline reference（上界对照）
+
+
+禁止（视为作弊）：
+
+ 任何训练优化中直接使用 ground-truth x3(t) 或 ground-truth 接触力
+  （不能进入 cost function  loss；不能用于梯度更新；不能用于参数拟合；不能用于初始化时强制对齐）
+ 不能把问题改成“监督学习 x3”或“监督学习接触力”而绕开 partial observation 的本质
+
+一句话原则：
+Ground truth 只能用于评估，不能用于学习。
+
+============================================================
+5) 我们希望你在 代码库上实现的能力（当前阶段）
+=============================
+
+请在此框架下实现：
+无论如何，以本代码库的逻辑为基础，而不是你自己的想法。
+
+(1) 在只给观测 y(t) = [x1(t), x2(t)] 的条件下，估计 hidden state x3(t)
+
+(2) 同时估计未知参数 Estar, ks, cs
+（当前阶段可以把它们当作常参数；也可以允许慢变，但先从常参数开始）
+
+(3) Non-ContactContact 两段模型切换要支持（piecewise dynamics）
+切换条件以“是否接触”为准（通常由s 的符号决定：s>0, non-contact, s<=0, contact）。
+
+
+(4) 全过程只用 x1x2 的观测误差构造代价，不要引入 x3 的监督项。
+
+============================================================
+7) 输出与评估（synthetic stage）
+=========================
+
+你可以输出：
+
+ 估计得到的 x3_hat(t), Estar_hat, ks_hat, cs_hat
+ 用 ground-truth 仅用于离线评估：
+
+   x3_hat vs x3_true
+   参数误差
+   预测误差（x1x2）
+
+但请保证：这些 ground-truth 信息不进入估计过程。
+
+============================================================
+8) 你读代码库时需要特别确认的点（为了避免“无意作弊”）
+=============================
+
+ 代码库中是否有 “full-information baseline NN” 或 “用真状态训练 NN”的部分：
+  只能保留作为 baseline；不得用于我们的训练估计主流程。
+ 所有 costresidual 必须只基于可观测输出（x1,x2），不能把 x3_true 写进 residual。
+ 初始条件：我们固定 x3(0)=0（synthetic阶段），但不要用 x3_true(t) 做 trajectory constraints。
+
+============================================================
+
+
+ 已知：tip 线性动力学结构 + adhesion force + Hertz 接触结构形式（框架），和sample在t = 0时的位移为0 （x3(0) = 0）;
+ 未知：Estar、ks、cs + hidden state x3(t);
+ 观测：只有 x1(t), x2(t);
+ 目标：在严格不使用 hidden ground-truth 的条件下，完成联合状态参数估计，并为未来把 F_hertz 等整体当未知项预留接口。
+
+如你在修改代码库时遇到必须决定的工程细节，请优先保持 代码库的原有组织方式与接口习惯，只在模型定义与估计变量参数维度上做必要改动。
+
+另外，我在代码库中附上了一个子文件夹，里面是我用于生成DMT_KV模型数据集的python文件，这是我们这个项目的起始，它会生成数据集，x1,x2以及其导数用于训练，而x3 (sample motion)用于最终结果比对。它同时会告诉你，哪些部分是non-contact,哪些是contact
+
+
+以下问题是你可能会犯的错误，请注意：
+1. loss项的监督，要完整包含LHS已知项，对x1, x1dot, x1ddot进行监督（如果在当前阶段sample motion x3已知，则也要作为监督项），并同时对contact和non-contact区域进行监督。请设立sanity check，在保证未知参数正确以及未知公式项正确的情况下，测试loss是否接近0.
+2. 请保持数据生成和数据调用的一致。由于本模型是piecewise function，分为non-contact和contact区域，那么交界处的可微性就很重要，因此是一个难点。同时，当用x1以及其导数作为监督项时，请注意生成这些导数的方式，以及后续loss的调用，主代码的计算是否也和导数生成的方式保持着一致。

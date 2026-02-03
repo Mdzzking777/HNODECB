@@ -1,0 +1,129 @@
+HNODECB repo summary (AFM-focused) — 2026-01-26
+
+0) CRITICAL RULE — NO INFORMATION LEAKAGE / NO CHEATING
+- In every AFM scenario, ONLY use the information explicitly allowed by that scenario.
+- If x3 is sparse (e.g., 1%), the code must not read any additional x3 truth values anywhere in the loss.
+- Never set u0 from full state data when x3 is not fully observable. In particular, DO NOT use:
+  - u0 = ode_data[:, first(rg)]
+- This previously caused severe leakage in step2a (x3 truth was injected at every segment start).
+- Safe pattern for partial/zero x3 observation:
+  - u0 = [ode_data[1, first(rg)], ode_data[2, first(rg)], current_x3_prior]
+- First-person view (model view / allowed-information view): training and search may use only the scenario-allowed signals (e.g., x1/x2, the permitted x3 mask, and explicitly allowed initial conditions).
+- God's-eye view (oracle view): sanity check may use true parameters and full true trajectories (including full x3), but only for diagnostics; never feed oracle quantities into training loss or initialization.
+- Hard separation rule: oracle signals must not appear in any non-sanity objective, guard, or initializer.
+- Treat this rule as the highest-priority constraint for all AFM scripts (step2a/step2b/sanity checks).
+
+1) Repository understanding (AFM in context of benchmarks)
+- Repo implements hybrid neural ODE / UDE workflows for benchmark dynamical systems (LV, Glycolysis, Cell Apoptosis, etc.).
+- Main pipeline:
+  - test_case_settings/*: model definitions and parameters (RHS functions + settings).
+  - datasets/*: data generation and storage (.jld) + plotter scripts.
+  - step2a_hyperparameter_tuning/*: coarse-to-fine parameter search (global sampling + local refinement).
+  - step2b_model_trainer/*: full training (Adam + LBFGS), includes multiple shooting (MS), continuity loss, partial observability variants.
+  - step3/step4: identifiability / confidence intervals (Fisher, etc.) used in original paper.
+- AFM case: DMT-KV model (x1,x2,x3) with contact / non-contact switching. AFM integrates into same pipeline as benchmarks, with piecewise contact physics and sparse x3 observation in 01 case.
+- AFM also has a 03 variant where a NN replaces the Hertz force term (contact force), so both mechanistic params (Estar, ks, cs) and NN weights are optimized.
+
+2) Current progress & contributed files / results
+AFM model + training variants
+- test_case_settings/afm_dmt_kv_settings/afm_dmt_kv_model_functions.jl
+- test_case_settings/afm_dmt_kv_settings/afm_dmt_kv_model_settings.jl
+
+Datasets (no noise)
+- datasets/e0.0/data/ode_data_afm_dmt_kv.jld
+- datasets/e0.0/data/pert_df_afm_dmt_kv.jld
+- datasets/e0.0/data/ode_data_std_afm_dmt_kv.jld (kept for compatibility)
+- datasets/e0.0/data/pert_df_sd_afm_dmt_kv.jld
+- datasets/afm_dataset_generator.jl
+- datasets/afm_plotter.jl (time-series plots)
+
+Step2a: AFM parameter search (sparse x3, code 01)
+- step2a_hyperparameter_tuning/hyperparameter_tuning_first_stage/afm_param_stage1_01.jl
+- step2a_hyperparameter_tuning/hyperparameter_tuning_second_stage/afm_param_stage2_01.jl
+- Results:
+  - step2a_hyperparameter_tuning/hyperparameter_tuning_first_stage/results_afm/afm_param_stage1_01.jld
+  - step2a_hyperparameter_tuning/hyperparameter_tuning_second_stage/results_afm/afm_param_stage2_01.jld
+- Runner & inspector:
+  - runner/afm_param_search_pipeline.jl
+  - runner/inspect_afm_param_stage2_01.jl
+
+Step2a: AFM parameter search (NN replaces Hertz, code 03)
+- step2a_hyperparameter_tuning/hyperparameter_tuning_first_stage/afm_param_stage1_03.jl
+- step2a_hyperparameter_tuning/hyperparameter_tuning_second_stage/afm_param_stage2_03.jl
+- runner/afm_param_search_pipeline_03.jl
+
+Step2b: AFM training
+- step2b_model_trainer/train_afm_00.jl (full observation baseline)
+- step2b_model_trainer/train_afm_01_MS.jl (multiple shooting version)
+- step2b_model_trainer/train_afm_01_SS.jl (single shooting version)
+- Results:
+  - step2b_model_trainer/res_afm/afm_00.jld
+  - step2b_model_trainer/res_afm_01/afm_01.jld
+
+Examples folders (original benchmark scripts relocated for convenience)
+- step2a_hyperparameter_tuning/hyperparameter_tuning_first_stage/Examples/*
+- step2a_hyperparameter_tuning/hyperparameter_tuning_second_stage/Examples/*
+- step2b_model_trainer/Examples/*
+
+Reference PDF added
+- Robust parameter estimation and identifiability analysis with hybrid neural ordinary differential equations in computational biology.pdf
+
+3) Key discussion highlights (design decisions & reasoning)
+- Multiple shooting (MS):
+  - Splits trajectory into segments; each segment integrates independently with its own u0.
+  - Continuity loss ties segment endpoints to next segment start.
+  - MS can help with partial observability and long-horizon stability but increases variables and compute cost.
+
+- u0_x3 (sample motion) handling:
+  - Full optimization (every segment u0_x3) is accurate but slow.
+  - Interpolation with control points reduces variables but can stall x3_obs loss if control points too sparse.
+  - Tanh-based hard bounding may distort gradients; soft penalties preferred.
+
+- Contact/non-contact segmentation:
+  - Contact regions are physics-critical (Estar coupling with x3/x2dot); weighting contact loss is important.
+  - Segmenting by contact state avoids discontinuity at s=0. Softplus smoothing used for forces.
+  - Contact criterion in AFM code: s = dist + x1 - x3; contact when s < 0.
+  - Smooth gating: delta = softplus(-s, eps), w = 1 - exp(-softplus(-s, eps)/eps). In non-contact, w≈0 so F_hertz and Fad_eff vanish.
+
+- Loss design:
+  - Decomposed into state (x1,x2), x2dot, x3_obs, u0_x3, continuity.
+  - Avoid duplicate supervision; keep x2dot consistent with RHS.
+  - Contact weighting (e.g., 4.27) used to avoid Estar being drowned by non-contact.
+  - In 03 (NN replaces Hertz): NN input is [x1, x2, x3, delta]; F_hertz = Estar * softplus(NN(nn_in), eps) * w.
+
+- Sanity checks:
+  - data-based: compares derivatives from data vs RHS terms.
+  - integrated: integrates RHS and compares trajectories.
+  - MS sanity can be split into oracle vs model (true u0 vs trainable u0/interpolated).
+
+- Optimization strategy:
+  - Adam + LBFGS in step2b.
+  - Early-stop thresholds and plateau criteria added; richer logging added (loss terms, params, reconstruction %).
+
+- Global search (step2a):
+  - Stage1: global coarse sampling (log-space, center/mid/outer bands).
+  - Stage2: local refinement from top-K seeds; provides better initial guesses for step2b.
+
+- Identifiability:
+  - Discussion on Hessian/Fisher spectrum for identifiability; sparse x3 may reduce identifiability of ks, cs, Estar.
+  - Proposed using step2a to test global direction before concluding non-identifiability.
+
+4) Current status / open issues
+- SS (single shooting) can recover parameters accurately in sparse x3 case, suggesting MS loss terms may be the bottleneck.
+- MS is still used to match benchmark design and for future partial-observation extensions, but needs tuning of u0_x3/continuity.
+- Stage2 outputs include both correct and incorrect parameter combinations; step2b should run all top-3 candidates and report per-run results.
+- 03 debugging notes observed during Stage1/2:
+  - `destructure` undefined when Lux.jl version lacks Lux.destructure; use Optimisers.destructure and `using Optimisers`.
+  - `val_stride` undefined or missing in Stage2 when read from best_params; should be stored at Stage1 top-level or read from stage1.val_stride with defaults.
+
+5) File locations recap (most important)
+- AFM model: test_case_settings/afm_dmt_kv_settings/*.jl
+- AFM datasets: datasets/e0.0/data/*afm_dmt_kv*.jld
+- Step2a: step2a_hyperparameter_tuning/.../afm_param_stage1_01.jl, afm_param_stage2_01.jl
+- Step2a results: step2a_hyperparameter_tuning/.../results_afm/*.jld
+- Step2b: step2b_model_trainer/train_afm_01_MS.jl, train_afm_01_SS.jl
+- Step2b results: step2b_model_trainer/res_afm_01/afm_01.jld
+- Pipeline runner: runner/afm_param_search_pipeline.jl
+- Stage2 inspector: runner/inspect_afm_param_stage2_01.jl
+
+End of summary.

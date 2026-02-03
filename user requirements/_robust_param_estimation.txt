@@ -1,0 +1,1366 @@
+
+
+=== Page 1 ===
+npj |systems bio logy and app lications Article
+Published in partnership with the Systems Biology Institute
+https://doi.org/10.1038/s41540-024-00460-3
+Robust parameter estimation and
+identi ﬁability analysis with hybrid neural
+ordinary differential equations incomputational biology
+Check for updates
+Stefano Giampiccolo1,2,F e d e r i c oR e a l i1, Anna Fochesato1,3,5, Giovanni Iacca2&L u c aM a r c h e t t i1,4
+Parameter estimation is one of the central challenges in computational biology. In this paper, we
+present an approach to estimate model parameters and assess their identi ﬁability in cases where only
+partial knowledge of the system structure is available. The partially known model is embedded into asystem of hybrid neural ordinary differential equations, with neural networks capturing unknownsystem components. Integrating neural networks into the model presents two main challenges: globalexploration of the mechanistic parameter space during optimization and potential loss of parameteridenti ﬁability due to the neural network ﬂexibility. To tackle these challenges, we treat biological
+parameters as hyperparameters, allowing for global search during hyperparameter tuning. We thenconduct a posteriori identi ﬁability analysis, extending a well-established method for mechanistic
+models. The pipeline performance is evaluated on three test cases designed to replicate real-worldconditions, including noisy data and limited system observability.
+Mathematical and computational model s are increasingly employed in the
+study of biological systems1. These models not only facilitate the creation of
+predictive and explanatory tools2but also offer a means to understand the
+interactions among the variables of the system3.
+The well-established approach to develop a mathematical model for
+biological systems, i.e., the mechanistic modeling approach4,r e l i e so n
+encoding known biological mechanisms into systems of partial or ordinary
+differential equations (PDE or ODE) usi ng suitable kinetic laws, e.g., the law
+of mass action or Michaelis-Menten kinetics5.T h e s ee q u a t i o n st y p i c a l l y
+incorporate several unknown model parameters, making parameter esti-mation a central challenge in model development
+6. The prevailing approach
+to parameter estimation involves optimizing the model dynamics to alignwith experimental data
+7. Various optimization techniques are employed for
+this purpose, including linear and nonlinear least squares methods8,9, genetic
+and evolutionary algorithms7, Bayesian Optimization10,11, control theory-
+derived approaches12and, more recently, physics-informed neural
+networks6. The scarcity of experimental data and the measurement noise
+often lead to non-identi ﬁability issues, where the optimization problem
+lacks a unique solution13. To address this challenge, various methods exist toanalyze the identi ﬁability of model parameters. Structural identi ﬁability
+analysis14, performed before parameter estimation, analyzes the structure of
+the model to determine if parameters can be uniquely estimated. On theother hand, practical identi ﬁability analysis
+15, conducted after parameter
+estimation, evaluates ho w uncertainties in experimental measurements
+affect parameter estimation.
+Developing mathematical models and estimating model parameters
+with the mechanistic modeling approach presents signi ﬁcant challenges due
+to the need for a detailed understanding of the interactions between (and
+within) biological systems. Complex biological systems often involve pro-cesses at different scales, such as genetic, molecular, tissue, organ, or whole-body, and such intricate mechanistic details are only partially known
+16,17.T o
+overcome the limits of mechanistic mo deling, hybrid models that combine
+mechanistic ODE-based dynamics with neural network components havegrown in popularity in various scienti ﬁcd o m a i n s
+18,19. The integration
+between neural networks and ODE systems is known by different names,such as Hybrid Neural Ordinary Differential Equations (HNODEs)
+20,
+graybox modeling21,22,o runiversal differential equations23. In a HNODE,
+neural networks are used as universal approximators to represent unknown
+1Fondazione The Microsoft Research-University of Trento Centre for Computational and Systems Biology (COSBI), Rovereto, Trento, Italy.2Department of
+Information Engineering and Computer Science (DISI), University of Trento, Povo, Trento, Italy.3Department of Mathematics, University of Trento, Povo, Trento,
+Italy.4Department of Cellular, Computational and Integrative Biology (CIBIO), University of Trento, Povo, Trento, Italy.5Present address: Roche Pharma Research
+and Early Development, Roche Innovation Center Basel, Basel, Switzerland. e-mail: marchetti@cosbi.eu ;luca.marchetti@unitn.it
+npj Systems Biology and Applications |          (2024) 10:139 11234567890():,;
+1234567890():,;
+
+=== Page 2 ===
+portions of the system. Mathematically, HNODE can be formulated as the
+following ODE:
+dy
+dtðtÞ¼fðy;NNðyÞ;t;θÞ yð0Þ¼y0; ð1Þ
+where NNdenotes the neural network component of the model, fencodes
+t h em e c h a n i s t i ck n o w l e d g eo ft h es y s t e m ,a n d θrepresents a vector of
+unknown mechanistic parameters. Th is approach has proven successful in
+several ﬁelds, and early results in isolated and relatively simple scenarios
+have shown promise in com putational biology as well24,25. However, mod-
+eling with HNODEs remains an active area of research, and best practicesfor estimating mechanistic parameters and assessing their identi ﬁability
+within this framework remain to be outlined.
+Mechanistic parameter estimation within the HNODE framework
+presents signi ﬁcant challenges. Firstly, w hile model calibration in
+mechanistic models usually relies on global optimization techniques to
+explore the parameter search space
+9, training HNODE models necessitates
+the use of local and gradient-based methods23. Secondly, incorporating a
+universal approximator, such as a neural network, into a dynamical modelmay compromise the identi ﬁability of the HNODE mechanistic
+components
+26,27. In this sense, the existing literature has focused on trying to
+enforce the identi ﬁability of the mechanistic parameters within a HNODE
+by integrating a regularization term into the cost function28. Common
+choices for this regularization term include minimizing the impact of theneural network on the model
+28or ensuring that the outputs of the neural
+network and mechanistic part are uncorrelated26. However, these approa-
+ches do not always guarantee the correct identi ﬁcation of the mechanisticpart, and the outcomes depend on the speci ﬁc regularization term used26.T o
+the best of our knowledge, the identi ﬁability analysis of the mechanistic
+parameters in a HNODE model has not been investigated in the literatureso far.
+In this contribution, we present an end-to-end approach for
+mechanistic parameter estimation and identi ﬁability analysis in scenarios
+where mechanistic knowledge about the system is incomplete. Initially, we
+focus on tuning hyperparameters to embed our incomplete mechanistic
+model into a HNODE model that is capa ble of effectively capturing the
+experimental dynamics. Subsequentl y, we proceed to compute mechanistic
+parameter estimates by training th e HNODE model. Following parameter
+estimation, we extend a well-establis hed approach for mechanistic models
+to assess the parameter identi ﬁability ap o s t e r i o r i .F o ri d e n t i ﬁable para-
+meters, we ﬁnally estimate asymptotic con ﬁdence intervals (CIs).
+The proposed approach has been tested in three different in silico
+scenarios, that have been construct ed by assuming a lack of information
+about some portions of known mechanistic models. We aimed to replicatetypical conditions found in real-world scenarios, with a noisy and scattered
+training set describing the time evolut ion of a subset of the model variables.
+Firstly, we consider the traditional Lot ka-Volterra model for predator-prey
+interactions. Despite being a relatively simple model, it shows the ability ofthe approach to identify compensation s between the neural network and the
+mechanistic component of the HNODE m odel. Secondly, we evaluate the
+performances of our approach on a model for cell apoptosis
+29,k n o w nf o rt h e
+non-identi ﬁability of part of its parameters. Thirdly, we consider a model of
+oscillations in yeast glycolysis30, which has been frequently employed as a
+benchmark for inference in computational systems biology due to itsnonlinear oscillatory dynamics.Fig. 1 | Schematic representation of the work ﬂow.
+In the work ﬂow schema, θM
+1;... ;θM
+sdenote the
+mechanistic parameters to estimate in the corre-sponding search spaces Θ
+M
+1;... ;ΘM
+s. HNODE:
+Hybrid Neural Ordinary Differential Equation, CI:
+Conﬁdence Interval.
+STEP 1 : training-validation splitincomplete 
+mechanistic model1,…,:
+parameters to
+estimate in search 
+spaces Θ1,…,Θobservations of the 
+system
+identifiability analysis for 
+1,…,point and CI estimates for 
+identifiable 1,…,STEP 2 : model expansion and parameter estimation
+STEP 3 : local identifiability analysis
+STEP 4 : CI estimationSTEP 2a : hyperparameter tuning and search space Θ1,…,Θ exploration 
+STEP 2b : HNODE model traininghttps://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 2
+
+=== Page 3 ===
+Results
+A schematic representation of the work ﬂow is presented in Fig. 1.T h ei n p u t
+of the pipeline consists of an incomplete mechanistic model containingparameters to be estimated, along wit h a time series dataset containing
+experimental observations of some of the system variables. By embedding
+the incomplete model into a HNODE model, our approach enables para-meter estimation and identi ﬁability analysis.
+The work ﬂow starts by splitting the observation time points into
+training and validation sets (Step 1). In the second step, using thispartition, we expand the incomplete mechanistic model into aHNODE model. We employ Bayesian Optimization to simultaneouslytune the model hyperparameters and explore the mechanistic para-meter search space (Step 2a). The model is then fully trained (Step 2b),yielding mechanistic parameter estimates. In the next step (Step 3), weassess the local identi ﬁability at-a-point of the parameters. For the
+locally identi ﬁable ones, we proceed to estimate con ﬁdence intervals
+(Step 4).
+In the rest of the section, we use the following notation. Let
+yðt;θ
+M;θNN;y0Þ2Rn,w i t h n2Nþ,b et h eH N O D Em o d e ld e ﬁned by
+the following differential equation:
+dy
+dt¼fMðy;t;θMÞþNNðy;t;θNNÞ
+yðt0Þ¼y08
+<
+:ð2Þ
+where y02Rnstands for the initial conditions, fMandθM¼ðθM
+1;...;θM
+sÞ
+denote the mechanistic part of the model and the s2Nþmechanistic
+parameters to be estimated, respectively, while θNNrepresents the neural
+network parameters. We denote the i-th component of the model as yi(t,θM,
+θNN,y0), with i=1 ,…,n. Typically, only a subset of the system variables is
+observable; we indicate this subset with O⊆{1,…,n}. We assume to have
+access to the experimental measurements of the observable variables at m+
+1t i m ep o i n t s t0,…,tm;^yi
+j±^σi
+jindicates the observations of the i-th variable
+at time tj, with the uncertainty re ﬂecting the variability of the measurement.
+Additionally, we assume to have access to the initial conditions ^yi
+0±^σi
+0of all
+the variables.
+The remainder of this section is organized as follows. First, we
+present a detailed description of each step in the work ﬂow. In the
+subsequent subsections, we analyze the results of the pipeline across
+various in silico test cases. The impl ementation details and algorithmic
+setup for these test cases are outlined in the Methods Section. Given thatthe training of HNODE extends the techniques used for NeuralOrdinary Differential Equations (NODE)
+31, we begin with an overview
+of the methods employed for training NODE, which precedes thedescription of the pipeline.
+Background: NODE training
+In this section, to discuss the NODE case, we assume that fM=0in Eq. ( 2),
+indicating no mechanistic knowl edge about the system. Under this
+hypothesis, the vector ﬁeld is entirely parameterized by the neural network
+NN,a n dt h eO D E :
+dy
+dt¼NNðy;t;θNNÞ
+yðt0Þ¼y0(
+ð3Þ
+represents a NODE. Given a loss function L, the training of the NODE can
+be achieved through the minimization of the cost function:
+CðθNNÞ¼1
+mXm
+j¼1X
+i2OLðyiðtj;θNN;y0Þ;^yi
+jÞ; ð4Þ
+where yiis computed numerically by integrating Eq. ( 3). Minimizing C(θNN)
+requires to back-propagate the error t hrough the ODE solver algorithm used
+for the numerical integration of y. By the chain rule, for a differentiable L,this amounts to compute the gradients
+∂yiðtj;θNN;y0Þ
+∂θNN:
+Chen et al.31demonstrated that the se gradients can be ef ﬁciently computed
+using adjoint sensitivity32,33, treating the ODE solver as a black box. Adjoint
+sensitivity requires a backward integ ration of the system and different
+numerical methods have been proposed to ef ﬁciently calculate it23.
+As in the traditional ODE case, stiffness constitutes a signi ﬁcant
+challenge in the training of NODE34. However, as shown by Kim et al.35,
+there are speci ﬁcw a y st oo v e r c o m et h i si s s u e .T h e s ei n c l u d ee m p l o y i n gd e e p
+neural network architectures, ad hoc methods for computing adjoint sen-sitivity, and a normalized loss function.
+Step 1: training-validation split
+In the ﬁrst step of the work ﬂow, the observation time points are divided into
+training and validation sets, indicated with ftjgj2Tandftjgj2Vrespectively.
+The validation time points are chosen from t1,…,tmto ensure a homo-
+geneous distribution along the observed trajectory.
+Step 2: model expansion and parameter estimation
+In this step, the incompletely speci ﬁed mechanistic model is expanded into a
+HNODE model through the use of neural networks to replace unknownportions of the system. The estimat es for mechanistic parameters are
+derived by training the HNODE model.
+The training of a HNODE model is analogous to that of NODE.
+Adopting a loss function L, the most straightforw ard approach would be
+minimizing the cost function:
+Cðθ
+M;θNNÞ¼1
+jTj/C1jOjX
+j2TX
+i2OLðyiðtj;θM;θNN;y0Þ;^yi
+jÞ: ð5Þ
+Here, ∣T∣and∣O∣denote the cardinality of TandOrespectively. Gradients of
+C(θM,θNN) with respect to mechanistic and neural network parameters are
+calculated via adjoint sensitivity methods. If the cost function de ﬁned by Eq.
+(5) is employed, a single trajectory of yspanning from t0totmis computed at
+each epoch of the training. This approa ch, known as single shooting, is often
+suboptimal due to the potential risks o f the training getting stuck in local
+minima27.
+Therefore, we adopt the multip le shooting technique (MS)36.I nM S ,t h e
+time interval ( t0,tm) is partitioned into differ ent segments. Rather than
+computing a single trajectory of yon the entire training interval, a potentially
+discontinuous trajectory yPW(t,θM,θNN) is reconstructed piece-wise by
+solving an initial value problem on ea ch segment, adding the states of the
+system at the initial points of each se gment as additional parameters to be
+optimized. The cost fu nction is then composed of two terms:
+CðθM;θNNÞ¼CFITðθM;θNNÞþρ/C1CDISθM;θNN/C0/C1
+: ð6Þ
+In Eq. ( 6),CFITmeasures the difference between the piecewise-de ﬁned
+trajectory and the training data, CDISmeasures the discontinuity of the
+trajectory, and ρ2Ris a hyperparameter. For CFIT,w eu s et h ec o s tf u n c t i o n
+deﬁned in Eq. ( 5), adopting the loss function
+Lyi
+PWtj;θM;θNN/C16/C17
+;^yi
+j/C16/C17
+¼yi
+PWðtj;θM;θNNÞ/C0 ^yi
+j/C16/C172
+=^σi
+j/C16/C172
+if^σi
+j≠0
+yi
+PWðtj;θM;θNNÞ/C0 ^yi
+j/C16/C172
+if^σi
+j¼08
+><
+>:
+ð7Þ
+in which the quadratic loss is weighted f or the uncertainty measure if it is not
+zero. CDISis computed by summing the squared values of the discontinuities
+at the extremes of the training interval partition. To prevent over ﬁtting, in
+the case of noisy training data, we add an L2 regularization term. Given this
+cost function, the training is performed with a gradient-based optimizer,https://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 3
+
+=== Page 4 ===
+and gradients are computed using adjo int sensitivity methods. In our test
+cases, we use the Adam optimizer37, and we re ﬁne the results with L-BFGS38
+on training datasets without noise.
+To de ﬁne the segmentation of the time interval, we partition the
+training set of time points into subsets containing the same number kof
+items (excluding the last interval), where kis a hyperparameter. When using
+MS to train the model, we introduce a s additional parameters to optimize
+the state of the system at the initial points of each segment. These parametersare initialized with the measured sta tes of the system at the time point when
+the corresponding system variable is ob servable; otherwise, they are initi-
+alized with the initial state of the variable.
+How to tune the hyperparameters and explore the parameter
+search space . The hyperparameters requiring tuning can be grouped
+into three different macro-categories: the hyperparameters of the
+architecture of the neural network, the starting values of the mechanistic
+parameters to initiate the gradient-based optimization, and the hyper-parameters related to the MS training. This latter category includes thesegmentation of the time interval ( t
+0,tm) used to de ﬁne the piecewise
+trajectory, the weight factor ρused in Eq. ( 6), the weight λof the L2
+regularization term, and the learning rate of the gradient-based method.Incorporating the initial values of θ
+M
+1;... ;θM
+sinto hyperparameter
+tuning enables the integration of local gradient-based search withBayesian Optimization techniques, as proposed by Gao et al.
+39The
+objective is to globally explore the mechanistic parameter search spaceduring this step.
+The hyperparameters are tuned in two stages, described below.
+Hyperparameter tuning - Stage 1 . We simultaneously tune all hyper-
+parameters, except for the L2 regularization factor λ, using the multi-
+variate Tree-Structured Parzen Estimator (TPE)
+40,41. In each TPE trial,
+the HNODE model is trained for a limited number of MS iterations.The optimization metric during the TPE algorithm is the mean squarederror on the validation time points of the trajectory predicted by the
+trained model:
+1
+jVj/C1jOjX
+j2VX
+i2Oyiðtj;θM;θNN;y0Þ/C0 ^yi
+j
+^σi
+j !2
+:
+As before, we employ a pure quadratic error when uncertainty indications
+on measurements are absent.
+Hyperparameter tuning - Stage 2 . In the second stage, we ﬁxt h eh y p e r -
+parameters tuned in the ﬁrst step and focus on tuning the L2 regularization
+factor, λ, using a grid-search approach. In each trial during this step, the
+HNODE model is trained for an extended number of MS iterations, and wecontinue to employ the same metric as in the previous step to evaluateeach trial.
+The decision to split the tuning process into two stages is motivated by
+the observation that the effects of over ﬁtting may not become apparent with
+a low number of iterations. Therefore, tuning λin the initial stage might not
+be as effective. Conversely, conducting a large number of MS iterations in
+theﬁrst stage would signi ﬁcantly increase computational costs.
+How to deal with stiffness . Before starting the hyperparameter tuning
+phase, the behavior of the HNODE model, whether stiff or non-stiff, isunknown. To train a stiff HNODE model, we follow the guidelinesoutlined for stiff NODE. This involves employing specialized techniquessuch as ad hoc adjoint sensitivity methods, deeper neural networkarchitectures, stiff ODE solvers, and normalized loss functions. We donot include all con ﬁgurations used for stiff systems as hyperparameters to
+tune, to prevent an excessive increase in the search space dimension.
+Instead, we propose initiating the hyperparameter tuning with non-stiff
+conﬁgurations and monitoring the integration of the HNODE modelduring the ﬁrst trials of the process, such as observing the number of steps
+taken by the ODE solver to complete system integration. If stiffness isdetected, we ﬁnalize the tuning process and we train the HNODE model
+using stiff con ﬁgurations.
+Step 3: local identi ﬁability analysis
+In this step, we investigate ap o s t e r i o r i the local identi ﬁability of the
+mechanistic parameters θM
+1;...;θM
+sestimated with the model training.
+This is particularly important in HNODE models, as incorporating a uni-versal approximator, such as a neural network, into a dynamical model maycompromise the identi ﬁability of mechanistic parameters. The following
+subsections introduce the foundational concepts for our approach and thedescription of the work ﬂow.
+Local identi ﬁability at-a-point and sloppy directions . We refer to the
+combined neural network and mechanistic parameter estimates,
+obtained through the training in Step 2, as the single vector:
+θ¼ðθM;θNNÞ¼ð θ1;... ;θpÞ:
+We recall that the k-th parameter of the model is locally identi ﬁable at-
+a-point42inθif
+yiðtj;θ;y0Þ¼yiðtj;θ;y0Þ8 j2f1;...;mg;i2O
+implies θk¼θkfor all θin a suitable neighborhood of θ(for a discussion of
+the relationship between this and other de ﬁnitions of parameter identi ﬁa-
+bility, we refer to Supplementary Note 1).
+To study the local identi ﬁability, we quantify the change in the
+HNODE model behavior, as parameters θvary from θ,w i t ht h ef u n c t i o n :
+χðθÞ¼1
+m1
+jOjXm
+j¼1X
+i2Oyiðtj;θ;y0Þ/C0yiðtj;θ;y0Þ
+γi !2
+; ð8Þ
+where γi¼maxjfjyiðtj;θ;y0Þjgis introduced to normalize the contribution
+toχof each variable. In a neighborhood of θ,t h ef u n c t i o n χcan be
+approximated as:
+χðθÞ/C251
+2/C1ðθ/C0θÞt/C1HχðθÞ/C1ðθ/C0θÞ;
+where HχðθÞdenotes the Hessian matrix of χinθ.I fvis an eigenvector of
+HχðθÞandμis the corresponding eigenvalue, for small values of αit holds:
+χð/C22θþα/C1vÞ/C251
+2/C1α2/C1μ: ð9Þ
+Eq. ( 9) implies that the HNODE model behavior does not change
+signiﬁcantly when the parameters move along the direction identi ﬁed
+byvifμis zero. In mechanistic models, the eigenvectors related to zero
+or almost-zero eigenvalues are com m o n l yc a l l e ds l o p p yd i r e c t i o n s43–45.
+Denoting with V0the null space of Hχ, spanned by the eigenvectors
+related to zero eigenvalues, and with VSthe subspace spanned by the
+remaining eigenvectors, each parameter θkof the model can be
+decomposed as:
+θk¼π0ðθkÞþπSðθkÞ with jjπ0ðθkÞjj2þj jπSðθkÞjj2¼1
+where π0(θk)a n d πS(θk) denote the projection of θkonto V0andVS
+respectively. π0(θk) represents the local direction that maximizes the para-
+meter perturbation without affecting the model behavior. Although onem i g h te x p e c ti d e n t i ﬁability of θ
+kto yield ∥π0(θk)∥2=0a n d ∥πS(θk)∥2=1 ,
+strict equalities generally do not hold. This is because, as observed byGutenkunst et al.
+43, each sloppy eigenvector ty pically encompasses mixedhttps://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 4
+
+=== Page 5 ===
+components of nearly all model parameters. Hence, 0 < ∥π0(θk)∥2< 1 applies
+to all model parameters.
+How to assess the local identi ﬁability at-a-point . Our approach
+involves identifying mechanistic parameters θM
+1;... ;θM
+shaving a sig-
+niﬁcant projection onto the null subspace of the HNODE model. We
+proceed as follows. First, we compute HχðθÞwith the Gauss-Newton
+method:
+Hk;l
+χðθÞ¼2
+m/C1jOjXm
+j¼1X
+i2O1
+ðγiÞ2∂yi
+∂θkðtj;θ;y0Þ/C1θk/C1∂yi
+∂θlðtj;θ;y0Þ/C1θl:
+ð10Þ
+In Eq. ( 10), we rescale the sensitivity coef ﬁcients to make them independent
+of the absolute values of the parameters46; this consideration is important
+when simultaneously considering bo th neural network and mechanistic
+parameters. HχðθÞis a symmetric and positive semi-de ﬁnite matrix. We
+proceed to determine the null subspace of HχðθÞspanned by all eigenvectors
+corresponding to eigenvalues μ≤ϵ. Here, ϵis a hyperparameter embodying
+the threshold used to distinguish zero eigenvalues in a numericalenvironment. To discriminate whether there exists a direction in theparameter search space along which we can signi ﬁcantly perturb the
+parameter θ
+M
+iwithout affecting the model simulation, we analyze the norm
+of the projection of θM
+ionto V0. If it exceeds a prede ﬁned threshold δ,w h i c h
+is a second hyperparameter of our approach, we classify the parameter as
+non-identi ﬁable.
+Step 4: CI estimation
+In the ﬁnal step of our pipeline, we estim ate CIs for the locally identi ﬁable
+parameters. Several methods for estimating parameter CIs in mechanisticmodels have been proposed. We employ the Fisher Information Matrix(FIM)-based approach
+47. We assume that our observed data follow inde-
+pendent Gaussian distributions Nðyi
+j;σi
+jÞ, and that our parameter estimator
+is an approximation of the maximum likelihood estimator, as proposed inYazdani et al.
+6. Therefore, we can approximate the observed FIM as:
+FIMk;lðθÞ¼X
+jX
+i2O1
+ð^σiÞ2∂yi
+∂θkðtj;θ;y0Þ/C1∂yi
+∂θlðtj;θ;y0Þ: ð11Þ
+The pseudo-inverse of the FIM provides a lower bound for the covariance
+matrix of our estimators48. Consequently, we can de ﬁne a lower bound σM
+i
+for the standard deviation of the estimator of the parameter θM
+iby taking the
+square roots of the elements on the diagonal of FIM−1. We can then compute
+the lower bound for the α-level con ﬁdence intervals of θM
+ias:
+θM
+i/C0Φ1þα
+2/C1σM
+i;θM
+iþΦ1þα
+2/C1σM
+i/C16/C17
+;
+whereΦxrepresents the xquantile of a standard Gaussian distribution.
+Lotka-Volterra test case
+In this section, we analyze the performance of the pipeline using a test case
+based on the Lotka-Volterra predat or-prey model, which describes the
+temporal dynamics between two species, where one preys upon the other49.
+Although it is based on a relatively simple system, this test case offers theopportunity to evaluate the effectiveness of our approach in detectingcompensations between the neural net work and the mechanistic parameters
+of the model. Additionally, it allows for a discussion on why we opt not to
+enforce the identi ﬁability of the mechanistic parameters through the use of a
+regularizer in the cost function, as proposed by Yin et al.
+28.The full mechanistic model is de ﬁn e db yt h ef o l l o w i n gs y s t e mo fO D E :
+dy1ðtÞ
+dt¼αy1/C0βy1y2
+dy2ðtÞ
+dt¼γy1y2/C0δy2;(
+ð12Þ
+where y1represents the prey population, and y2represents the predator
+population. In this context, we assume a lack of information regarding the
+interaction terms between the two species ( βy1y2andγy1y2). By replacing
+them with a neural network NN :R2!R2,w eh a v et h ef o l l o w i n g
+HNODE model:
+dy1ðtÞ
+dt¼αy1þNNð½y1;y2/C138;θNNÞ½1/C138
+dy2ðtÞ
+dt¼NNð½y1;y2/C138;θNNÞ½2/C138þδy2:(
+ð13Þ
+Our objective is to estimate and assess the identi ﬁability of the prey birth rate
+α, assuming we know the predator decay rate δ. To generate in silico the
+observation datasets, we numerically integrate Eq. ( 12)o v e rt h ei n t e r v a l
+from t=0t o t= 5 years (the initial conditions and parameters are provided
+in Supplementary Note 2) and sample the states every 0.25 years (resultingin 21 observed time points). We test our pipeline on a noiseless dataset(denoted with DS
+0.00), and on a dataset in which each time series is per-
+turbed with a zero-mean Gaussian nois e with a standard deviation equal to
+5% of its min-max variation (denoted with DS0.05). The pipeline is run
+independently on the two datasets. Ou r search space for the mechanistic
+parameter is ½α/C110/C02;α/C1102/C138,w h e r e αis the ground truth value used for
+generating the in silico observations.
+We run the pipeline assuming non-stiff con ﬁgurations, employing an
+explicit Runge-Kutta ODE solver50and the Interpolating Adjoint method23
+to compute adjoint sensitivity. Additio nally, the search space for the neural
+network architecture is restricted to shallow networks (at most 3 hiddenlayers) with tanh as the activation function. The tuned hyperparameters,
+together with the search spaces, are reported in Supplementary Table 3. Thedynamics predicted by the fully trained HNODE models are illustrated inFig.2, demonstrating the effective ﬁtting to the observation data points. The
+resulting αestimates are reported in Table 1.
+To assess the identi ﬁability of α, we analyze its projection onto the null
+subspace of H
+χ(Fig. 3). In both HNODE models, the norm of the projection
+exceeds δ, indicating the non-identi ﬁability of the mechanistic parameter.
+These projections consist of both αand neural network parameters, sug-
+gesting a compensation between the neural network and the mechanisticparameter. This aligns with our expectations, as the ﬁrst equation of Eq. ( 13)
+consists of a sum between a neural network and a mechanistic terminvolving α.I ti st h u sp l a u s i b l et h a tt h en e u r a ln e t w o r k ,w i t hi t sa p p r o x -
+imation properties, could adapt to changes in the mechanistic parameter α.
+In this simple scenario, we aim to de monstrate qualitatively that the
+projection of the mechanistic parameter onto the null subspace of H
+χ
+effectively embodies a co mpensation between the mechanistic parameter
+and the neural network. To achieve this, we analyze the model behaviorwhen the parameters of the trained HNODE model are perturbed along thedirection identi ﬁed by the projection (Fig. 4). The analysis reveals that,
+despite the sensitivity of the model dynamics to changes solely in theparameter α, moving along the projection allows a signi ﬁcant alteration of
+the value of αwithout impacting the o verall model dynamics.
+Such compensation hinders the identi ﬁability of α,a n do u rw o r k ﬂow
+terminates at this point. We conclude by showing that, in this scenario, theregularization of the cost function proposed by Yin et al.
+28does not ensure an
+accurate estimation of α. Their proposed regularization involves minimizing
+the contribution of the neural network in the HNODE model. Mathema-
+tically, this approach consists of addin g the following regularizer to the costhttps://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 5
+
+=== Page 6 ===
+function:
+RðθNNÞ¼X
+t2XjjNNð½y1ðtÞ;y2ðtÞ/C138;θNNÞjj2;
+jjðdy1
+dt;dy2
+dtÞjj2
+where Xis a grid of time points on the integration interval. To demonstrate
+that in this case this approach would not be effective, we sampled 50 values
+forαwithin the interval [0.013, 3] and t rained the HNODE model keeping α
+ﬁxed. This resulted in obtaining a neural network parameterization θNN
+αfor
+each α, yielding a pro ﬁle for the regularizer:
+R:α!RðθNN
+αÞ:
+Forα≤2, the value of αis not correlated with the ability of the HNODE
+model to ﬁt the data (Supplementary Fig. 1), suggesting that the compen-
+sation holds in this region. If the inc lusion of the regularizer enables the
+accurate estimation of α, the ground truth value αshould correspond to the
+minimum of the regularizer pro ﬁleR. However, our analysis indicates that
+this is not the case (Fig. 5). Therefore, in this scenario, using the regularizer
+would result in a biased estimation of the parameter.
+Cell apoptosis test case
+The second test case is based on a model for cell death in apoptosis29,w h i c h
+constitutes a core sub-network within t he signal transduction cascade that
+regulates programmed cell death. Thi s model is known for the structural
+and practical non-identi ﬁability of part of its parameters6.T h ee q u a t i o n sdeﬁning the model are as follows:
+dy1ðtÞ
+dt¼/C0k1y4y1þkd1y5
+dy2ðtÞ
+dt¼kd2y5/C0k3y2y3þkd3y6þkd4y6
+dy3ðtÞ
+dt¼/C0k3y2y3þkd3y6
+dy4ðtÞ
+dt¼kd4y6/C0k1y4y1þkd1y5/C0k5y7y4þkd5y8þkd2y5
+dy5ðtÞ
+dt¼/C0kd2y5þk1y4y1/C0kd1y5
+dy6ðtÞ
+dt¼/C0kd4y6þk3y2y3/C0kd3y6
+dy7ðtÞ
+dt¼/C0k5y7y4þkd5y8þkd6y8
+dy8ðtÞ
+dt¼k5y7y4/C0kd5y8/C0kd6y8:8
+>>>>>>>>>>>>>>>>><
+>>>>>>>>>>>>>>>>>:ð14ÞTable 1 | Lotka-Volterra, estimated values of the prey birth
+rate α
+Target Dataset Estimate
+1.3 DS0.00
+DS0.050.804
+0.744ab
+Fig. 3 | Identi ﬁability analysis of αin the Lotka-Volterra test case. Squared norm of
+the projections of the parameter αonto the null subspace of Hχfor the models trained on
+DS0.00andDS0.05(panels aandbrespectively). The total height of the bar corresponds to
+the squared norm of the projection, while the different components of the projection aredepicted in different colors. The red line indicates the threshold to determine the
+identi ﬁability of the parameter (0.05). Parameters with a squared norm of the projection
+exceeding this threshold are classi ﬁed as locally non-identi ﬁable.a
+b
+Fig. 2 | Dynamics predicted by the HNODE model in the Lotka-Volterra test case. The dynamics predicted by the HNODE model trained on DS0.00andDS0.05(shown in
+panels aandbrespectively) are compared with the original model. The points represent the observations of the system, divided into training and validation sets.https://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 6
+
+=== Page 7 ===
+In this context, we assume a lack of mechanistic knowledge about the entire
+equation related to y4. We selected this variable to maximize the challenge, as
+the corresponding equation contai ns the highest number of non-linear
+t e r m si nt h es y s t e m .O u ro b j e c t i v ei st oe s t i m a t ea l lt h ep a r a m e t e r so ft h emodel. We assume knowledge of the variables directly in ﬂuencing the
+dynamics of y
+4; thus, we model the unknown derivative of y4with the neural
+network:
+dy4ðtÞ
+dt¼NNð½y1;y4;y5;y6;y7;y8/C138;θNNÞ:As in Lotka-Volterra, we assume a search space for the mechanistic para-
+meters ranging from 10−2to 102times the ground tr uth value for each
+parameter. These ground truth values, derived from the values used by
+Aldridge et al.29, are speci ﬁed in Supplementary Note 6, together with an
+analysis of the stiffness of the ODE system.
+In the ﬁrst scenario, we assume that all the system variables are
+observable. The observations are gene rated by numerically integrating
+Eq. ( 14) from 0 to 16 hours, with the parameters and initial conditions
+outlined in Supplementary Note 6. The trajectory is sampled every0.8 hours, resulting in 21 observed time points. Similar to the previoustest case, we consider a dataset DS
+0.00without noise, and a dataset DS0.05
+in which each time series is perturbed with zero-mean Gaussian noise
+with a standard deviation equal to 5% of its min-max variation. In this
+test case, after observing the integration in the ﬁrst trials of the
+hyperparameter tuning, we man ually switched to stiff con ﬁgurations.
+These con ﬁgurations include utilizing the TRBDF251implicit Runge-
+Kutta ODE solver and the QuadratureAdjoint35method for adjoint
+sensitivity computation. Additiona lly, the neural network architecture
+search spaces are expanded to include a deeper neural network (up to 6hidden layers), with gelu as the activation function. The hyperpara-
+meters selected by the pipeline are reported in Supplementary Table 8,
+and the dynamics for y
+4,y5,y6,a n d y7predicted by the trained HNODE
+models are presented in Fig. 6(Supplementary Figs. 3 and 4 for the
+dynamics of all the variables). The trained HNODE model effectively
+ﬁts the data.
+With the trained HNODE models, we proceed to the identi ﬁability
+analysis and the CI estimations of the mechanistic parameters of the model(Table 2). Two of the model parameters, k
+d2andkd4, are classi ﬁed as
+identi ﬁable, and this is empirically con ﬁrmed by the accuracy of theira
+b
+Fig. 4 | Qualitative inspection of the compensation in the Lotka-Volterra
+test case. The dynamics predicted by the HNODE models trained on DS0.00and
+DS0.05(panels aandbrespectively) are compared with the dynamics obtainedperturbing the αvalue by 10% along the projection onto the null subspace of Hχ, and
+with the dynamics obtained perturbing solely αby 10%.
+Fig. 5 | Pro ﬁle of the regularizer in the Lotka-Volterra test case. The pro ﬁles of
+R(α) for the models trained on DS0.00andDS0.05are plotted in the interval [0, 3]. The
+vertical dashed line denotes the ground truth value of α.https://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 7
+
+=== Page 8 ===
+estimates (maximum relative error of 0 .38% when estimated on the dataset
+without noise and 5.08% on the dataset with noise).
+To understand why the other mechanistic parameters are classi ﬁed as
+not identi ﬁable, we analyze the components of the projections on the null
+subspace of Hχ. The analysis reveals the absence of neural network para-
+m e t e rc o m p o n e n t si nb o t ht h eH N O D Em o d e l s( F i g . 7for the model trained
+onDS0.00, Supplementary Fig. 2 for analog ous results obtained with the
+model trained on DS0.05). This implies that the parameter non-identi ﬁability
+is not caused by compensations due to the neural network. Notably, the
+projections of parameters k1andkd1show almost equal contributions from
+both the parameters, and the same holds for the parameters k3andkd3.T h i s
+suggests the existence of local compensations between k1andkd1,a sw e l la s
+between k3andkd3.
+To assess the existence of such compensations and to evaluate the
+performance of our approach with a larger number of identi ﬁable para-
+meters, we ﬁxkd1and k3to their ground truth values (36.0 h−1and
+24.48 cell ⋅h−1⋅10−5⋅molecules−1respectively29) and execute the pipeline.The selected hyperparameters are listed in Supplementary Table 9; the
+dynamics predicted by the HNODE models effectively ﬁt the experimental
+data (Supplementary Figs. 6 and 7). The results show that in this conditionthe identi ﬁability of k
+d1andkd3is restored, allowing for the estimation of
+four model parameters with low relative error (Table 3).
+T om i m i cm o r er e a l i s t i cc o n d i t i o ns in the second scenario, keeping kd1
+andk3ﬁxed to their ground truth values, we suppose that only the variables
+y5andy6are observable. We selected thes e variables because, within the
+mechanistic model, they represent the minimal subset that maximizes thenumber of identi ﬁable parameters (Supplementary Note 16). The in silico
+observations are generated as in the ﬁrst scenario. However, since only 2 out
+of 8 model variables are observable, tra jectories are sampled every 0.4 hour
+to maintain a comparable amount of i nformation in the training set,
+resulting in 42 time points. The hyper parameters tuned in the pipeline are
+listed in Supplementary Table 10, and the dynamics of the observablevariables predicted by the HNODE models are shown in SupplementaryFigs. 9 and 10.a
+b
+Fig. 6 | Dynamics predicted by the HNODE model in the cell apoptosis test case,
+ﬁrst scenario. The dynamics of y4,y5,y6, and y7predicted by the HNODE model
+trained on DS0.00andDS0.05(shown in panels aandbrespectively) are comparedwith the original model. The points represent the observations of the system, divided
+into training and validation sets.https://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 8
+
+=== Page 9 ===
+In this scenario kd2,kd3,a n d kd4are still identi ﬁable (Table 4), and
+can be accurately estimated (maxi mum relative error of 0.17% when
+estimated on the dataset without noise, 11.64% on the dataset withnoise), whereas k
+1is not. The analysis of the components of the
+projections of the mechanistic parameters onto the null space of Hχ
+suggests that the non-identi ﬁability of k1in this scenario is causedby a compensation between k1and the neural network (Fig. 8and
+Supplementary Fig. 8).
+Yeast glycolysis model
+The last test case is based on a model of oscillations in yeast glycolysis30,
+which has been frequently employ ed as a benchmark for inference inFig. 7 | Identi ﬁability analysis of mechanistic
+parameters in the cell apoptosis test case, ﬁrst
+scenario ( DS0.00).Squared norm of the projections
+of the mechanistic parameters onto the null sub-
+space of Hχfor the model trained on DS0.00. The total
+height of the bar corresponds to the squared norm ofthe projection, while the different components of theprojection are depicted in different colors. The red
+line indicates the threshold to determine the iden-
+tiﬁability of the parameter (0.05). Parameters with a
+squared norm of the projection exceeding this
+threshold are classi ﬁed as locally non-identi ﬁable.Table 2 | Cell apoptosis, ﬁrst scenario - estimated values of mechanistic parameters
+Par. Target Dataset Estimate Rel. err. Id. CI
+k1 9.61 ⋅10−1DS0.00
+DS0.052.76 ⋅101
+5.28 ⋅1012768.72%
+5397.02%
+kd1 3.60 ⋅101DS0.00
+DS0.051.82 ⋅103
+3.45 ⋅1034963.72%
+9496.00%
+kd2 2.88 ⋅101DS0.00
+DS0.052.87 ⋅101
+2.73 ⋅1010.38%
+5.08%✓
+✓(2.84 ⋅101, 2.90 ⋅101)
+(2.43 ⋅101, 3.04 ⋅101)
+k3 2.45 ⋅101DS0.00
+DS0.054.72 ⋅102
+1.42 ⋅1031827.91%
+5693.37%
+kd3 1.80 ⋅102DS0.00
+DS0.053.53 ⋅103
+1.22 ⋅1041862.51%
+6675.29%
+kd4 3.60 DS0.00
+DS0.053.59
+3.690.25%
+2.61%✓
+✓(3.55, 3.63)
+(3.30, 4.08)
+k5 2.52 ⋅104DS0.00
+DS0.051.17 ⋅106
+4.36 ⋅1034562.35%
+82.68%
+kd5 6.01 ⋅10−2DS0.00
+DS0.056.52 ⋅10−1
+6.01984.49%
+9900.00%
+kd6 6.01 ⋅10−1DS0.00
+DS0.054.56 ⋅101
+6.01 ⋅1017489.27%
+9900.00%
+The symbol ✓denotes the identi ﬁable parameters according to our method. CIs for the model trained on DS0.00are computed assuming an uncertainty equal to 0.5% of the min-max of each time series.
+Table 3 | Cell apoptosis, ﬁrst scenario, assuming kd1andk3ﬁxed to their ground truth values - estimated values of mechanistic
+parameters
+Par. Target Dataset Estimate Rel. err. Id. CI
+k1 9.61 ⋅10−1DS0.00
+DS0.059.60 ⋅10−1
+9.75 ⋅10−10.14%
+1.42%✓
+✓(9.47 ⋅10−1, 9.73 ⋅10−1)
+(8.45 ⋅10−1, 1.10)
+kd2 2.88 ⋅101DS0.00
+DS0.052.87 ⋅101
+2.72 ⋅1010.29%
+5.53%✓
+✓(2.84 ⋅101, 2.90 ⋅101)
+(2.45 ⋅101, 2.99 ⋅101)
+kd3 1.80 ⋅102DS0.00
+DS0.051.80 ⋅102
+2.03 ⋅1020.04%
+12.88%✓
+✓(1.78 ⋅102, 1.83 ⋅102)
+(1.77 ⋅102, 2.29 ⋅102)
+kd4 3.60 DS0.00
+DS0.053.60
+3.670.08%
+2.05%✓
+✓(3.56, 3.63)
+(3.30, 4.05)
+k5 2.52 ⋅104DS0.00
+DS0.051.46 ⋅105
+3.98 ⋅105479.74%
+1481.24%
+kd5 6.01 ⋅10−2DS0.00
+DS0.059.64 ⋅10−1
+6.01 ⋅10−41503.46%
+99.00%
+kd6 6.01 ⋅10−1DS0.00
+DS0.052.91 ⋅101
+6.01 ⋅10−34742.70%
+99.00%
+The symbol ✓denotes the identi ﬁable parameters according to our method. CIs for the model trained on DS0.00are computed assuming an uncertainty equal to 0.5% of the min-max of each time series.https://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 9
+
+=== Page 10 ===
+computational systems biology6,52. The model is described by the following
+system of ODE:
+dy1ðtÞ
+dt¼J0/C0k1y1y6
+1þðy6=K1Þq
+dy2ðtÞ
+dt¼2k1y1y6
+1þðy6=K1Þq/C0k2y2ðN/C0y5Þ/C0k6y2y5
+dy3ðtÞ
+dt¼k2y2ðN/C0y5Þ/C0k3y3ðA/C0y6Þ
+dy4ðtÞ
+dt¼k3y3ðA/C0y6Þ/C0k4y4y5/C0κðy4/C0y7Þ
+dy5ðtÞ
+dt¼k2y2ðN/C0y5Þ/C0k4y4y5/C0k6y2y5
+dy6ðtÞ
+dt¼/C02k1y1y6
+1þðy6=K1Þqþ2k3y3ðA/C0y6Þ/C0k5y6
+dy7ðtÞ
+dt¼ψκðy4/C0y7Þ/C0ky7:8
+>>>>>>>>>>>>>>><
+>>>>>>>>>>>>>>>:ð15Þ
+In this test case, we assume a complete absence of mechanistic knowledge
+concerning y
+1. This variable has been chosen to maximize the challenge, as its
+nonlinear oscillatory dynamics have proven to be particularly dif ﬁcult for
+automatic identi ﬁcation of dynamical systems53. Our objective is to estimate
+all the parameters of the systems (except J0,w h i c ha p p e a r so n l yi nt h e
+derivative of y1, and therefore is not present in the HNODE model). As in the
+cell apoptosis case, we assume a kno wledge of the variables directly in ﬂu-
+encing the dynamics of y1, thus the equation of y1will be approximated by a
+neural network depending solely on y1andy6. Given the greater number of
+system parameters compared to the ﬁrst two test cases, we assume a search
+space ranging from 10−1to 101times the ground truth value for each
+mechanistic parameter. T hese ground truth values, derived from the values
+employed by Ruoff et al.30,a r es p e c i ﬁed in Section Supplementary Note 18.
+In the ﬁrst scenario, we assume that all system variables are observable.
+The observations are generated by numerically integrating Eq. ( 15)f r o m0t o
+6 min, using the parameters and initial conditions speci ﬁed inSupplementary Note 18. The trajectory is sampled every 0.8 min (21
+observation time points). We consi der observation datasets with and
+without noise, labeled as DS0.00andDS0.05respectively. The noise dataset
+(DS0.05) is generated as in the two previous test cases. We execute the
+pipeline, switching to stiff con ﬁgurations (as describe d for the cell apoptosis
+case) after observing the ﬁrst trials of the initial step. The tuned hyper-
+parameters are listed in Supplementary Table 17. The trained HNODEmodels ﬁt the observations (Fig. 9for the dynamics of the variables y
+1andy2,
+Supplementary Figs. 11 and 12 for all the model variables).
+In the noiseless case, the pipeline assesses the identi ﬁability of all the
+parameters, whereas, in the presence of noise, k1is classi ﬁed as not identi-
+ﬁable. By comparing the norm of the projections of the mechanistic para-
+meters onto the null space of Hχ(Supplementary Fig. 13), we can notice that
+also when estimated on DS0.00, the norm of the k1projection falls just below
+our identi ﬁability threshold. In both cases, the projections of k1are com-
+posed by k1itself and by the neural network parameters, thus embodying a
+potential compensation between k1and the neural network. This is plausible
+since the parameter k1in the HNODE model directly multiplies the variable
+y1parameterized by the neural network.
+The identi ﬁable parameters are estimated with a maximum relative
+error of 1.94% (Table 5)o n DS0.00, with the ground truth value of the
+parameter always falling within th e estimated CIs. When estimated on
+DS0.05, the maximum relative error of the identi ﬁable parameter estimates is
+52.60%, with the CIs containing the relative ground truth value for 11 out of12 parameters. Given the challenge of d iscerning whether the relative error
+of parameter estimates originates from the lack of mechanistic knowledge or
+from the noise in the observation dataset, we attempted to estimate all
+parameter values using the fully mechanistic model on dataset DS
+0.05.T h e
+outcomes indicate that the mean and maximum relative errors obtained
+with our pipeline are consistent with what is obtained with the fullymechanistic model (Supplementary Note 24).Fig. 8 | Identi ﬁability analysis of mechanistic
+parameters in the cell apoptosis test case, second
+scenario ( DS0.00).Squared norm of the projections
+of the mechanistic parameters onto the null sub-space of H
+χfor the model trained on DS0.00. The total
+height of the bar corresponds to the squared norm of
+the projection, while the different components of theprojection are depicted in different colors. The redline indicates the threshold to determine the iden-
+tiﬁability of the parameter (0.05). Parameters with a
+squared norm of the projection exceeding thisthreshold are classi ﬁed as locally non-identi ﬁable.Table 4 | Cell apoptosis, second scenario - estimated values of mechanistic parameters
+Par. Target Dataset Estimate Rel. err. Id. CI
+k1 9.61 ⋅10−1DS0.00
+DS0.051.32
+1.1837.32%
+23.06%
+kd2 2.88 ⋅101DS0.00
+DS0.052.88 ⋅101
+2.95 ⋅1010.16%
+2.60%✓
+✓(2.45 ⋅101, 3.32 ⋅101)
+(−6.86 ⋅101, 1.28 ⋅102)
+kd3 1.80 ⋅102DS0.00
+DS0.051.80 ⋅102
+2.01 ⋅1020.17%
+11.64%✓
+✓(1.76 ⋅102, 1.85 ⋅102)
+(1.60 ⋅102, 2.42 ⋅102)
+kd4 3.60 DS0.00
+DS0.053.60
+3.900.03%
+8.22%✓
+✓(3.56, 3.64)
+(3.42, 4.37)
+k5 2.52 ⋅104DS0.00
+DS0.051.79 ⋅106
+2.62 ⋅1037012.35%
+89.59%
+kd5 6.01 ⋅10−2DS0.00
+DS0.056.01 ⋅10−4
+4.9399.00%
+8095.41%
+kd6 6.01 ⋅10−1DS0.00
+DS0.056.01 ⋅10−3
+6.01 ⋅10199.00%
+9900.00%
+The symbol ✓denotes the identi ﬁable parameters according to our method. CIs for the model trained on DS0.00are computed assuming an uncertainty equal to 0.5% of the min-max of each time series.https://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 10
+
+=== Page 11 ===
+In the second scenario, we assume that only the variables y5andy6
+are observable. We chose these variab les because, in the original model,
+all parameters are identi ﬁable when y5andy6are observed6. Following a
+consistent approach with the previou s test case, the in silico observa-
+tions are generated as in the ﬁrst scenario, with the sampling frequency
+halved to 0.4 minutes, resulting in 42 observed time points. The pipelineis run analogously to the ﬁrst scenario. The tuned hyperparameters
+are listed in Supplementary Table 1 8, and the dynamics predicted by
+the HNODE model (Supplementary Figs. 14 and 15) ﬁtt h e
+experimental data.
+Similar to the ﬁrst scenario, the results regarding parameter
+identi ﬁability vary when the parameters are estimated on DS0.00anda
+b
+Fig. 9 | Dynamics predicted by the HNODE model in the yeast glycolysis test case,
+ﬁrst scenario. The dynamics of y1andy2predicted by the HNODE model trained on
+DS0.00andDS0.05(shown in panels aandbrespectively) are compared with theoriginal model. The points represent the observations of the system, divided into
+training and validation sets.
+Table 5 | Yeast glycolysis, ﬁrst scenario: estimated values of mechanistic parameters
+Par. Target Dataset Estimate Rel. err. Id. CI
+k1 1.00 ⋅102DS0.00
+DS0.051.02 ⋅102
+1.25 ⋅1021.94%
+25.43%✓ (8.46 ⋅101, 1.19 ⋅102)
+K1 5.20 ⋅10−1DS0.00
+DS0.055.25 ⋅10−1
+4.65 ⋅10−10.95%
+10.61%✓
+✓(4.86 ⋅10−1, 5.67 ⋅10−1)
+(1.58 ⋅10−1, 1.37)
+q 4.00 DS0.00
+DS0.054.04
+3.791.02%
+5.33%✓
+✓(3.87, 4.21)
+(2.16, 5.42)
+k2 6.00 DS0.00
+DS0.055.96
+9.160.68%
+52.60%✓
+✓(4.68, 7.24)
+(9.16 ⋅10−1, 1.99 ⋅101)
+N 1.00 DS0.00
+DS0.051.00
+7.04 ⋅10−10.13%
+29.61%✓
+✓(8.20 ⋅10−1, 1.18)
+(1.0 ⋅10−1, 1.34)
+k6 1.20 ⋅101DS0.00
+DS0.051.19 ⋅101
+9.840.57%
+17.97%✓
+✓(1.16 ⋅101, 1.23 ⋅101)
+(7.11, 1.26 ⋅101)
+k3 1.60 ⋅101DS0.00
+DS0.051.59 ⋅101
+1.38 ⋅1010.59%
+13.76%✓
+✓(1.56 ⋅101, 1.62 ⋅101)
+(1.12 ⋅101, 1.64 ⋅101)
+A 4.00 DS0.00
+DS0.054.00
+4.430.02%
+10.69%✓
+✓(3.98, 4.02)
+(4.21, 4.65)
+k4 1.00 ⋅102DS0.00
+DS0.059.94 ⋅101
+1.02 ⋅1020.64%
+1.75%✓
+✓(9.73 ⋅101, 1.01 ⋅102)
+(8.50 ⋅101, 1.18 ⋅102)
+κ 1.30 ⋅101DS0.00
+DS0.051.29 ⋅101
+1.15 ⋅1010.49%
+11.84%✓
+✓(1.26 ⋅101, 1.33 ⋅101)
+(8.98, 1.39 ⋅101)
+k5 1.28 DS0.00
+DS0.051.28
+1.310.03%
+2.40%✓
+✓(1.26, 1.30)
+(1.17, 1.45)
+ψ 1.00 ⋅10−1DS0.00
+DS0.051.00 ⋅10−1
+1.31 ⋅10−10.09%
+30.55%✓
+✓(9.55 ⋅10−2, 1.05 ⋅10−1)
+(8.13 ⋅10−2, 1.80 ⋅10−1)
+k 1.80 DS0.00
+DS0.051.80
+2.080.02%
+15.78%✓
+✓(1.76, 1.84)
+(1.68, 2.48)
+The symbol ✓denotes the identi ﬁable parameters according to our method. CIs for the model trained on DS0.00are computed assuming an uncertainty equal to 0.5% of the min-max of each time series.https://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 11
+
+=== Page 12 ===
+DS0.05(Table 6). When the parameters are estimated using the dataset
+without noise, the pipeline classi ﬁes six parameters as identi ﬁable.
+However, when estimated using DS0.05,t h ep a r a m e t e r s K1and k4,
+classi ﬁed as identi ﬁable on DS0.00, are classi ﬁed as non-identi ﬁable. By
+analyzing the projections of the par ameters onto the null subspace of Hχ
+(Fig. 10), we can notice that K1is classi ﬁed as non-identi ﬁable on DS0.05,
+but its projection falls just above the threshold. Conversely, parameter
+k4is classi ﬁed as identi ﬁable on DS0.00, yet its projection falls just below
+the threshold. Interestingly, on b oth datasets, the neural network
+parameters signi ﬁcantly contribute to the projection of nearly all non-identi ﬁable mechanistic parameters, except for k2andN. This obser-
+vation is consistent with our ﬁndings on the cell apoptosis test case:
+when the unknown variable y1is not observable, the neural network can
+compensate for changes in mechanis tic parameters, al so not directly
+linked to y1in the HNODE model.
+The identi ﬁable parameters are estimated with a maximum relative
+error of 9.26% on DS0.00.O nt h ed a t a s e tw i t he r r o r DS0.05the identi ﬁable
+parameters are estimated with a maximum relative error of 11.05%. In bothcases, the ground truth value consistently falls within the con ﬁdence interval
+estimated.
+Table 6 | Yeast glycolysis, second scenario: estimated values of mechanistic parameters
+Par. Target Dataset Estimate Rel. err. Id. CI
+k1 1.00 ⋅102DS0.00
+DS0.055.42 ⋅101
+7.02 ⋅10145.77%
+29.84%
+K1 5.20 ⋅10−1DS0.00
+DS0.055.20 ⋅10−1
+7.91 ⋅10−10.04%
+52.12%✓ (2.50 ⋅10−1, 1.08)
+q 4.00 DS0.00
+DS0.053.63
+4.449.26%
+11.05%✓
+✓(1.49, 5.76)
+(9.45 ⋅10−1, 7.94)
+k2 6.00 DS0.00
+DS0.051.04 ⋅101
+2.5274.00%
+57.96%
+N 1.00 DS0.00
+DS0.056.61 ⋅10−1
+2.2633.94%
+126.02%
+k6 1.20 ⋅101DS0.00
+DS0.051.17 ⋅101
+1.07 ⋅1012.49%
+10.74%✓
+✓(9.58, 1.38 ⋅101)
+(4.71, 1.67 ⋅101)
+k3 1.60 ⋅101DS0.00
+DS0.051.63 ⋅101
+5.98 ⋅1011.61%
+273.76%✓ (1.29 ⋅101, 1.96 ⋅101)
+A 4.00 DS0.00
+DS0.054.00
+3.790.00%
+5.27%✓
+✓(3.90, 4.10)
+(3.39, 4.19)
+k4 1.00 ⋅102DS0.00
+DS0.051.06 ⋅102
+1.94 ⋅1026.26%
+93.70%
+κ 1.30 ⋅101DS0.00
+DS0.051.19 ⋅101
+4.35 ⋅1018.83%
+234.70%
+k5 1.28 DS0.00
+DS0.051.33
+1.353.74%
+5.48%✓
+✓(1.25, 1.41)
+(1.05, 1.65)
+ψ 1.00 ⋅10−1DS0.00
+DS0.051.17 ⋅10−1
+3.97 ⋅10−116.89%
+297.04%
+k 1.80 DS0.00
+DS0.052.21
+6.6523.02%
+269.66%
+The symbol ✓denotes the identi ﬁable parameters according to our method. CIs for the model trained on DS0.00are computed assuming an uncertainty equal to 0.5% of the min-max of each time series.
+Fig. 10 | Identi ﬁability analysis of mechanistic
+parameters in the yeast glycolysis test case, second
+scenario. Squared norm of the projections of the
+mechanistic parameters onto the null subspace of Hχ
+for the model trained on DS0.00andDS0.05(panels
+aandbrespectively). The total height of the bar
+corresponds to the squared norm of the projection,
+while the different components of the projection aredepicted in different colors. The red line indicatesthe threshold to determine the identi ﬁability of the
+parameter (0.05). Parameters with a squared norm
+of the projection exceeding this threshold are clas-siﬁed as locally non-identi ﬁable.a
+bhttps://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 12
+
+=== Page 13 ===
+Discussion
+We have introduced a pipeline for estimating mechanistic parameters and
+discussing their local identi ﬁability within an incompletely speci ﬁed
+mechanistic model. This work ﬂow leverages the HNODE framework to
+embed the original model into a larger model, in which the unknown
+portions of the system are describe d by neural networks. The primary
+novelties of our work lie in our approa ch to conducting a global exploration
+of the mechanistic parameter search space and our method to evaluate theparameter identi ﬁability. First, we include the initial values of mechanistic
+parameters into the hyperparameters to be tuned. This involves combiningBayesian Optimization with gradient-based search, with the goal of globallyexploring the parameter search space. Second, to assess the local identi ﬁa-
+bility at-a-point of the paramete rs, we extend a classical approach for
+identi ﬁability analysis in mechanistic models. Notably, identi ﬁability ana-
+lysis for HNODE models has not been previously investigated in the lit-
+erature, which has predominantly focused on ensuring the identi ﬁability of
+the mechanistic component through regularization of the training costfunction
+26,28.
+The primary limitations of our work include: (1) the assumption of
+having access to initial conditions for al l state variables within systems, even
+under partial observability; (2) the computational cost associated with thehyperparameter tuning phase; (3) the intrinsic local nature of identi ﬁability
+analysis; (4) the arbitrary selection of hyperparameters, ϵandδ,f o ri d e n -
+tiﬁability analysis; and (5) the methodo logy employed for estimating con-
+ﬁdence intervals. All these limitations are discussed in the following
+paragraphs.
+We assume knowledge of the initial states of all system variables,
+possibly with noise, even when only a su bset of them is observable. In real-
+world scenarios, this assumption may n ot always be valid. While in certain
+cases, scientists have concrete physical insights into the system initial state,in others, initial concentrations need to be estimated alongside the para-
+meters. Notably, this limitation is shared by other approaches to systemidenti ﬁcation
+6.
+The initial phase of hyperparameter tuning and exploration of the
+mechanistic search space is the most c omputationally expensive step within
+the pipeline (for a discussion of the com putational times required to run the
+pipeline across the different test cases, see Supplementary Note 26). We
+employed the TPE algorithm, and this a lgorithm has proven effective even
+in high-dimensional parameter search spaces, as evidenced by the YeastGlycolysis test case, featuring 13 mechanistic parameters and 6 hyper-parameters. However, employing the TPE algorithm entails sequentiallyrepeating the training of the candidate HNODE model, each time with alimited number of epochs. It is important to note that the problem ofhyperparameter tuning is a long-standing problem and different approa-ches have been proposed for this goal
+54. These approaches range from
+random and grid search to Bayesian optimization and genetic algorithms: inthis work, we did not conduct a comparative analysis of TPE performanceagainst other hyperparameter tuning methods.
+The local nature of our identi ﬁability analysis implies that it might
+overlook parameter non-identi ﬁability if distinct parameterizations leading
+to similar model simulations are isol ated in the search space, as separate
+local minima of the cost function.
+The hyperparameters ϵandδused for identi ﬁability analysis, although
+related, have different m eanings. The threshold ϵintuitively distinguishes
+what we assume to be negligible changes in the HNODE model behaviorfrom non-negligible changes. This hyperparameter is also present in existingHessian-based methods for identi ﬁability analysis of mechanistic models
+42.
+The threshold δ, introduced in our method, intuitively quanti ﬁes how much
+it is possible to perturb the mechanistic p arameter with a negligible effect on
+the model simulations. δh a sb e e ni n t r o d u c e dt oo v e r c o m et h el i m i t a t i o no f
+the dominant parameter approach in the context of HNODE. Existing
+Hessian-based methods for identi ﬁability analysis of mechanistic models42
+primarily categorize parameters as non-identi ﬁable if they have the highest
+projection (in absolute value) onto eigenvectors associated with null
+eigenvalues. We decided against using this approach because we observedempirically that in HNODE models when compensation occurs between the
+neural network and mechanistic parameters, the dominant parameter in thenull direction is typically a neural n etwork parameter. Thus, considering
+only the dominant parameter, we risk overlooking the role of the
+mechanistic parameter. In our test cases, we employed ϵ=1 0
+−5andδ= 0.05.
+The results of the ﬁrst two test cases are quite robust to the choice of ϵandδ
+(Supplementary Notes 4 and 17). However, the third test case is morecomplex: here changes in ϵandδwould lead to different results for certain
+parameters (Supplementary Note 25).
+Theﬁfth limitation of our work is the CI estimation. The FIM-based
+approach we employed ha s several limitations
+55. By using it, we implicitly
+assume the unbiasedness and normality of our estimators47.A d d i t i o n a l l y ,
+since our estimators are not linear, the CIs estimated are only lower boundsof the real CIs
+47. We opted for this method because of its computational
+advantages over other methods, such as likelihood pro ﬁling or
+bootstrapping-based methods13,55, which would necessitate multiple train-
+ings of the HNODE model.
+We tested our pipeline in various in silico scenarios of increasing
+complexity, assuming a partial lack of mechanistic knowledge in threemodels acknowledged as benchmarks in computational biology. In each testcase, we replace either a portion or an entire equation of the system with aneural network, creating a hybrid model in which the neural networkinﬂuences the dynamics of all system variables (as detailed in Supplemen-
+tary Note 27). These tests encompass vari ous conditions, including different
+levels of noise in the training data and d ifferent assumptions regarding the
+observability of the system variables. Across all the examined scenarios, our
+pipeline consistently enabled the analysis of parameter identi ﬁability and
+the accurate estimation of identi ﬁable parameters.
+Despite its limitations, the proposed work ﬂow represents an initial step
+toward adapting traditional methods utilized in entirely mechanistic modelsto the HNODE modeling scenario. In future works, we aim to address thelimitations of the pipeline. Firstly, we w ill consider different state-of-the-art
+approaches for hyperparameter t uning, such as Gaussian process
+56,
+evolutionary54, and genetic approaches57, comparing their performances
+with TPE. Secondly, we plan to expand the number of test cases to derive aless arbitrary choice of the thresholds ϵandδ, which could vary based on the
+number of parameters in the HNODE model. Thirdly, we intend to com-
+pare the FIM-based method for estimating CIs with other approaches that
+have demonstrated greater reliability in completely mechanistic models, asdescribed by Kreutz et al.
+13and Joshi et al.55.
+Methods
+Algorithmic setup
+All the results presented for the test cases described in the Results Sectionhave been obtained employing the following hyperparameters. The obser-vation data point datasets are partitio ned into training and validation sets
+with an 8:2 ratio. The ﬁrst stage of the hyperparameter tuning consists in 500
+iterations of TPE: in each trial, the HNODE model is trained for 500 epochs
+using Adam optimizer. In the second stage of the hyperparameter tuning
+(performed only on datasets with noise) the model is trained for 2000epochs in each trial. The comprehensive training of the HNODE modelencompasses 10000 epochs utilizin g the Adam optimizer. Subsequent
+reﬁnement involves the application of the L-BFGS algorithm until con-
+vergence, with a maximum of 5000 epoc hs (performed only on noiseless
+datasets). The optimized mechanistic parameters are clipped to the lower orupper bounds of the parameter search spaces when they exceed those limits.Each model is trained with 10 initializations of the neural network, withweights initialized using Glorot Uniform
+58. The training resulting in the
+lowest validation cost is then selected. The identi ﬁability analysis is per-
+formed using the thresholds ϵ=1 0−5andδ= 0.05; a discussion regarding
+these thresholds is provided in the Discussion Section.
+Implementation
+All the computations have been run on a Debian-based Linux cluster node,
+with two 24-core Xeon(R) CPU X5650 CPUs and 250 GB of RAM. The codehttps://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 13
+
+=== Page 14 ===
+is implemented in Julia v1.9.159, using the SCiML environment23, a software
+suite for modeling and simulation that also incorporates machine learningalgorithms. The hyperparameter tuning has been performed with Optuna
+60.
+Data availability
+No experimental data was used as part of this study. The in silico generateddatasets are available at https://github.com/co sbi-research/HNODECB/
+tree/main/datasets .
+Code availability
+The scripts to reproduce the results are available at https://github.com/
+cosbi-research/HNODECB .
+Received: 9 July 2024; Accepted: 21 October 2024;
+References
+1. Motta, S. & Pappalardo, F. Mathematical modeling of biological
+systems. Brief. Bioinforma. 14, 411 –422 (2013).
+2. Mogilner, A., Wollman, R. & Marshall, W. F. Quantitative modeling in
+cell biology: what is it good for? Dev. Cell 11, 279 –287 (2006).
+3. Gábor, A. & Banga, J. R. Robust and ef ﬁcient parameter estimation in
+dynamic models of biological systems. BMC Syst. Biol. 9,1–25 (2015).
+4. Baker, R. E., Pena, J.-M., Jayamohan, J. & Jérusalem, A. Mechanistic
+models versus machine learning, a ﬁght worth ﬁghting for the
+biological community? Biol. Lett. 14, 20170660 (2018).
+5. Cornish-Bowden, A.Fundamentals of enzyme kinetics (John Wiley &
+Sons, 2013).
+6. Yazdani, A., Lu, L., Raissi, M. & Karniadakis, G. E. Systems biology
+informed deep learning for inferring parameters and hidden dynamics.PLoS Comput. Biol. 16, e1007575 (2020).
+7. Sun, J., Garibaldi, J. M. & Hodgman, C. Parameter estimation using
+metaheuristics in systems biology: a comprehensive review. IEEE/
+ACM Trans. Comput. Biol. Bioinforma. 9, 185 –202 (2011).
+8. Mendes, P. & Kell, D. Non-linear optimization of biochemical
+pathways: applications to metabolic engineering and parameterestimation. Bioinforma. (Oxf., Engl.) 14, 869 –883 (1998).
+9. Reali, F., Priami, C. & Marchetti, L. Optimization algorithms for
+computational systems biology. Front. Appl. Math. Stat. 3, 6 (2017).
+10. Liepe, J. et al. A framework for parameter estimation and model
+selection from experimental data in systems biology usingapproximate bayesian computation. Nat. Protoc. 9, 439 –456 (2014).
+11. Linden, N. J., Kramer, B. & Rangamani, P. Bayesian parameter
+estimation for dynamical models in systems biology. PLoS Comput.
+Biol. 18, e1010651 (2022).
+12. Meskin, N., Nounou, H., Nounou, M., Datta, A. & Dougherty, E. R.
+Parameter estimation of biological phenomena modeled by s-systems: an extended kalman ﬁlter approach. In 2011 50th IEEE
+Conference on Decision and Control and European Control
+Conference , 4424 –4429 (IEEE, 2011).
+13. Kreutz, C., Raue, A., Kaschek, D. & Timmer, J. Pro ﬁle likelihood in
+systems biology. FEBS J. 280, 2564 –2571 (2013).
+14. Anstett-Collin, F., Denis-Vidal, L. & Millérioux, G. A priori identi ﬁability:
+an overview on de ﬁnitions and approaches. Annu. Rev. Control 50,
+139
+–149 (2020).
+15. Lam, N. N., Docherty, P. D. & Murray, R. Practical identi ﬁability of
+parametrised models: a review of bene ﬁts and limitations of various
+approaches. Math. Comput. Simul. 199, 202 –216 (2022).
+16. Yeo, H. C. & Selvarajoo, K. Machine learning alternative to systems biology
+should not solely depend on data. Brief. Bioinf. 23, bbac436 (2022).
+17. Engelhardt, B., Fr őhlich, H. & Kschischo, M. Learning (from) the errors
+of a systems biology model. Sci. Rep. 6, 20772 (2016).
+18. Zou, B. J., Levine, M. E., Zaharieva, D. P., Johari, R. & Fox, E. B. Hybrid
+square neural ode causal modeling. arXiv preprint arXiv:2402.17233(2024).19. Lanzieri, D., Lanusse, F. & Starck, J.-L. Hybrid physical-neural odes
+for fast n-body simulations. arXiv preprint arXiv:2207.05509 (2022).
+20. Grigorian, G., George, S. V., Lishak, S., Shipley, R. J. & Arridge, S. A
+hybrid neural ordinary differential equation model of the
+cardiovascular system. J. R. Soc. Interface 21, 20230710 (2024).
+21. Alber, M. et al. Integrating machine learning and multiscale modeling-
+perspectives, challenges, and opportunities in the biological,biomedical, and behavioral sciences. NPJ Digital Med. 2, 115 (2019).
+22. Zhang, T. et al. Two heads are better than one: current landscape of
+integrating qsp and machine learning: an isop qsp sig white paper bythe working group on the integration of quantitative systemspharmacology and machine learning. J. Pharmacokinetics
+Pharmacodynamics 49,5–18 (2022).
+23. Rackauckas, C. et al. Universal differential equations for scienti ﬁc
+machine learning. arXiv preprint arXiv:2001.04385 (2020).
+24. Bräm, D. S., Nahum, U., Schropp, J., P ﬁster, M. & Koch, G. Low-
+dimensional neural odes and their application in pharmacokinetics.Journal of Pharmacokinetics and Pharmacodynamics 1 –18 (2023).
+25. Valderrama, D., Ponce-Bobadilla, A. V., Mensing, S., Fröhlich, H. &
+Stodtmann, S. Integrating machine learning with pharmacokineticmodels: Bene ﬁts of scienti ﬁc machine learning in adding neural
+networks components to existing pk models. CPT: Pharmacometrics& Systems Pharmacology (2023).
+26. Takeishi, N. & Kalousis, A. Deep grey-box modeling with adaptive
+data-driven models toward trustworthy estimation of theory-drivenmodels. In International Conference on Arti ﬁcial Intelligence and
+Statistics , 4089 –4100 (PMLR, 2023).
+27. Kidger, P. On neural differential equations. arXiv preprint
+arXiv:2202.02435 (2022).
+28. Yin, Y. et al. Augmenting physical models with deep networks for complex
+dynamics forecasting. J. Stat. Mech.: Theory Exp. 2021 , 124012 (2021).
+29. Aldridge, B. B., Haller, G., Sorger, P. K. & Lauffenburger, D. A. Direct
+lyapunov exponent analysis enables parametric study of transientsignalling governing cell behaviour. IEE Proc. -Syst. Biol. 153,
+425 –432 (2006).
+30. Ruoff, P., Christensen, M. K., Wolf, J. & Heinrich, R. Temperature
+dependency and temperature compensation in a model of yeast
+glycolytic oscillations. Biophys. Chem. 106, 179 –192 (2003).
+31. Chen, R. T., Rubanova, Y., Bettencourt, J. & Duvenaud, D. K. Neural
+ordinary differential equations. Advances in neural informationprocessing systems 31
+(2018).
+32. Errico, R. M. What is an adjoint model? Bull. Am. Meteorological Soc.
+78, 2577 –2592 (1997).
+33. Allaire, G. A review of adjoint methods for sensitivity analysis,
+uncertainty quanti ﬁcation and optimization in numerical codes. Ing.
+énieurs de. l ’Automob. 836,3 3 –36 (2015).
+34. Ghosh, A., Behl, H., Dupont, E., Torr, P. & Namboodiri, V. Steer: Simple
+temporal regularization for neural ode. Adv. Neural Inf. Process. Syst.
+33, 14831 –14843 (2020).
+35. Kim, S., Ji, W., Deng, S., Ma, Y. & Rackauckas, C. Stiff neural ordinary
+differential equations. Chaos: Interdiscip. J. Nonlinear Sci. 31, 093122
+(2021).
+36. Turan, E. M. & Jäschke, J. Multiple shooting for training neural differential
+equations on time series. IEEE Control Syst. Lett. 6, 1897 –1902 (2021).
+37. Kingma, D. P. & Ba, J. Adam: A method for stochastic optimization.
+arXiv preprint arXiv:1412.6980 (2014).
+38. Liu, D. C. & Nocedal, J. On the limited memory bfgs method for large
+scale optimization. Math. Program. 45, 503 –528 (1989).
+39. Gao, Y., Yu, T. & Li, J. Bayesian optimization with local search. In
+Machine Learning, Optimization, and Data Science: 6th International
+Conference, LOD 2020, Siena, Italy, July 19 –23, 2020, Revised
+Selected Papers, Part II 6 , 350 –361 (Springer, 2020).
+40. Bergstra, J., Bardenet, R., Bengio, Y. & Kégl, B. Algorithms for hyper-
+parameter optimization. Advances in neural information processingsystems 24(2011).https://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 14
+
+=== Page 15 ===
+41. Falkner, S., Klein, A. & Hutter, F. Bohb: Robust and ef ﬁcient
+hyperparameter optimization at scale. In International conference on
+machine learning , 1437 –1446 (PMLR, 2018).
+42. Quaiser, T. & Mönnigmann, M. Systematic identi ﬁability testing for
+unambiguous mechanistic modeling –application to jak-stat, map kinase,
+and nf- κbs i g n a l i n gp a t h w a ym o d e l s . BMC Syst. Biol. 3,1–21 (2009).
+43. Gutenkunst, R. N. et al. Universally sloppy parameter sensitivities in
+systems biology models. PLoS Comput. Biol. 3, e189 (2007).
+44. Transtrum, M. K. et al. Perspective: Sloppiness and emergent theories
+in physics, biology, and beyond. J. Chem. Phys .143(2015).
+45. Jagadeesan, P., Raman, K. & Tangirala, A. K. Sloppiness:
+Fundamental study, new formalism and its application in modelassessment. PLoS ONE 18, e0282609 (2023).
+46. Rodriguez-Fernandez, M., Banga, J. R. & Doyle III, F. J. Novel global
+sensitivity analysis methodology accounting for the crucial role of the
+distribution of input parameters: application to systems biology
+models. Int. J. Robust. Nonlinear Control 22, 1082 –1102 (2012).
+47. Tangirala, A. K. Principles of system identi ﬁcation: theory and practice
+(Crc Press, 2018).
+4 8 . S t o i c a ,P .&M a r z e t t a ,T .L .P a r a m e t e re s t i m a t i o np r o b l e m sw i t hs i n g u l a r
+information matrices. IEEE Trans. Signal Process. 49,8 7 –90 (2001).
+49. Wangersky, P. J. Lotka-volterra population models. Annu. Rev. Ecol.
+Syst. 9, 189 –218 (1978).
+50. Verner, J. H. Numerically optimal runge –kutta pairs with interpolants.
+Numer. Algorithms 53, 383 –396 (2010).
+51. Hosea, M. & Shampine, L. Analysis and implementation of tr-bdf2.
+Appl. Numer. Math. 20,2 1 –37 (1996).
+52. Schmidt, M. & Lipson, H. Distilling free-form natural laws from
+experimental data. Science 324,8 1 –85 (2009).
+53. Brunton, S. L., Proctor, J. L. & Kutz, J. N. Discovering governing
+equations from data by sparse identi ﬁcation of nonlinear dynamical
+systems. Proc. Natl Acad. Sci. USA 113, 3932 –3937 (2016).
+54. Vincent, A. M. & Jidesh, P. An improved hyperparameter optimization
+framework for automl systems using evolutionary algorithms. Sci.
+Rep.
+13, 4737 (2023).
+55. Joshi, M., Seidel-Morgenstern, A. & Kremling, A. Exploiting the
+bootstrap method for quantifying parameter con ﬁdence intervals in
+dynamical systems. Metab. Eng. 8, 447 –455 (2006).
+56. Wu, J. et al. Hyperparameter optimization for machine learning
+models based on bayesian optimization. J. Electron. Sci. Technol. 17,
+26–40 (2019).
+57. Aszemi, N. M. & Dominic, P. Hyperparameter optimization in
+convolutional neural network using genetic algorithms. Int. J. Adv.
+Comput. Sci. Appl. 10(2019).
+58. Glorot, X. & Bengio, Y. Understanding the dif ﬁculty of training deep
+feedforward neural networks. In Proceedings of the thirteenth
+international conference on arti ﬁcial intelligence and statistics ,
+249 –256 (JMLR Workshop and Conference Proceedings, 2010).
+59. Bezanson, J., Edelman, A., Karpinski, S. & Shah, V. B. Julia: A fresh
+approach to numerical computing. SIAM Rev. 59,6 5 –98 (2017).60. Akiba, T., Sano, S., Yanase, T., Ohta, T. & Koyama, M. Optuna: a next-
+generation hyperparameter optimization framework. In Proceedings
+of the 25th ACM SIGKDD international conference on knowledgediscovery & data mining , 2623 –2631 (2019).
+Acknowledgements
+This study received no funding.
+Author contributions
+A.F., F.R., and S.G. ideated the work ﬂow and selected the test cases under
+the supervision of L.M. and G.I. S.G. developed the computationalwork ﬂow. L.M. and G.I. provided overall guidance for the project. All authors
+contributed to manuscript preparation and approved the ﬁnal version.
+Competing interests
+A.F. was not af ﬁliated with Roche Pharma Research and Early Development
+during the conduct of this research and therefore declares no competinginterests. All other authors declare no competing interests.
+Additional information
+Supplementary information The online version contains
+supplementary material available athttps://doi.org/10.1038/s41540-024-00460-3
+.
+Correspondence and requests for materials should be addressed to
+Luca Marchetti.
+Reprints and permissions information is available at
+http://www.nature.com/reprints
+Publisher ’s note Springer Nature remains neutral with regard to
+jurisdictional claims in published maps and institutional af ﬁliations.
+Open Access This article is licensed under a Creative Commons
+Attribution-NonCommercial-NoDerivatives 4.0 International License,which permits any non-commercial use, sharing, distribution andreproduction in any medium or format, as long as you give appropriate
+credit to the original author(s) and the source, provide a link to the Creative
+Commons licence, and indicate if you modi ﬁed the licensed material. You
+do not have permission under this licence to share adapted materialderived from this article or parts of it. The images or other third partymaterial in this article are included in the article ’s Creative Commons
+licence, unless indicated otherwise in a credit line to the material. If materialis not included in the article ’s Creative Commons licence and your intended
+use is not permitted by statutory regulation or exceeds the permitted use,you will need to obtain permission directly from the copyright holder. Toview a copy of this licence, visit http://creativecommons.org/licenses/by-
+nc-nd/4.0/
+.
+© The Author(s) 2024https://doi.org/10.1038/s41540-024-00460-3 Article
+npj Systems Biology and Applications |          (2024) 10:139 15
