@@ -122,7 +122,10 @@ end
 
 # Timestamped println for easier runtime tracking
 function tprintln(args...)
-  ts = Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS")
+  # Avoid Zygote tracing time calls
+  ts = Zygote.ignore() do
+    Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS")
+  end
   println("[", ts, "] ", args...)
 end
 
@@ -138,6 +141,26 @@ function fmt_f(x; digits=2)
     return isfinite(x) ? string(round(x, digits=digits)) : string(x)
   end
   return string(x)
+end
+
+function env_float(key, default)
+  v = get(ENV, key, "")
+  if v == ""
+    return default
+  end
+  try
+    return parse(Float64, v)
+  catch
+    return default
+  end
+end
+
+function grad_norm_safe(g)
+  try
+    return norm(vec(g))
+  catch
+    return NaN
+  end
 end
 
 # Inf logger to diagnose bad trials (set HNODECB_INF_LOG=0 to silence)
@@ -265,7 +288,9 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
       prob = ODEProblem{true}(make_uode_func(appr, st, known_pars), u0, (times[first(rg)], times[last(rg)]), p)
       trace_solve(() -> "ms solve start seg=" * string(i) * " len=" * string(length(rg)) *
         " t=" * string(round(times[first(rg)], sigdigits=3)) * "→" * string(round(times[last(rg)], sigdigits=3)))
-      t_start = time()
+        t_start = Zygote.ignore() do
+          time()
+        end
       sol = solve(prob, integrator; saveat=times[rg], abstol=abstol, reltol=reltol, sensealg=sensealg)
       trace_solve(() -> "ms solve done seg=" * string(i) * " dt=" * string(round(time() - t_start, digits=2)) * "s" *
         " retcode=" * string(sol.retcode) * " size=" * string(size(sol, 2)))
@@ -341,7 +366,9 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
     prob = ODEProblem{true}(make_uode_func(appr, st, known_pars), u0, (times[1], times[end]), p)
     trace_solve(() -> "ss solve start n=" * string(length(times)) *
       " t=" * string(round(times[1], sigdigits=3)) * "→" * string(round(times[end], sigdigits=3)))
-    t_start = time()
+    t_start = Zygote.ignore() do
+      time()
+    end
     sol = solve(prob, integrator; saveat=times, abstol=abstol, reltol=reltol, sensealg=sensealg)
     trace_solve(() -> "ss solve done dt=" * string(round(time() - t_start, digits=2)) * "s" *
       " retcode=" * string(sol.retcode) * " size=" * string(size(sol, 2)))
@@ -563,29 +590,83 @@ function objective(trial)
     if !did_preflight[] && get(ENV, "HNODECB_STAGE1_PREFLIGHT", "0") == "1"
       tprintln("  preflight loss")
       @time loss_fn(θ0)
-      tprintln("  preflight grad")
-      @time Zygote.gradient(x -> loss_fn(x)[1], θ0)
+      if get(ENV, "HNODECB_STAGE1_PREFLIGHT_GRAD", "0") == "1"
+        tprintln("  preflight grad")
+        @time Zygote.gradient(x -> loss_fn(x)[1], θ0)
+      end
       did_preflight[] = true
     end
 
-    # ADAM optimization
+    # ADAM optimization (manual loop to access grad_norm + adaptive lr)
     tprintln("  starting ADAM")
     flush(stdout)
-    adtype = Optimization.AutoZygote()
-    optf = Optimization.OptimizationFunction((x, p) -> loss_fn(x)[1], adtype)
-    optprob = Optimization.OptimizationProblem(optf, θ0)
-    opt = OptimizationOptimisers.Adam(learning_rate_adam)
 
     maxiters = 300
     training_costs = fill(Inf, maxiters)
-    epoch_ref = Ref(1)
     stuck = Ref(false)
 
-    function callback(θ, l)
-      epoch = epoch_ref[]
-      training_costs[epoch] = l
+    lr_adapt = get(ENV, "HNODECB_LR_ADAPT", "0") == "1"
+    lr_min = env_float("HNODECB_LR_MIN", 1e-6)
+    lr_max = env_float("HNODECB_LR_MAX", 1e-2)
+    lr_eta = env_float("HNODECB_LR_ETA", 0.05)
+    lr_ema_alpha = env_float("HNODECB_LR_EMA", 0.97)
+    lr_eps = env_float("HNODECB_LR_EPS", 1e-12)
+    lr_target_init = env_float("HNODECB_LR_TARGET", NaN)
+
+    lr = learning_rate_adam
+    opt_state = Optimisers.setup(Optimisers.Adam(lr), θ0)
+    θ = θ0
+    grad_ema = Ref(lr_target_init)
+    grad_target = Ref(lr_target_init)
+
+    for epoch in 1:maxiters
+      inf_context[] = "train"
+      last_inf_reason[] = ""
+
+      # loss + grad
+      loss = Inf
+      grad = nothing
+      try
+        loss, back = Zygote.pullback(x -> loss_fn(x)[1], θ)
+        grad = first(back(1.0))
+      catch ex
+        last_inf_reason[] = "exception: " * sprint(showerror, ex)
+        bt = catch_backtrace()
+        tprintln("EXCEPTION: ", sprint(showerror, ex, bt))
+        stuck[] = true
+        break
+      end
+
+      training_costs[epoch] = loss
       # Print every epoch to monitor runtime
-      tprintln("Stage1 trial epoch ", epoch, " train=", fmt_e(l, sigdigits=4))
+      tprintln("Stage1 trial epoch ", epoch, " train=", fmt_e(loss, sigdigits=4))
+
+      gnorm = grad_norm_safe(grad)
+      lr_changed = false
+      if lr_adapt && isfinite(gnorm) && gnorm > 0
+        if !isfinite(grad_ema[])
+          grad_ema[] = gnorm
+        else
+          grad_ema[] = lr_ema_alpha * grad_ema[] + (1 - lr_ema_alpha) * gnorm
+        end
+        if !isfinite(grad_target[])
+          grad_target[] = grad_ema[]
+        end
+        ratio = grad_target[] / (grad_ema[] + lr_eps)
+        lr_new = clamp(lr * ratio^lr_eta, lr_min, lr_max)
+        if lr_new != lr
+          Optimisers.adjust!(opt_state, lr_new)
+          lr = lr_new
+          lr_changed = true
+        end
+      end
+
+      if get(ENV, "HNODECB_LOG_GRADNORM", "1") == "1"
+        lr_note = lr_changed ? " (adapt)" : ""
+        tprintln("  grad_norm=", fmt_e(gnorm, sigdigits=3),
+          " lr=", fmt_e(lr, sigdigits=3), lr_note)
+      end
+
       if log_every > 0 && (epoch % log_every == 0)
         diag = last_diag[]
         if diag !== nothing
@@ -594,9 +675,8 @@ function objective(trial)
             " x3r=", fmt_e(diag.x3_range, sigdigits=3),
             " cont=", fmt_e(diag.cont, sigdigits=3))
         end
-        θp = hasproperty(θ, :u) ? θ.u : θ
-        ks_hat = bound_param(θp.mech_raw[1], ks_bounds[1], ks_bounds[2])
-        cs_hat = bound_param(θp.mech_raw[2], cs_bounds[1], cs_bounds[2])
+        ks_hat = bound_param(θ.mech_raw[1], ks_bounds[1], ks_bounds[2])
+        cs_hat = bound_param(θ.mech_raw[2], cs_bounds[1], cs_bounds[2])
         tprintln("  mech: ks=", fmt_e(ks_hat, sigdigits=3),
           " (err=", fmt_f(rel_err_pct(ks_hat, ks_true, scale_eps), digits=2), "%)",
           " cs=", fmt_e(cs_hat, sigdigits=3),
@@ -606,16 +686,23 @@ function objective(trial)
             fmt_f(diag.x3_rec, digits=2), "%")
         end
       end
+
+      if !isfinite(loss)
+        log_inf("train_loss_nonfinite")
+        stuck[] = true
+        break
+      end
+
+      # update params
+      opt_state, θ = Optimisers.update(opt_state, θ, grad)
+
       if epoch > 10 && minimum(training_costs[max(1, epoch-5):epoch]) > 1e6
         stuck[] = true
-        return true
+        break
       end
-      epoch_ref[] = epoch + 1
-      return epoch >= maxiters
     end
 
-    res = Optimization.solve(optprob, opt; callback=callback, maxiters=maxiters)
-    θ_best = res.u
+    θ_best = θ
 
     if stuck[]
       last_inf_reason[] = "train:stuck"
