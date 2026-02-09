@@ -9,11 +9,8 @@ cd(@__DIR__)
 using Serialization, DifferentialEquations, LinearAlgebra, Random, DataFrames, Statistics, Printf
 using ComponentArrays, SciMLSensitivity, StableRNGs
 using Zygote
-using Optimization, OptimizationOptimisers, Optimisers
+using Optimisers
 using DiffEqFlux, Flux
-
-using PyCall
-optuna = pyimport("optuna")
 
 # Suppress noisy Lux overwrite warnings by default (set ENV["HNODECB_SUPPRESS_LUX_WARN"]="0" to disable)
 if get(ENV, "HNODECB_SUPPRESS_LUX_WARN", "1") == "1"
@@ -43,8 +40,6 @@ cs_true = cs
 
 # Load stage1 results
 stage1 = deserialize("../hyperparameter_tuning_first_stage/results_afm/afm_param_stage1_03.jld")
-best = stage1.best
-best_params = best.params
 
 # Load data
 ode_data_full = deserialize("../../datasets/e0.0/data/ode_data_afm_dmt_kv.jld")
@@ -116,6 +111,25 @@ function raw_from_value(val, lo, hi)
   z = (val - lo) / (hi - lo)
   z = clamp(z, 1e-6, 1 - 1e-6)
   return logit(z)
+end
+
+env_float(name, default) = tryparse(Float64, get(ENV, name, "")) !== nothing ?
+  parse(Float64, get(ENV, name, "")) : default
+
+function grad_norm_safe(g)
+  if g === nothing
+    return NaN
+  end
+  # ComponentVector / NamedTuple / Array
+  try
+    return sqrt(sum(abs2, g))
+  catch
+    try
+      return sqrt(sum(abs2, values(g)))
+    catch
+      return NaN
+    end
+  end
 end
 
 function make_train_val_masks(n, val_stride, val_offset)
@@ -276,14 +290,22 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
   return total
 end
 
-# Stage1 best hyperparameters
-ks0 = best_params["ks0"]
-cs0 = best_params["cs0"]
-learning_rate_adam = best_params["learning_rate_adam"]
-num_hidden_layers = best_params["num_hidden_layers"]
-num_hidden_nodes = best_params["num_hidden_nodes"]
-ms_group_size = best_params["ms_group_size"]
-ms_continuity_term = best_params["ms_continuity_term"]
+# Select top-10 candidates from Stage1 (by val_loss, fallback to loss)
+function trial_val(r)
+  if hasproperty(r, :val_loss)
+    return r.val_loss
+  elseif hasproperty(r, :loss)
+    return r.loss
+  else
+    return Inf
+  end
+end
+
+stage1_trials = stage1.trial_parameters
+sorted_stage1 = sort(stage1_trials, by = trial_val)
+top_candidates = sorted_stage1[1:min(10, length(sorted_stage1))]
+println("Stage2 using top-", length(top_candidates), " candidates from Stage1")
+
 val_stride = haskey(stage1, :val_stride) ? stage1.val_stride : 5
 val_offset = haskey(stage1, :val_offset) ? stage1.val_offset : 2
 
@@ -298,23 +320,94 @@ x2dot_val = x2dot_all[val_idx]
 contact_train = contact_all[train_idx]
 contact_val = contact_all[val_idx]
 
-# NN architecture
-rng = StableRNG(0)
-approximating_neural_network = build_nn(num_hidden_layers, num_hidden_nodes)
-p_net, st = Lux.setup(rng, approximating_neural_network)
-p_net_vec, re_pnet = Optimisers.destructure(p_net)
+function rand_loguniform(rng, lo, hi)
+  return exp(rand(rng) * (log(hi) - log(lo)) + log(lo))
+end
 
-# initial parameters (bounded raw)
-raw_init = [
-  raw_from_value(ks0, ks_bounds[1], ks_bounds[2]),
-  raw_from_value(cs0, cs_bounds[1], cs_bounds[2])
-]
-θ0 = ComponentVector(p_net=p_net_vec, mech_raw=raw_init)
+function run_adam(?0, loss_fn; lr_init, maxiters=500, log_every=100)
+  lr_adapt = get(ENV, "HNODECB_LR_ADAPT", "1") == "1"
+  lr_min = env_float("HNODECB_LR_MIN", 1e-6)
+  lr_max = env_float("HNODECB_LR_MAX", 1e-2)
+  lr_eta = env_float("HNODECB_LR_ETA", 0.05)
+  lr_ema_alpha = env_float("HNODECB_LR_EMA", 0.97)
+  lr_eps = env_float("HNODECB_LR_EPS", 1e-30)
+  lr_target_init = env_float("HNODECB_LR_TARGET", NaN)
+
+  lr = lr_init
+  opt_state = Optimisers.setup(Optimisers.Adam(lr), ?0)
+  ? = ?0
+  grad_ema = Ref(lr_target_init)
+  grad_target = Ref(lr_target_init)
+
+  for epoch in 1:maxiters
+    loss = Inf
+    grad = nothing
+    try
+      loss, back = Zygote.pullback(loss_fn, ?)
+      grad = first(back(1.0))
+    catch ex
+      return ?, Inf, "exception: " * sprint(showerror, ex)
+    end
+
+    if epoch % log_every == 0
+      println("Stage2 epoch ", epoch, " loss=", @sprintf("%.4e", loss))
+    end
+
+    gnorm = grad_norm_safe(grad)
+    if lr_adapt && isfinite(gnorm) && gnorm > 0
+      if !isfinite(grad_ema[])
+        grad_ema[] = gnorm
+      else
+        grad_ema[] = lr_ema_alpha * grad_ema[] + (1 - lr_ema_alpha) * gnorm
+      end
+      if !isfinite(grad_target[])
+        grad_target[] = grad_ema[]
+      end
+      ratio = grad_target[] / (grad_ema[] + lr_eps)
+      lr_new = clamp(lr * ratio^lr_eta, lr_min, lr_max)
+      if lr_new != lr
+        Optimisers.adjust!(opt_state, lr_new)
+        lr = lr_new
+      end
+    end
+
+    if !isfinite(loss)
+      return ?, Inf, "train_loss_nonfinite"
+    end
+
+    opt_state, ? = Optimisers.update(opt_state, ?, grad)
+  end
+
+  return ?, loss_fn(?), ""
+end
 
 # x3 initial value (allowed: first contact)
 x3_init_val = ode_train[3, 1]
 
 if selftest
+  if isempty(top_candidates)
+    error("Stage2 SELFTEST: no candidates from Stage1")
+  end
+  cand = top_candidates[1]
+  params = cand.params
+  ks0 = params["ks0"]
+  cs0 = params["cs0"]
+  num_hidden_layers = get(params, "num_hidden_layers", 1)
+  num_hidden_nodes = get(params, "num_hidden_nodes", 3)
+  ms_group_size = get(params, "ms_group_size", 50)
+  ms_continuity_term = get(params, "ms_continuity_term", 1e-3)
+
+  rng = StableRNG(0)
+  approximating_neural_network = build_nn(num_hidden_layers, num_hidden_nodes)
+  p_net, st = Lux.setup(rng, approximating_neural_network)
+  p_net_vec, re_pnet = Optimisers.destructure(p_net)
+
+  raw_init = [
+    raw_from_value(ks0, ks_bounds[1], ks_bounds[2]),
+    raw_from_value(cs0, cs_bounds[1], cs_bounds[2])
+  ]
+  ?0 = ComponentVector(p_net=p_net_vec, mech_raw=raw_init)
+
   n = min(50, length(times_train))
   idx = 1:n
   ode_train_s = ode_train[:, idx]
@@ -323,7 +416,7 @@ if selftest
   contact_train_s = contact_train[idx]
   l2_weight = 0.0
 
-  loss = loss_single_or_ms(θ0, ode_train_s, x2dot_train_s, contact_train_s, times_train_s,
+  loss = loss_single_or_ms(?0, ode_train_s, x2dot_train_s, contact_train_s, times_train_s,
     state12_scale_full, x2dot_scale_full, x3_scale,
     use_multiple_shooting, ms_group_size, ms_continuity_term,
     approximating_neural_network, st, known_pars, x3_init_val,
@@ -335,118 +428,96 @@ if selftest
   end
   println("=== SELFTEST OK ===")
 else
-function internal_objective(l2_weight)
-  function loss_fn(θ)
-    loss_single_or_ms(θ, ode_train, x2dot_train, contact_train, times_train,
-    state12_scale_full, x2dot_scale_full, x3_scale,
-    use_multiple_shooting, ms_group_size, ms_continuity_term,
-    approximating_neural_network, st, known_pars, x3_init_val,
-    l2_weight, re_pnet)
+  l2_grid = [0.0]
+  println("L2 grid: ", l2_grid)
+
+  trial_parameters = []
+  rng_global = StableRNG(0)
+
+  for (ci, cand) in enumerate(top_candidates)
+    params = cand.params
+    ks0 = params["ks0"]
+    cs0 = params["cs0"]
+    num_hidden_layers = get(params, "num_hidden_layers", 1)
+    num_hidden_nodes = get(params, "num_hidden_nodes", 3)
+    ms_group_size = get(params, "ms_group_size", 50)
+    ms_continuity_term = get(params, "ms_continuity_term", 1e-3)
+
+    for l2_weight in l2_grid
+      rng = StableRNG(abs(rand(rng_global, Int)))
+      approximating_neural_network = build_nn(num_hidden_layers, num_hidden_nodes)
+      p_net, st = Lux.setup(rng, approximating_neural_network)
+      p_net_vec, re_pnet = Optimisers.destructure(p_net)
+
+      raw_init = [
+        raw_from_value(ks0, ks_bounds[1], ks_bounds[2]),
+        raw_from_value(cs0, cs_bounds[1], cs_bounds[2])
+      ]
+      ?0 = ComponentVector(p_net=p_net_vec, mech_raw=raw_init)
+
+      function loss_fn(?)
+        loss_single_or_ms(?, ode_train, x2dot_train, contact_train, times_train,
+          state12_scale_full, x2dot_scale_full, x3_scale,
+          use_multiple_shooting, ms_group_size, ms_continuity_term,
+          approximating_neural_network, st, known_pars, x3_init_val,
+          l2_weight, re_pnet)
+      end
+
+      lr_init = get(params, "learning_rate_adam", NaN)
+      if !isfinite(lr_init)
+        lr_init = env_float("HNODECB_STAGE2_LR_INIT", NaN)
+      end
+      if !isfinite(lr_init)
+        lr_init = rand_loguniform(rng_global, 1e-5, 1e-2)
+      end
+
+      ?_best, train_loss, reason = run_adam(?0, loss_fn; lr_init=lr_init, maxiters=500, log_every=100)
+      if reason != ""
+        train_loss = Inf
+      end
+
+      val_loss = loss_single_or_ms(?_best, ode_val, x2dot_val, contact_val, times_val,
+        state12_scale_full, x2dot_scale_full, x3_scale,
+        use_multiple_shooting, ms_group_size, ms_continuity_term,
+        approximating_neural_network, st, known_pars, x3_init_val,
+        0.0, re_pnet)
+
+      params_out = Dict{Any, Any}(
+        "cand_rank" => ci,
+        "ks0" => ks0,
+        "cs0" => cs0,
+        "num_hidden_layers" => num_hidden_layers,
+        "num_hidden_nodes" => num_hidden_nodes,
+        "ms_group_size" => ms_group_size,
+        "ms_continuity_term" => ms_continuity_term,
+        "l2_regularization" => l2_weight,
+        "learning_rate_adam" => lr_init
+      )
+      push!(trial_parameters, (loss=val_loss, train_loss=train_loss, val_loss=val_loss, params=params_out))
+    end
   end
 
-  adtype = Optimization.AutoZygote()
-  optf = Optimization.OptimizationFunction((x, p) -> loss_fn(x), adtype)
-  optprob = Optimization.OptimizationProblem(optf, θ0)
-  opt = OptimizationOptimisers.Adam(learning_rate_adam)
-
-  maxiters = 500
-  epoch_ref = Ref(1)
-  start_time = time()
-  stuck = Ref(false)
-
-  function callback(θ, l)
-    epoch = epoch_ref[]
-    if epoch % 100 == 0
-      println("Stage2 epoch ", epoch, " loss=", @sprintf("%.4e", l))
-    end
-    if time() - start_time > 5 * 60
-      stuck[] = true
-      return true
-    end
-    if epoch > 10 && l > 1e6
-      stuck[] = true
-      return true
-    end
-    epoch_ref[] = epoch + 1
-    return epoch >= maxiters
+  sorted = sort(trial_parameters, by = r -> r.loss)
+  println("Stage2 top-10 summary (train/val):")
+  for (i, rec) in enumerate(sorted[1:min(10, length(sorted))])
+    println("  Rank ", i,
+      " -- train=", @sprintf("%.4e", rec.train_loss),
+      " val=", @sprintf("%.4e", rec.val_loss),
+      " | l2=", @sprintf("%.2e", rec.params["l2_regularization"]),
+      " cand=", rec.params["cand_rank"])
   end
 
-  res = Optimization.solve(optprob, opt; callback=callback, maxiters=maxiters)
-  θ_best = res.u
+  best_rec = isempty(sorted) ? nothing : sorted[1]
+  serialize(result_folder * "/" * result_name_string, (
+    study=nothing,
+    trial_parameters=trial_parameters,
+    best=best_rec,
+    bounds=(ks=ks_bounds, cs=cs_bounds),
+    use_multiple_shooting=use_multiple_shooting,
+    l2_grid=l2_grid,
+    x3_obs_fraction=0.0,
+    error_level=error_level
+  ))
 
-  if stuck[]
-    last_trial_metrics[] = (train_loss=Inf, val_loss=Inf)
-    return Inf
-  end
-
-  # training loss (with L2)
-  train_loss = loss_single_or_ms(θ_best, ode_train, x2dot_train, contact_train, times_train,
-    state12_scale_full, x2dot_scale_full, x3_scale,
-    use_multiple_shooting, ms_group_size, ms_continuity_term,
-    approximating_neural_network, st, known_pars, x3_init_val,
-    l2_weight, re_pnet)
-
-  # validation loss (no L2)
-  val_loss = loss_single_or_ms(θ_best, ode_val, x2dot_val, contact_val, times_val,
-    state12_scale_full, x2dot_scale_full, x3_scale,
-    use_multiple_shooting, ms_group_size, ms_continuity_term,
-    approximating_neural_network, st, known_pars, x3_init_val,
-    0.0, re_pnet)
-
-  last_trial_metrics[] = (train_loss=train_loss, val_loss=val_loss)
-  return val_loss
-end
-
-# Grid search for L2 regularization
-search_space = Dict(
-  # L2 regularization disabled for this scenario
-  "l2_regularization" => [0.0]
-)
-
-println("L2 grid: ", search_space["l2_regularization"])
-
-study = optuna.create_study(sampler=optuna.samplers.GridSampler(search_space, seed=0))
-trial_parameters = []
-last_trial_metrics = Ref((train_loss=Inf, val_loss=Inf))
-
-function objective(trial)
-  l2_reg = trial.suggest_float("l2_regularization", 0.0, 1.0)
-  val_loss = internal_objective(l2_reg)
-  metrics = last_trial_metrics[]
-  trial.set_user_attr("train_loss", metrics.train_loss)
-  trial.set_user_attr("val_loss", metrics.val_loss)
-  return val_loss
-end
-
-study.optimize(objective)
-
-# collect results
-for t in study.trials
-  params = Dict(t.params)
-  train_loss = haskey(t.user_attrs, "train_loss") ? t.user_attrs["train_loss"] : Inf
-  val_loss = haskey(t.user_attrs, "val_loss") ? t.user_attrs["val_loss"] : t.value
-  push!(trial_parameters, (loss=t.value, train_loss=train_loss, val_loss=val_loss, params=params))
-end
-
-sorted = sort(trial_parameters, by = r -> r.loss)
-println("Stage2 top-10 summary (train/val):")
-for (i, rec) in enumerate(sorted[1:min(10, length(sorted))])
-  println("  Rank ", i,
-    " -- train=", @sprintf("%.4e", rec.train_loss),
-    " val=", @sprintf("%.4e", rec.val_loss),
-    " | l2=", @sprintf("%.2e", rec.params["l2_regularization"]))
-end
-
-serialize(result_folder * "/" * result_name_string, (
-  study=study,
-  trial_parameters=trial_parameters,
-  best=study.best_trial === nothing ? nothing : (loss=study.best_trial.value, params=Dict(study.best_trial.params)),
-  bounds=(ks=ks_bounds, cs=cs_bounds),
-  use_multiple_shooting=use_multiple_shooting,
-  l2_grid=search_space["l2_regularization"],
-  x3_obs_fraction=0.0,
-  error_level=error_level
-))
-
-println("Stage2 done. Best loss=", study.best_trial === nothing ? "Inf" : @sprintf("%.4e", study.best_trial.value))
+  println("Stage2 done. Best loss=", best_rec === nothing ? "Inf" : @sprintf("%.4e", best_rec.loss))
 end
