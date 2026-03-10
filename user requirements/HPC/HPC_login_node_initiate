@@ -52,7 +52,7 @@ How to run (after setup):
 - Real run on compute node (use slurm):
   sbatch DHPC/run_pipeline_03_delftblue.slurm
 
-Scenario 2 (already configured, want to run again):
+**Scenario 2 (already configured, want to run again):**
 1) Enter repo
    cd ~/HNODECB
 
@@ -66,8 +66,12 @@ Scenario 2 (already configured, want to run again):
    julia --project=HPC_env -e 'using PyCall; println(PyCall.python); pyimport("optuna"); println("optuna ok")'
 
 4) Submit job
-   sbatch DHPC/run_pipeline_03_delftblue.slurm
-
+   sbatch DHPC/runners/run_pipeline_03_delftblue.slurm
+  或者  sbatch DHPC/runners/run_stage1_03_delftblue.slurm
+  或者  sbatch DHPC/runners/run_stage1pluslight_03_delftblue.slurm
+  或者  sbatch DHPC/runners/run_stage2_03_delftblue.slurm
+  或者  sbatch DHPC/runners/run_stage2light_03_delftblue.slurm
+  说明：stage1pluslight 默认 3 分片 × 333 trails（总计 999，candidate=6），可用 --export 覆盖。
 Notes:
 - You do NOT need to re-create HPC_env unless you changed dependencies.
 - If sbatch says "command not found", you forgot "module load slurm/current".
@@ -121,3 +125,6 @@ If PyCall cannot find python:
       conda activate hnodecb_py
       # 然后再运行 PyCall/optuna
     说明：如果走这个方案，每次开新终端都要重新 conda activate。
+
+
+本地请运行如下指令：julia --project=. runner/afm_param_search_pipeline_03.jl 2>&1 | Tee-Object -FilePath .\logs\stage1_check_log.txt

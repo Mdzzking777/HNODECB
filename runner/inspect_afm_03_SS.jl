@@ -6,7 +6,7 @@ ground-truth Hertz force using full (oracle) state trajectories.
 
 cd(@__DIR__)
 
-using Serialization, Printf, Statistics
+using Serialization, Printf, Statistics, Random
 using ComponentArrays, Lux
 
 include("../test_case_settings/afm_dmt_kv_settings/afm_dmt_kv_model_functions.jl")
@@ -22,7 +22,7 @@ results = haskey(payload, :results) ? payload.results : payload
 
 # Rebuild the Hertz-NN architecture (same as train_afm_03_SS.jl)
 approximating_neural_network = Lux.Chain(
-  Lux.Dense(4, 16, tanh),
+  Lux.Dense(2, 16, tanh),
   Lux.Dense(16, 16, tanh),
   Lux.Dense(16, 1)
 )
@@ -46,14 +46,12 @@ function hertz_true(u1, u3)
   return (4.0 / 3.0) * Estar * sqrt(R) * (delta^1.5)
 end
 
-function hertz_pred(u1, u2, u3, Estar_est, p_net)
+function hertz_pred(u1, u2, u3, p_net)
   s = dist + u1 - u3
-  delta = softplus(-s, adhesion_transition)
-  delta = ifelse(delta > 0.0, delta, 0.0)
   w = contact_weight(s, adhesion_transition)
-  nn_in = [u1, u2, u3, delta]
+  nn_in = [u1, u2]
   û = approximating_neural_network(nn_in, p_net, st)[1]
-  return Estar_est * softplus(û[1], adhesion_transition) * w
+  return û[1] * w
 end
 
 function mape_pct(pred, truth; eps=1e-12)
@@ -75,8 +73,6 @@ if results isa AbstractVector
       continue
     end
     p_net = ComponentArray(r.p_net)
-    p_est = r.parameters_training
-    Estar_est = p_est[9]
 
     n = size(ode_data, 2)
     F_true = Vector{Float64}(undef, n)
@@ -86,7 +82,7 @@ if results isa AbstractVector
       u2 = ode_data[2, j]
       u3 = ode_data[3, j]
       F_true[j] = hertz_true(u1, u3)
-      F_pred[j] = hertz_pred(u1, u2, u3, Estar_est, p_net)
+      F_pred[j] = hertz_pred(u1, u2, u3, p_net)
     end
 
     idx_contact = findall(contact_mask)

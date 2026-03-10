@@ -28,13 +28,12 @@ include("../test_case_settings/afm_dmt_kv_settings/afm_dmt_kv_model_settings.jl"
 rng_net = Random.default_rng()
 Random.seed!(rng_net, 0)
 approximating_neural_network = Lux.Chain(
-  Lux.Dense(4, 16, tanh),
+  Lux.Dense(2, 16, tanh),
   Lux.Dense(16, 16, tanh),
   Lux.Dense(16, 1)
 )
-p_net_init, st = Lux.setup(rng_net, approximating_neural_network)
-p_net_init = ComponentArray(p_net_init)
-uode_derivative_function = get_uode_model_function_hertz_nn(approximating_neural_network, st)
+p_net_init_raw, st = Lux.setup(rng_net, approximating_neural_network)
+p_net_init = Flux.f64(ComponentArray(p_net_init_raw))
 
 # Load data
 ode_data = deserialize("../datasets/e0.0/data/ode_data_afm_dmt_kv.jld")
@@ -51,6 +50,12 @@ ode_data = ode_data[:, contact_idx:end]
 
 tmp_steps = solution_dataframe.t
 x2dot_data = solution_dataframe.x2dot
+true_contact_weight_at_time = make_contact_weight_lookup(tmp_steps, solution_dataframe.s)
+uode_derivative_function = get_uode_model_function_hertz_nn(
+  approximating_neural_network,
+  st,
+  true_contact_weight_at_time
+)
 
 # Multiple shooting settings
 small_group_size = 100
@@ -60,8 +65,8 @@ min_group_size = 10
 continuity_term = 0.001
 use_multiple_shooting = false
 use_u0_x3_param = false
-# Initial x3 is allowed (first-contact value), but we do not add a separate loss term for it.
-use_u0_x3_init_loss = false
+# Initial x3 is known at first contact and is penalized explicitly.
+# x3(t0) penalty disabled: x3 at first contact is treated as fixed known initial condition.
 use_continuity_loss = false
 
 # L2 regularization on NN weights (toggle)
@@ -134,10 +139,6 @@ end
 
 function format_x3_obs(val)
   return x3_obs_fraction == 0.0 ? "None" : @sprintf("%.4e", val)
-end
-
-function format_x3_init(val)
-  return use_u0_x3_init_loss ? @sprintf("%.4e", val) : "None"
 end
 
 function push_range!(ranges, labels, current, seg_start, seg_end, min_size)
@@ -283,8 +284,8 @@ function update_x3_observations!(contact::AbstractVector{Bool}, rng)
   labels = range_is_contact_ref[]
   x3_obs_mask_ref[] = build_x3_observation_mask(contact, ranges, labels, x3_obs_fraction, rng)
   x3_obs_weights_ref[] = ifelse.(contact, x3_contact_weight, x3_noncontact_weight)
-  # Scenario 02: no x3 observations or x3 init target in training
-  x3_u0_target_ref[] = x3_range_center
+  # Scenario 03: use the first-contact x3 value as the explicit x3 init target
+  x3_u0_target_ref[] = ode_data[3, 1]
 end
 
 control_point_count = 20
@@ -428,14 +429,13 @@ function band_for_run(run_id)
   return :outer
 end
 
-function initial_theta_from_guess(ks0, cs0, Estar0)
-  return log.([ks0, cs0, Estar0])
+function initial_theta_from_guess(ks0, cs0, Estar0=Estar)
+  return log.([ks0, cs0])
 end
 
 function build_parameter_vector(theta)
   ks = exp(theta[1])
   cs = exp(theta[2])
-  Estar = exp(theta[3])
   return [original_parameters[1:8]...; Estar; ks; cs]
 end
 
@@ -444,11 +444,11 @@ function x2dot_rhs(u, p, t, p_net)
   s = dist + u[1] - u[3]
   delta = softplus(-s, adhesion_transition)
   delta = ifelse(delta > 0.0, delta, 0.0)
-  w = contact_weight(s, adhesion_transition)
-  nn_in = [u[1], u[2], u[3], delta]
+  w_pred = contact_weight(s, adhesion_transition)
+  nn_in = collect(promote(u[1], u[2]))
   û = approximating_neural_network(nn_in, p_net, st)[1]
-  F_hertz = Estar * softplus(û[1], adhesion_transition) * w
-  Fad_eff = Fad * w
+  F_hertz = û[1] * true_contact_weight_at_time(t)
+  Fad_eff = Fad * w_pred
   return (Fd * cos(wd * t) - k * u[1] - c * u[2] + Fad_eff - F_hertz) / m
 end
 
@@ -627,7 +627,7 @@ function loss_multiple_shooting_with_u0(p_est, u0_x3, p_net; debug::Bool=false)
     end
   end
 
-  x3_u0_loss = use_u0_x3_init_loss ? (x3_u0_weight * abs2((u0_x3[1] - x3_u0_target) / x3_scale)) : 0.0
+  x3_u0_loss = 0.0
   x3_loss = x3_obs_loss + x3_u0_loss
 
   if eltype(p_est) == Float64
@@ -747,7 +747,7 @@ function loss_single_shooting_with_u0(p_est, u0_x3, p_net; debug::Bool=false)
   state_loss = 1 / weights_sum * sum(weights_val .* vec(state_err))
 
   x3_obs_loss = 0.0
-  x3_u0_loss = use_u0_x3_init_loss ? (x3_u0_weight * abs2((u0_x3 - x3_u0_target_ref[]) / x3_scale)) : 0.0
+  x3_u0_loss = 0.0
   x3_loss = x3_obs_loss + x3_u0_loss
 
   range_pen_per_t = abs2.(softplus.(abs.(x[3, :]) .- x3_range_amp, x3_range_eps) ./ x3_scale)
@@ -865,7 +865,7 @@ function validation_loss_multiple_shooting(θ, validation_df)
   loss = 1 / weights_sum * sum(weights_val .* vec(state_err))
 
   x3_obs_loss = 0.0
-  x3_u0_loss = use_u0_x3_init_loss ? (x3_u0_weight * abs2((u0_x3_val - x3_u0_target_ref[]) / x3_scale)) : 0.0
+  x3_u0_loss = 0.0
   range_pen_per_t = abs2.(softplus.(abs.(x[3, :]) .- x3_range_amp, x3_range_eps) ./ x3_scale)
   x3_range_loss = x3_range_weight * (sum(weights_val .* range_pen_per_t) / sum(weights_val))
   loss += x3_obs_loss + x3_u0_loss + x3_range_loss
@@ -938,7 +938,7 @@ function validation_loss_single_shooting(θ, validation_df)
   loss = 1 / weights_sum * sum(weights_val .* vec(state_err))
 
   x3_obs_loss = 0.0
-  x3_u0_loss = use_u0_x3_init_loss ? (x3_u0_weight * abs2((u0_x3_val - x3_u0_target_ref[]) / x3_scale)) : 0.0
+  x3_u0_loss = 0.0
   range_pen_per_t = abs2.(softplus.(abs.(x[3, :]) .- x3_range_amp, x3_range_eps) ./ x3_scale)
   x3_range_loss = x3_range_weight * (sum(weights_val .* range_pen_per_t) / sum(weights_val))
   loss += x3_obs_loss + x3_u0_loss + x3_range_loss
@@ -1018,7 +1018,7 @@ function sanity_check_data()
     end
   end
 
-  x3_u0_loss = use_u0_x3_init_loss ? (x3_u0_weight * abs2((ode_data[3, first(ranges[1])] - x3_u0_target) / x3_scale)) : 0.0
+  x3_u0_loss = 0.0
   x3_loss = x3_obs_loss + x3_u0_loss
 
   total = state_loss + x3_loss + x2dot_loss + x3_range_loss + continuity_loss
@@ -1067,7 +1067,7 @@ function sanity_check_integrated()
     x3_obs_loss = sum(x3_obs_weights[obs_idx] .* abs2.(x3_err)) / sum(x3_obs_weights[obs_idx])
   end
   x3_u0_target = x3_u0_target_ref[]
-  x3_u0_loss = use_u0_x3_init_loss ? (x3_u0_weight * abs2((ode_data[3, 1] - x3_u0_target) / x3_scale)) : 0.0
+  x3_u0_loss = 0.0
   x3_loss = x3_obs_loss + x3_u0_loss
 
   range_pen = abs2.(softplus.(abs.(x[3, :]) .- x3_range_amp, x3_range_eps) ./ x3_scale)
@@ -1115,13 +1115,13 @@ update_control_points!()
 
 sanity_data, sanity_data_comps = sanity_check_data()
 sanity_integrated, sanity_integrated_comps = sanity_check_integrated()
-println("Sanity check loss (data-based, post-contact): ", sanity_data, " | state=", sanity_data_comps.state, " x3=", sanity_data_comps.x3, " (obs=", format_x3_obs(sanity_data_comps.x3_obs), " x3_init=", format_x3_init(sanity_data_comps.x3_u0), " u0=None) x2dot=", sanity_data_comps.x2dot, " x3_range=", sanity_data_comps.x3_range, " cont=", sanity_data_comps.continuity)
-println("Sanity check loss (integrated, post-contact): ", sanity_integrated, " | state=", sanity_integrated_comps.state, " x3=", sanity_integrated_comps.x3, " (obs=", format_x3_obs(sanity_integrated_comps.x3_obs), " x3_init=", format_x3_init(sanity_integrated_comps.x3_u0), " u0=None) x2dot=", sanity_integrated_comps.x2dot, " x3_range=", sanity_integrated_comps.x3_range, " cont=", sanity_integrated_comps.continuity)
+println("Sanity check loss (data-based, post-contact): ", sanity_data, " | state=", sanity_data_comps.state, " x3=", sanity_data_comps.x3, " (obs=", format_x3_obs(sanity_data_comps.x3_obs), " u0=None) x2dot=", sanity_data_comps.x2dot, " x3_range=", sanity_data_comps.x3_range, " cont=", sanity_data_comps.continuity)
+println("Sanity check loss (integrated, post-contact): ", sanity_integrated, " | state=", sanity_integrated_comps.state, " x3=", sanity_integrated_comps.x3, " (obs=", format_x3_obs(sanity_integrated_comps.x3_obs), " u0=None) x2dot=", sanity_integrated_comps.x2dot, " x3_range=", sanity_integrated_comps.x3_range, " cont=", sanity_integrated_comps.continuity)
 if use_multiple_shooting
   sanity_integrated_ms_oracle, sanity_integrated_ms_oracle_comps = sanity_check_integrated_ms_oracle()
   sanity_integrated_ms_model, sanity_integrated_ms_model_comps = sanity_check_integrated_ms_model()
-  println("Sanity check loss (integrated, multiple shooting: oracle): ", sanity_integrated_ms_oracle, " | state=", sanity_integrated_ms_oracle_comps.state, " x3=", sanity_integrated_ms_oracle_comps.x3, " (obs=", format_x3_obs(sanity_integrated_ms_oracle_comps.x3_obs), " x3_init=", format_x3_init(sanity_integrated_ms_oracle_comps.x3_u0), " u0=None) x2dot=", sanity_integrated_ms_oracle_comps.x2dot, " x3_range=", sanity_integrated_ms_oracle_comps.x3_range, " cont=", sanity_integrated_ms_oracle_comps.continuity)
-  println("Sanity check loss (integrated, multiple shooting: model): ", sanity_integrated_ms_model, " | state=", sanity_integrated_ms_model_comps.state, " x3=", sanity_integrated_ms_model_comps.x3, " (obs=", format_x3_obs(sanity_integrated_ms_model_comps.x3_obs), " x3_init=", format_x3_init(sanity_integrated_ms_model_comps.x3_u0), " u0=None) x2dot=", sanity_integrated_ms_model_comps.x2dot, " x3_range=", sanity_integrated_ms_model_comps.x3_range, " cont=", sanity_integrated_ms_model_comps.continuity)
+  println("Sanity check loss (integrated, multiple shooting: oracle): ", sanity_integrated_ms_oracle, " | state=", sanity_integrated_ms_oracle_comps.state, " x3=", sanity_integrated_ms_oracle_comps.x3, " (obs=", format_x3_obs(sanity_integrated_ms_oracle_comps.x3_obs), " u0=None) x2dot=", sanity_integrated_ms_oracle_comps.x2dot, " x3_range=", sanity_integrated_ms_oracle_comps.x3_range, " cont=", sanity_integrated_ms_oracle_comps.continuity)
+  println("Sanity check loss (integrated, multiple shooting: model): ", sanity_integrated_ms_model, " | state=", sanity_integrated_ms_model_comps.state, " x3=", sanity_integrated_ms_model_comps.x3, " (obs=", format_x3_obs(sanity_integrated_ms_model_comps.x3_obs), " u0=None) x2dot=", sanity_integrated_ms_model_comps.x2dot, " x3_range=", sanity_integrated_ms_model_comps.x3_range, " cont=", sanity_integrated_ms_model_comps.continuity)
 else
   println("Sanity check loss (integrated, multiple shooting: oracle): skipped (single shooting)")
   println("Sanity check loss (integrated, multiple shooting: model): skipped (single shooting)")
@@ -1209,7 +1209,7 @@ function load_stage2_initial_guesses()
   println("Stage2 init: found ", length(stage2.results), " results in file.")
   if stage2_mode == :best
     b = stage2.best
-    return [(ks=b.ks, cs=b.cs, Estar=b.Estar, source="stage2_best")]
+    return [(ks=b.ks, cs=b.cs, Estar=Estar, source="stage2_best")]
   elseif stage2_mode == :topk
     res_sorted = sort(stage2.results, by = r -> r.loss)
     k = min(stage2_topk, length(res_sorted))
@@ -1217,7 +1217,7 @@ function load_stage2_initial_guesses()
       println("Stage2 init: results list is empty.")
       return NamedTuple[]
     end
-    return [(ks=res_sorted[i].ks, cs=res_sorted[i].cs, Estar=res_sorted[i].Estar,
+    return [(ks=res_sorted[i].ks, cs=res_sorted[i].cs, Estar=Estar,
       source="stage2_top$(k)_$(i)") for i in 1:k]
   else
     println("Unknown stage2_mode=", stage2_mode, " (use :best or :topk).")
@@ -1248,7 +1248,7 @@ if isempty(stage2_inits)
     band = band_for_run(run_id)
     ks0 = sample_log_band(rng, ks_bounds[1], ks_bounds[2], band)
     cs0 = sample_log_band(rng, cs_bounds[1], cs_bounds[2], band)
-    Estar0 = sample_log_band(rng, Estar_bounds[1], Estar_bounds[2], band)
+    Estar0 = Estar
     push!(initial_guesses, (ks=ks0, cs=cs0, Estar=Estar0, source=string(band)))
   end
 else
@@ -1258,7 +1258,7 @@ else
       band = band_for_run(run_id)
       ks0 = sample_log_band(rng, ks_bounds[1], ks_bounds[2], band)
       cs0 = sample_log_band(rng, cs_bounds[1], cs_bounds[2], band)
-      Estar0 = sample_log_band(rng, Estar_bounds[1], Estar_bounds[2], band)
+      Estar0 = Estar
       push!(initial_guesses, (ks=ks0, cs=cs0, Estar=Estar0, source=string(band)))
     end
   end
@@ -1305,7 +1305,7 @@ for run_id in 1:length(initial_guesses)
     " | x1_rec=", @sprintf("%.2f", init_recon.x1), "% x3_rec=", @sprintf("%.2f", init_recon.x3), "%",
     " | state=", @sprintf("%.4e", init_comps.state),
     " x3=", @sprintf("%.4e", init_comps.x3), " (obs=", format_x3_obs(init_comps.x3_obs),
-    " x3_init=", format_x3_init(init_comps.x3_u0), " u0=None)",
+    " u0=None)",
     " x2dot=", @sprintf("%.4e", init_comps.x2dot),
     " x3_range=", @sprintf("%.4e", init_comps.x3_range),
     " cont=", @sprintf("%.4e", init_comps.continuity))
@@ -1348,7 +1348,7 @@ for run_id in 1:length(initial_guesses)
       Estar_err = percent_error_pct(Estar_est, Estar)
       iter_seconds = time() - t_start
       println("Run ", run_id, " ", stage_ref[], " Epoch ", epoch, " -- cost: ", l,
-        " | state=", comps.state, " x3=", comps.x3, " (obs=", format_x3_obs(comps.x3_obs), " x3_init=", format_x3_init(comps.x3_u0), " u0=None) x2dot=", comps.x2dot, " x3_range=", comps.x3_range, " cont=", comps.continuity,
+        " | state=", comps.state, " x3=", comps.x3, " (obs=", format_x3_obs(comps.x3_obs), " u0=None) x2dot=", comps.x2dot, " x3_range=", comps.x3_range, " cont=", comps.continuity,
         " | iter_s=", @sprintf("%.1f", iter_seconds),
         " | x1_rec=", @sprintf("%.2f", recon.x1), "% x3_rec=", @sprintf("%.2f", recon.x3), "%",
         " | ks=", @sprintf("%.3e", ks_est), " (", @sprintf("%.2f", ks_err), "%)",

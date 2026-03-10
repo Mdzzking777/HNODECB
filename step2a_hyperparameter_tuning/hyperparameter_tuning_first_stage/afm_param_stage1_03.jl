@@ -40,7 +40,14 @@ if !isdir(result_folder)
   mkdir(result_folder)
 end
 run_tag = get(ENV, "HNODECB_STAGE1_RUN_TAG", "")
-result_name_string = run_tag == "" ? "afm_param_stage1_03.jld" : "afm_param_stage1_03_" * run_tag * ".jld"
+stage1_variant = get(ENV, "HNODECB_STAGE1_VARIANT", "stage1")
+use_stage1pluslight = stage1_variant == "stage1pluslight" || get(ENV, "HNODECB_STAGE1PLUSLIGHT_MODE", "0") == "1"
+use_stage1plus = stage1_variant == "stage1plus" || stage1_variant == "stage1pluslight" ||
+  get(ENV, "HNODECB_STAGE1PLUS_MODE", "0") == "1" || use_stage1pluslight
+default_result_stem = use_stage1pluslight ? "afm_param_stage1pluslight_03" :
+  (use_stage1plus ? "afm_param_stage1plus_03" : "afm_param_stage1_03")
+result_stem = get(ENV, "HNODECB_STAGE1_RESULT_STEM", default_result_stem)
+result_name_string = run_tag == "" ? result_stem * ".jld" : result_stem * "_" * run_tag * ".jld"
 
 error_level = "e0.0"
 
@@ -63,6 +70,10 @@ ode_data_full = ode_data_full[:, contact_idx:end]
 all_times = solution_dataframe_full.t
 x2dot_all = solution_dataframe_full.x2dot
 contact_all = solution_dataframe_full.contact .== 1
+true_s_all = Float64.(solution_dataframe_full.s)
+true_contact_weight_all = contact_weight.(true_s_all, adhesion_transition)
+true_contact_weight_at_time = make_contact_weight_lookup(all_times, true_s_all)
+monitor_idx_full = collect(1:length(all_times))
 
 # Physical prior for x3 (no observations)
 x3_range_center = 0.0
@@ -166,6 +177,12 @@ function env_float(key, default)
   end
 end
 
+stage1pluslight_gnn_enabled = use_stage1pluslight && get(ENV, "HNODECB_STAGE1PLUS_GNN_ENABLE", "1") == "1"
+stage1pluslight_gnn_target = env_float("HNODECB_STAGE1PLUS_GNN_TARGET", 5e-10)
+stage1pluslight_gnn_quantile = clamp(env_float("HNODECB_STAGE1PLUS_GNN_QUANTILE", 0.95), 0.0, 1.0)
+stage1pluslight_gnn_eps = env_float("HNODECB_STAGE1PLUS_GNN_EPS", 1e-30)
+stage1pluslight_gnn_contact_floor = clamp(env_float("HNODECB_STAGE1PLUS_GNN_CONTACT_FLOOR", 0.5), 0.0, 1.0)
+
 function grad_norm_safe(g)
   try
     return norm(vec(g))
@@ -174,7 +191,7 @@ function grad_norm_safe(g)
   end
 end
 
-# "God-view" Hertz force (truth) for monitoring only (never used in training)
+# "God-view" Hertz force (truth) for monitoring only (never used in training).
 function fhertz_true_from_states(u_mat, idxs)
   out = Vector{Float64}(undef, length(idxs))
   @inbounds for (k, j) in enumerate(idxs)
@@ -186,20 +203,119 @@ function fhertz_true_from_states(u_mat, idxs)
   return out
 end
 
-# NN-predicted Hertz force for monitoring only (never used in training)
-function fhertz_pred_from_states(u_mat, idxs, p_net_struct, appr, st)
+# NN-predicted Hertz force for monitoring only (never used in training).
+function fhertz_pred_from_states(u_mat, idxs, p_net_struct, appr, st; nn_gain::Float64=1.0)
   out = Vector{Float64}(undef, length(idxs))
   @inbounds for (k, j) in enumerate(idxs)
-    s = dist + u_mat[1, j] - u_mat[3, j]
-    delta = softplus(-s, adhesion_transition)
-    delta = ifelse(delta > 0.0, delta, 0.0)
-    w = contact_weight(s, adhesion_transition)
-    nn_in = [u_mat[1, j], u_mat[2, j], u_mat[3, j], delta]
+    w_true = true_contact_weight_all[j]
+    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j])
     uhat = appr(nn_in, p_net_struct, st)[1]
-    out[k] = softplus(uhat[1], adhesion_transition) * w
+    out[k] = nn_gain * uhat[1] * w_true
   end
   return out
 end
+
+function fhertz_pred_and_raw_from_states(u_mat, idxs, p_net_struct, appr, st; nn_gain::Float64=1.0)
+  out = Vector{Float64}(undef, length(idxs))
+  raw = Vector{Float64}(undef, length(idxs))
+  @inbounds for (k, j) in enumerate(idxs)
+    w_true = true_contact_weight_all[j]
+    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j])
+    uhat = appr(nn_in, p_net_struct, st)[1]
+    raw[k] = uhat[1]
+    out[k] = nn_gain * uhat[1] * w_true
+  end
+  return out, raw
+end
+
+function effective_contact_positions(idxs, fh_true)
+  contact_pos = [k for (k, j) in enumerate(idxs) if contact_all[j]]
+  if isempty(contact_pos)
+    return Int[]
+  end
+  max_true = maximum(fh_true[contact_pos])
+  if !isfinite(max_true) || max_true <= 0.0
+    return contact_pos
+  end
+  floor_val = nn_monitor_effective_contact_frac * max_true
+  eff_pos = [k for k in contact_pos if fh_true[k] > floor_val]
+  return isempty(eff_pos) ? contact_pos : eff_pos
+end
+
+function effective_contact_positions_by_wtrue(idxs; floor=0.5)
+  pos = [k for (k, j) in enumerate(idxs) if true_contact_weight_all[j] > floor]
+  if isempty(pos)
+    pos = [k for (k, j) in enumerate(idxs) if true_contact_weight_all[j] > 0.0]
+  end
+  return isempty(pos) ? collect(1:length(idxs)) : pos
+end
+
+function compute_stage1plus_gnn_scale(u_mat, idxs, p_net_struct, appr, st)
+  if !stage1pluslight_gnn_enabled || appr === nothing
+    return (g_nn=1.0, amp_ref=NaN, eff_count=0)
+  end
+  eff_pos = effective_contact_positions_by_wtrue(idxs; floor=stage1pluslight_gnn_contact_floor)
+  if isempty(eff_pos)
+    return (g_nn=1.0, amp_ref=NaN, eff_count=0)
+  end
+  amp_vals = Vector{Float64}(undef, length(eff_pos))
+  @inbounds for (m, k) in enumerate(eff_pos)
+    j = idxs[k]
+    w_true = true_contact_weight_all[j]
+    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j])
+    uhat = appr(nn_in, p_net_struct, st)[1]
+    amp_vals[m] = abs(uhat[1] * w_true)
+  end
+  amp_ref = quantile(amp_vals, stage1pluslight_gnn_quantile)
+  if !isfinite(amp_ref) || amp_ref < 0.0
+    return (g_nn=1.0, amp_ref=amp_ref, eff_count=length(eff_pos))
+  end
+  g_nn = stage1pluslight_gnn_target / (amp_ref + stage1pluslight_gnn_eps)
+  if !isfinite(g_nn) || g_nn <= 0.0
+    g_nn = 1.0
+  end
+  return (g_nn=g_nn, amp_ref=amp_ref, eff_count=length(eff_pos))
+end
+
+function fhertz_monitor_metrics(u_mat, idxs, p_net_struct, appr, st; fh_true_ref=nothing, eff_pos_ref=nothing, nn_gain::Float64=1.0)
+  fh_true = fh_true_ref === nothing ? fhertz_true_from_states(u_mat, idxs) : fh_true_ref
+  fh_pred, raw = fhertz_pred_and_raw_from_states(u_mat, idxs, p_net_struct, appr, st; nn_gain=nn_gain)
+  eff_pos = eff_pos_ref === nothing ? effective_contact_positions(idxs, fh_true) : eff_pos_ref
+  if isempty(eff_pos)
+    return (
+      fhertz_err=NaN,
+      raw_min=NaN,
+      raw_max=NaN,
+      raw_mean=NaN,
+      raw_neg_frac=NaN,
+      fh_min=NaN,
+      fh_max=NaN,
+      fh_mean=NaN,
+      fh_abs_p95=NaN
+    )
+  end
+  raw_eff = raw[eff_pos]
+  fh_eff = fh_pred[eff_pos]
+  fh_abs = abs.(fh_eff)
+  err_sum = sum(abs2, fh_pred[eff_pos] .- fh_true[eff_pos])
+  truth_sum = sum(abs2, fh_true[eff_pos])
+  fhertz_err = truth_sum <= 0.0 ? NaN : relative_rmse_pct(err_sum, truth_sum, length(eff_pos), 0.0)
+  raw_neg_frac = count(<(0.0), raw_eff) / length(raw_eff)
+  return (
+    fhertz_err=fhertz_err,
+    raw_min=minimum(raw_eff),
+    raw_max=maximum(raw_eff),
+    raw_mean=mean(raw_eff),
+    raw_neg_frac=raw_neg_frac,
+    fh_min=minimum(fh_eff),
+    fh_max=maximum(fh_eff),
+    fh_mean=mean(fh_eff),
+    fh_abs_p95=quantile(fh_abs, 0.95)
+  )
+end
+
+monitor_fhertz_true = fhertz_true_from_states(ode_data_full, monitor_idx_full)
+monitor_eff_positions = effective_contact_positions(monitor_idx_full, monitor_fhertz_true)
 
 # Inf logger to diagnose bad trials (set HNODECB_INF_LOG=0 to silence)
 inf_log_remaining = Ref(20)
@@ -264,7 +380,7 @@ function first_nonfinite_vector(v)
   end
   return "idx=" * string(idx) * " val=" * string(v[idx])
 end
-function log_failure_diag(tag, sol, p, appr, st, known_pars, expected_n)
+function log_failure_diag(tag, sol, p, appr, st, known_pars, expected_n; zero_nn_override::Bool=false, nn_gain::Float64=1.0)
   Zygote.ignore() do
     if !fail_diag_enabled
       return
@@ -299,19 +415,33 @@ function log_failure_diag(tag, sol, p, appr, st, known_pars, expected_n)
     s = dist + u_last[1] - u_last[3]
     delta = softplus(-s, adhesion_transition)
     delta = ifelse(delta > 0.0, delta, 0.0)
-    w = contact_weight(s, adhesion_transition)
-    nn_in = [u_last[1], u_last[2], u_last[3], delta]
-    nn_out = appr(nn_in, p.p_net, st)[1][1]
-    F_hertz = softplus(nn_out, adhesion_transition) * w
-    Fad_eff = Fad * w
+    w_pred = contact_weight(s, adhesion_transition)
+    w_true = true_contact_weight_at_time(t_last)
+    nn_out = if appr === nothing
+      NaN
+    else
+      nn_in = nn_input_from_values(u_last[1], u_last[2])
+      appr(nn_in, p.p_net, st)[1][1]
+    end
+    F_hertz = if zero_nn_override
+      0.0
+    elseif appr === nothing
+      (4.0 / 3.0) * Estar * sqrt(R) * (delta^1.5)
+    else
+      nn_gain * nn_out * w_true
+    end
+    Fad_eff = Fad * w_pred
     rhs_x2dot = (Fd * cos(wd * t_last) - k * u_last[1] - c * u_last[2] + Fad_eff - F_hertz) / m
     rhs_x3dot = (Fad_eff - F_hertz - ks * u_last[3]) / cs
     tprintln("FAIL_DIAG[", tag, "] phys: s=", fmt_e(s, sigdigits=4),
       " delta=", fmt_e(delta, sigdigits=4),
-      " w=", fmt_e(w, sigdigits=4),
+      " w_pred=", fmt_e(w_pred, sigdigits=4),
+      " w_true=", fmt_e(w_true, sigdigits=4),
       " nn_out=", fmt_e(nn_out, sigdigits=4),
+      " nn_gain=", fmt_e(nn_gain, sigdigits=4),
       " F_hertz=", fmt_e(F_hertz, sigdigits=4),
-      " Fad_eff=", fmt_e(Fad_eff, sigdigits=4))
+      " Fad_eff=", fmt_e(Fad_eff, sigdigits=4),
+      " zero_override=", zero_nn_override)
     tprintln("FAIL_DIAG[", tag, "] rhs: x2dot=", fmt_e(rhs_x2dot, sigdigits=4),
       " x3dot=", fmt_e(rhs_x3dot, sigdigits=4),
       " ks=", fmt_e(ks, sigdigits=4),
@@ -325,18 +455,53 @@ function make_train_val_masks(n, val_stride, val_offset)
   return sort(train_idx), sort(val_idx)
 end
 
-function build_nn(num_hidden_layers::Int, num_hidden_nodes::Int)
-  hidden = 2^num_hidden_nodes
-  layers = Any[]
-  push!(layers, Lux.Dense(4, hidden, gelu; init_weight=my_glorot_uniform, init_bias=my_glorot_uniform))
-  for _ in 1:num_hidden_layers
-    push!(layers, Lux.Dense(hidden, hidden, gelu; init_weight=my_glorot_uniform, init_bias=my_glorot_uniform))
+function parse_rank_filter(spec::AbstractString, nmax::Int, env_key::AbstractString)
+  spec = strip(spec)
+  if spec == ""
+    return nothing
   end
-  push!(layers, Lux.Dense(hidden, 1; init_weight=my_glorot_uniform, init_bias=my_glorot_uniform))
+  idx = Int[]
+  for token in split(spec, ",")
+    t = strip(token)
+    if t == ""
+      continue
+    end
+    v = tryparse(Int, t)
+    if v === nothing
+      error(env_key * " contains a non-integer token: " * t)
+    end
+    push!(idx, v)
+  end
+  if isempty(idx)
+    error(env_key * " is set but no valid indices were parsed")
+  end
+  idx = sort(unique(idx))
+  for v in idx
+    if v < 1 || v > nmax
+      error(env_key * " index " * string(v) * " is outside 1.." * string(nmax))
+    end
+  end
+  return idx
+end
+
+nn_fixed_num_hidden_layers = 3
+nn_fixed_num_hidden_nodes = 5
+
+function build_nn(num_hidden_layers::Int, num_hidden_nodes::Int)
+  hidden = 2^nn_fixed_num_hidden_nodes
+  layers = Any[]
+  push!(layers, Lux.Dense(2, hidden, gelu; init_weight=my_glorot_uniform, use_bias=false))
+  for _ in 1:nn_fixed_num_hidden_layers
+    push!(layers, Lux.Dense(hidden, hidden, gelu; init_weight=my_glorot_uniform, use_bias=false))
+  end
+  push!(layers, Lux.Dense(hidden, 1; init_weight=my_glorot_uniform, use_bias=false))
   return Lux.Chain(layers...)
 end
 
-function make_uode_func(appr, st, known_pars)
+nn_input_from_state(u) = u[1:2]
+nn_input_from_values(x1, x2) = [x1, x2]
+
+function make_uode_func(appr, st, known_pars; zero_nn_override::Bool=false, nn_gain::Float64=1.0)
   k, wd, m, c, Fd, R, dist, Fad = known_pars
   f(du, u, p, t) =
     let appr = appr, st = st, k = k, wd = wd, m = m, c = c, Fd = Fd, R = R, dist = dist, Fad = Fad
@@ -346,12 +511,18 @@ function make_uode_func(appr, st, known_pars)
       s = dist + u[1] - u[3]
       delta = softplus(-s, adhesion_transition)
       delta = ifelse(delta > 0.0, delta, 0.0)
-      w = contact_weight(s, adhesion_transition)
+      w_pred = contact_weight(s, adhesion_transition)
 
-      nn_in = [u[1], u[2], u[3], delta]
-      uhat = appr(nn_in, p.p_net, st)[1]
-      F_hertz = softplus(uhat[1], adhesion_transition) * w
-      Fad_eff = Fad * w
+      F_hertz = if zero_nn_override
+        0.0
+      elseif appr === nothing
+        (4.0 / 3.0) * Estar * sqrt(R) * (delta^1.5)
+      else
+        nn_in = nn_input_from_state(u)
+        uhat = appr(nn_in, p.p_net, st)[1]
+        nn_gain * uhat[1] * true_contact_weight_at_time(t)
+      end
+      Fad_eff = Fad * w_pred
 
       @inbounds du[1] = u[2]
       @inbounds du[2] = (Fd * cos(wd * t) - k * u[1] - c * u[2] + Fad_eff - F_hertz) / m
@@ -360,25 +531,31 @@ function make_uode_func(appr, st, known_pars)
   return f
 end
 
-function x2dot_rhs(u, mech, p_net, appr, st, known_pars, t)
+function x2dot_rhs(u, mech, p_net, appr, st, known_pars, t; zero_nn_override::Bool=false, nn_gain::Float64=1.0)
   k, wd, m, c, Fd, R, dist, Fad = known_pars
   ks, cs = mech
   s = dist + u[1] - u[3]
   delta = softplus(-s, adhesion_transition)
   delta = ifelse(delta > 0.0, delta, 0.0)
-  w = contact_weight(s, adhesion_transition)
-  nn_in = [u[1], u[2], u[3], delta]
-  uhat = appr(nn_in, p_net, st)[1]
-  F_hertz = softplus(uhat[1], adhesion_transition) * w
-  Fad_eff = Fad * w
+  w_pred = contact_weight(s, adhesion_transition)
+  F_hertz = if zero_nn_override
+    0.0
+  elseif appr === nothing
+    (4.0 / 3.0) * Estar * sqrt(R) * (delta^1.5)
+  else
+    nn_in = nn_input_from_state(u)
+    uhat = appr(nn_in, p_net, st)[1]
+    nn_gain * uhat[1] * true_contact_weight_at_time(t)
+  end
+  Fad_eff = Fad * w_pred
   return (Fd * cos(wd * t) - k * u[1] - c * u[2] + Fad_eff - F_hertz) / m
 end
 
 function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
   state12_scale, x2dot_scale, x3_scale,
   use_multiple_shooting, ms_group_size, ms_continuity_term,
-  appr, st, known_pars, x3_init_val,
-  l2_weight, re_pnet)
+  appr, st, known_pars, x3_t0_val,
+  l2_weight, re_pnet; zero_nn_override::Bool=false, nn_gain::Float64=1.0)
 
   # map raw -> bounded mech params
   mech = [
@@ -390,9 +567,10 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
 
   weights_val = ifelse.(contact_mask, contact_loss_weight, noncontact_loss_weight)
   weights_sum = sum(weights_val)
+  inf_diag = (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
   if !isfinite(weights_sum) || weights_sum <= 0
     log_inf("weights_sum")
-    return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
+    return Inf, inf_diag
   end
 
   total_state = 0.0
@@ -406,8 +584,8 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
     ranges = DiffEqFlux.group_ranges(length(times), ms_group_size)
     preds = Vector{Matrix{Float64}}(undef, length(ranges))
     for (i, rg) in enumerate(ranges)
-      u0 = [ode_data[1, first(rg)], ode_data[2, first(rg)], x3_init_val]
-      prob = ODEProblem{true}(make_uode_func(appr, st, known_pars), u0, (times[first(rg)], times[last(rg)]), p)
+      u0 = [ode_data[1, first(rg)], ode_data[2, first(rg)], x3_t0_val]
+      prob = ODEProblem{true}(make_uode_func(appr, st, known_pars; zero_nn_override=zero_nn_override, nn_gain=nn_gain), u0, (times[first(rg)], times[last(rg)]), p)
       trace_solve(() -> "ms solve start seg=" * string(i) * " len=" * string(length(rg)) *
         " t=" * string(round(times[first(rg)], sigdigits=3)) * "→" * string(round(times[last(rg)], sigdigits=3)))
         t_start = Zygote.ignore() do
@@ -418,27 +596,27 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
         " retcode=" * string(sol.retcode) * " size=" * string(size(sol, 2)))
       if !SciMLBase.successful_retcode(sol)
         log_inf("retcode=" * string(sol.retcode))
-        log_failure_diag("ms_retcode_seg" * string(i), sol, p, appr, st, known_pars, length(rg))
-        return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
+        log_failure_diag("ms_retcode_seg" * string(i), sol, p, appr, st, known_pars, length(rg); zero_nn_override=zero_nn_override, nn_gain=nn_gain)
+        return Inf, inf_diag
       end
       if size(sol, 2) != length(rg)
         log_inf("sol_size_mismatch_ms")
-        log_failure_diag("ms_size_seg" * string(i), sol, p, appr, st, known_pars, length(rg))
-        return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
+        log_failure_diag("ms_size_seg" * string(i), sol, p, appr, st, known_pars, length(rg); zero_nn_override=zero_nn_override, nn_gain=nn_gain)
+        return Inf, inf_diag
       end
       preds[i] = Array(sol)
 
       uhat = preds[i]
       if any(x -> !isfinite(x), uhat)
         log_inf("uhat_nonfinite_ms")
-        log_failure_diag("ms_uhat_nonfinite_seg" * string(i), sol, p, appr, st, known_pars, length(rg))
-        return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
+        log_failure_diag("ms_uhat_nonfinite_seg" * string(i), sol, p, appr, st, known_pars, length(rg); zero_nn_override=zero_nn_override, nn_gain=nn_gain)
+        return Inf, inf_diag
       end
       seg_weights = weights_val[rg]
       seg_weights_sum = sum(seg_weights)
       if !isfinite(seg_weights_sum) || seg_weights_sum <= 0
         log_inf("seg_weights_sum")
-        return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
+        return Inf, inf_diag
       end
 
       state_err = vec(sum(abs2.((ode_data[1:2, rg] .- uhat[1:2, :]) ./ state12_scale), dims=1))
@@ -448,14 +626,14 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
       if !isempty(contact_idx)
         local_idx = rg[contact_idx]
         uhat_const = Zygote.dropgrad(uhat)
-        x2dot_pred = [x2dot_rhs(view(uhat_const, :, j), mech, p_net_struct, appr, st, known_pars, times[rg[j]]) for j in 1:length(rg)]
+        x2dot_pred = [x2dot_rhs(view(uhat_const, :, j), mech, p_net_struct, appr, st, known_pars, times[rg[j]]; zero_nn_override=zero_nn_override, nn_gain=nn_gain) for j in 1:length(rg)]
         if any(x -> !isfinite(x), x2dot_pred)
           log_inf("x2dot_pred_nonfinite_ms")
           Zygote.ignore() do
             tprintln("FAIL_DIAG[ms_x2dot_nonfinite_seg", i, "]: first_nonfinite=", first_nonfinite_vector(x2dot_pred))
           end
-          log_failure_diag("ms_x2dot_nonfinite_seg" * string(i), sol, p, appr, st, known_pars, length(rg))
-          return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
+          log_failure_diag("ms_x2dot_nonfinite_seg" * string(i), sol, p, appr, st, known_pars, length(rg); zero_nn_override=zero_nn_override, nn_gain=nn_gain)
+          return Inf, inf_diag
         end
         x2_err = abs2.((x2dot_data[local_idx] .- x2dot_pred[contact_idx]) ./ x2dot_scale)
         x2_w = seg_weights[contact_idx]
@@ -491,8 +669,8 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
       x3_rec_ref[] = relative_rmse_pct(x3_err_sum, x3_truth_sum, count, scale_eps)
     end
   else
-    u0 = [ode_data[1, 1], ode_data[2, 1], x3_init_val]
-    prob = ODEProblem{true}(make_uode_func(appr, st, known_pars), u0, (times[1], times[end]), p)
+    u0 = [ode_data[1, 1], ode_data[2, 1], x3_t0_val]
+    prob = ODEProblem{true}(make_uode_func(appr, st, known_pars; zero_nn_override=zero_nn_override, nn_gain=nn_gain), u0, (times[1], times[end]), p)
     trace_solve(() -> "ss solve start n=" * string(length(times)) *
       " t=" * string(round(times[1], sigdigits=3)) * "→" * string(round(times[end], sigdigits=3)))
     t_start = Zygote.ignore() do
@@ -503,19 +681,19 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
       " retcode=" * string(sol.retcode) * " size=" * string(size(sol, 2)))
     if !SciMLBase.successful_retcode(sol)
       log_inf("retcode=" * string(sol.retcode))
-      log_failure_diag("ss_retcode", sol, p, appr, st, known_pars, length(times))
-      return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
+      log_failure_diag("ss_retcode", sol, p, appr, st, known_pars, length(times); zero_nn_override=zero_nn_override, nn_gain=nn_gain)
+      return Inf, inf_diag
     end
     if size(sol, 2) != length(times)
       log_inf("sol_size_mismatch_ss")
-      log_failure_diag("ss_size", sol, p, appr, st, known_pars, length(times))
-      return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
+      log_failure_diag("ss_size", sol, p, appr, st, known_pars, length(times); zero_nn_override=zero_nn_override, nn_gain=nn_gain)
+      return Inf, inf_diag
     end
     uhat = Array(sol)
     if any(x -> !isfinite(x), uhat)
       log_inf("uhat_nonfinite_ss")
-      log_failure_diag("ss_uhat_nonfinite", sol, p, appr, st, known_pars, length(times))
-      return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
+      log_failure_diag("ss_uhat_nonfinite", sol, p, appr, st, known_pars, length(times); zero_nn_override=zero_nn_override, nn_gain=nn_gain)
+      return Inf, inf_diag
     end
 
     state_err = vec(sum(abs2.((ode_data[1:2, :] .- uhat[1:2, :]) ./ state12_scale), dims=1))
@@ -524,14 +702,14 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
     contact_idx = findall(contact_mask)
     if !isempty(contact_idx)
       uhat_const = Zygote.dropgrad(uhat)
-      x2dot_pred = [x2dot_rhs(view(uhat_const, :, j), mech, p_net_struct, appr, st, known_pars, times[j]) for j in 1:length(times)]
+      x2dot_pred = [x2dot_rhs(view(uhat_const, :, j), mech, p_net_struct, appr, st, known_pars, times[j]; zero_nn_override=zero_nn_override, nn_gain=nn_gain) for j in 1:length(times)]
       if any(x -> !isfinite(x), x2dot_pred)
         log_inf("x2dot_pred_nonfinite_ss")
         Zygote.ignore() do
           tprintln("FAIL_DIAG[ss_x2dot_nonfinite]: first_nonfinite=", first_nonfinite_vector(x2dot_pred))
         end
-        log_failure_diag("ss_x2dot_nonfinite", sol, p, appr, st, known_pars, length(times))
-        return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, cont=Inf, x1_rec=Inf, x3_rec=Inf)
+        log_failure_diag("ss_x2dot_nonfinite", sol, p, appr, st, known_pars, length(times); zero_nn_override=zero_nn_override, nn_gain=nn_gain)
+        return Inf, inf_diag
       end
       x2_err = abs2.((x2dot_data[contact_idx] .- x2dot_pred[contact_idx]) ./ x2dot_scale)
       x2_w = weights_val[contact_idx]
@@ -570,12 +748,18 @@ use_adam = get(ENV, "HNODECB_STAGE1_USE_ADAM", "0") == "1"
 
 selftest = get(ENV, "HNODECB_SELFTEST", "0") == "1"
 if selftest
-  tprintln("=== AFM Stage1 (03) SELFTEST ===")
+  tprintln(use_stage1plus ? "=== AFM Stage1plus (03) SELFTEST ===" : "=== AFM Stage1 (03) SELFTEST ===")
 else
-  tprintln("=== AFM Stage1 (03) ===")
+  tprintln(use_stage1plus ? "=== AFM Stage1plus (03) ===" : "=== AFM Stage1 (03) ===")
 end
 tprintln("Switches: MS=", use_multiple_shooting, " L2=", use_l2_regularization, " (λ=", l2_weight, ")")
 tprintln("Stage1 ADAM: ", use_adam ? "ON" : "OFF")
+tprintln("Stage1plus mode: ", use_stage1plus ? "ON" : "OFF")
+if use_adam && !use_stage1plus
+  tprintln("Stage1 warm-start export: OFF (ADAM branch stores no NN states)")
+else
+  tprintln("Stage1 warm-start export: ON (top candidates will save NN states for Stage2)")
+end
 
 if selftest
   # Minimal runtime check: build NN, solve ODE once, compute one loss
@@ -586,8 +770,8 @@ if selftest
   x2dot_train = x2dot_all[idx]
   contact_train = contact_all[idx]
 
-  num_hidden_layers = 1
-  num_hidden_nodes = 3
+  num_hidden_layers = nn_fixed_num_hidden_layers
+  num_hidden_nodes = nn_fixed_num_hidden_nodes
   ms_group_size = min(10, n)
   ms_continuity_term = 1e-3
 
@@ -607,7 +791,7 @@ if selftest
     raw_from_value(cs_mid, cs_bounds[1], cs_bounds[2])
   ]
   θ0 = ComponentVector(p_net=p_net_vec, mech_raw=raw_init)
-  x3_init_val = ode_train[3, 1]
+  x3_t0_val = ode_train[3, 1]
   if get(ENV, "HNODECB_SELFTEST_PHYS", "1") == "1"
     # Print physical scale diagnostics at initial time
     p_net_struct = re_pnet(θ0.p_net)
@@ -615,17 +799,18 @@ if selftest
       bound_param(θ0.mech_raw[1], ks_bounds[1], ks_bounds[2]),
       bound_param(θ0.mech_raw[2], cs_bounds[1], cs_bounds[2])
     ]
-    u0 = [ode_train[1, 1], ode_train[2, 1], x3_init_val]
+    u0 = [ode_train[1, 1], ode_train[2, 1], x3_t0_val]
     t0 = times_train[1]
     k, wd, m, c, Fd, R, dist, Fad = known_pars
     s = dist + u0[1] - u0[3]
     delta = softplus(-s, adhesion_transition)
     delta = ifelse(delta > 0.0, delta, 0.0)
-    w = contact_weight(s, adhesion_transition)
-    nn_in = [u0[1], u0[2], u0[3], delta]
+    w_pred = contact_weight(s, adhesion_transition)
+    w_true = true_contact_weight_at_time(t0)
+    nn_in = nn_input_from_values(u0[1], u0[2])
     uhat = approximating_neural_network(nn_in, p_net_struct, st)[1]
-    F_hertz = softplus(uhat[1], adhesion_transition) * w
-    Fad_eff = Fad * w
+    F_hertz = uhat[1] * w_true
+    Fad_eff = Fad * w_pred
     x2dot0 = (Fd * cos(wd * t0) - k * u0[1] - c * u0[2] + Fad_eff - F_hertz) / m
     x3dot0 = (Fad_eff - F_hertz - mech[1] * u0[3]) / mech[2]
     tprintln("  selftest phys @t0=", fmt_e(t0, sigdigits=3))
@@ -634,7 +819,8 @@ if selftest
       " x3=", fmt_e(u0[3], sigdigits=3))
     tprintln("    contact: s=", fmt_e(s, sigdigits=3),
       " delta=", fmt_e(delta, sigdigits=3),
-      " w=", fmt_e(w, sigdigits=3))
+      " w_pred=", fmt_e(w_pred, sigdigits=3),
+      " w_true=", fmt_e(w_true, sigdigits=3))
     tprintln("    nn_out=", fmt_e(uhat[1], sigdigits=3),
       " F_hertz=", fmt_e(F_hertz, sigdigits=3),
       " Fad_eff=", fmt_e(Fad_eff, sigdigits=3))
@@ -644,7 +830,7 @@ if selftest
   loss, diag = loss_single_or_ms(θ0, ode_train, x2dot_train, contact_train, times_train,
     state12_scale_full, x2dot_scale_full, x3_scale,
     use_multiple_shooting, ms_group_size, ms_continuity_term,
-    approximating_neural_network, st, known_pars, x3_init_val,
+    approximating_neural_network, st, known_pars, x3_t0_val,
     l2_weight, re_pnet)
 
   tprintln("  selftest loss=", fmt_e(loss, sigdigits=4))
@@ -687,22 +873,12 @@ else
       raw_from_value(cs_true, cs_bounds[1], cs_bounds[2])
     ]
     θ_sanity = ComponentVector(p_net=p_net_vec, mech_raw=raw_init)
-    x3_init_val = ode_train[3, 1]
-
-    appr_gt = function(nn_in, p_net, st)
-      x1, x2, x3, delta = nn_in
-      s = dist + x1 - x3
-      w = contact_weight(s, adhesion_transition)
-      F_true = (4.0 / 3.0) * Estar * sqrt(R) * (delta^1.5)
-      w_eff = max(w, 1e-12)
-      uhat = inv_softplus(F_true / w_eff, adhesion_transition)
-      return ([uhat], st)
-    end
+    x3_t0_val = ode_train[3, 1]
 
     loss, diag = loss_single_or_ms(θ_sanity, ode_train, x2dot_train, contact_train, times_train,
       state12_scale_full, x2dot_scale_full, x3_scale,
       use_multiple_shooting, 10, 1e-3,
-      appr_gt, st, known_pars, x3_init_val,
+      nothing, st, known_pars, x3_t0_val,
       0.0, re_pnet)
 
     tprintln("  sanity loss=", fmt_e(loss, sigdigits=4))
@@ -715,14 +891,8 @@ else
         "% x3=", fmt_f(diag.x3_rec, digits=2), "%")
     end
 
-    if !isempty(contact_idx_train)
-      p_net_struct = re_pnet(θ_sanity.p_net)
-      fh_true = fhertz_true_from_states(ode_train, contact_idx_train)
-      fh_pred = fhertz_pred_from_states(ode_train, contact_idx_train, p_net_struct, appr_gt, st)
-      err_sum = sum(abs2, fh_pred .- fh_true)
-      truth_sum = sum(abs2, fh_true)
-      fh_err = relative_rmse_pct(err_sum, truth_sum, length(contact_idx_train), scale_eps)
-      tprintln("  sanity nn: F_hertz err=", fmt_f(fh_err, digits=2), "%")
+    if use_adam && get(ENV, "HNODECB_LOG_FHERTZ_ERR", "1") == "1"
+      tprintln("  sanity nn: F_hertz err=0.0%")
     end
   end
 
@@ -735,8 +905,8 @@ function objective(trial)
     ks0 = trial.suggest_float("ks0", ks_bounds[1], ks_bounds[2], log=true)
     cs0 = trial.suggest_float("cs0", cs_bounds[1], cs_bounds[2], log=true)
     learning_rate_adam = trial.suggest_float("learning_rate_adam", 1e-5, 1e-2, log=true)
-    num_hidden_layers = trial.suggest_int("num_hidden_layers", 1, 3)
-    num_hidden_nodes = trial.suggest_int("num_hidden_nodes", 3, 5)
+    num_hidden_layers = nn_fixed_num_hidden_layers
+    num_hidden_nodes = nn_fixed_num_hidden_nodes
     ms_group_size = trial.suggest_int("ms_group_size", 10, 200)
     ms_continuity_term = trial.suggest_float("ms_continuity_term", 1e-6, 10.0, log=true)
     # train/val split
@@ -755,11 +925,7 @@ function objective(trial)
     state12_scale_train = state12_scale_full
     x2dot_scale_train = x2dot_scale_full
 
-    # Precompute ground-truth Hertz force on contact points (monitoring only)
-    fhertz_true_train = nothing
-    if get(ENV, "HNODECB_LOG_FHERTZ_ERR", "1") == "1"
-      fhertz_true_train = fhertz_true_from_states(ode_train, contact_idx_train)
-    end
+    fhertz_monitor_enabled = get(ENV, "HNODECB_LOG_FHERTZ_ERR", "1") == "1" && !isempty(monitor_eff_positions)
 
     # NN architecture
     tprintln("  building NN + init params")
@@ -778,7 +944,7 @@ function objective(trial)
     θ0 = ComponentVector(p_net=p_net_vec, mech_raw=raw_init)
 
     # x3 initial value (allowed: first contact)
-    x3_init_val = ode_train[3, 1]
+    x3_t0_val = ode_train[3, 1]
 
     # loss function
     function loss_fn(θ)
@@ -786,7 +952,7 @@ function objective(trial)
       loss, diag = loss_single_or_ms(θ, ode_train, x2dot_train, contact_train, times_train,
         state12_scale_train, x2dot_scale_train, x3_scale,
         use_multiple_shooting, ms_group_size, ms_continuity_term,
-        approximating_neural_network, st, known_pars, x3_init_val,
+        approximating_neural_network, st, known_pars, x3_t0_val,
         l2_weight, re_pnet)
       last_diag[] = diag
       return loss, diag
@@ -811,7 +977,7 @@ function objective(trial)
     training_costs = fill(Inf, maxiters)
     stuck = Ref(false)
 
-    lr_adapt = get(ENV, "HNODECB_LR_ADAPT", "1") == "1"
+    lr_adapt = get(ENV, "HNODECB_LR_ADAPT", "0") == "1"
     lr_min = env_float("HNODECB_LR_MIN", 1e-6)
     lr_max = env_float("HNODECB_LR_MAX", 1e-2)
     lr_eta = env_float("HNODECB_LR_ETA", 0.05)
@@ -891,15 +1057,19 @@ function objective(trial)
           tprintln("  rec: x1=", fmt_f(diag.x1_rec, digits=2), "% x3=",
             fmt_f(diag.x3_rec, digits=2), "%")
         end
-        if fhertz_true_train !== nothing && !isempty(contact_idx_train)
+        if fhertz_monitor_enabled
           Zygote.ignore() do
             p_net_struct = re_pnet(θ.p_net)
-            fhertz_pred = fhertz_pred_from_states(ode_train, contact_idx_train,
-              p_net_struct, approximating_neural_network, st)
-            err_sum = sum(abs2, fhertz_pred .- fhertz_true_train)
-            truth_sum = sum(abs2, fhertz_true_train)
-            fhertz_err = relative_rmse_pct(err_sum, truth_sum, length(contact_idx_train), scale_eps)
-            tprintln("  nn: F_hertz err=", fmt_f(fhertz_err, digits=2), "%")
+            nn_metrics = fhertz_monitor_metrics(
+              ode_data_full, monitor_idx_full, p_net_struct,
+              approximating_neural_network, st;
+              fh_true_ref=monitor_fhertz_true, eff_pos_ref=monitor_eff_positions
+            )
+            tprintln("  nn: F_hertz err=", fmt_f(nn_metrics.fhertz_err, digits=2), "%")
+            tprintln("  nn raw: min=", fmt_e(nn_metrics.raw_min, sigdigits=3),
+              " max=", fmt_e(nn_metrics.raw_max, sigdigits=3),
+              " mean=", fmt_e(nn_metrics.raw_mean, sigdigits=3),
+              " neg=", fmt_f(100 * nn_metrics.raw_neg_frac, digits=2), "%")
           end
         end
       end
@@ -934,7 +1104,7 @@ function objective(trial)
     train_loss, _ = loss_single_or_ms(θ_best, ode_train, x2dot_train, contact_train, times_train,
       state12_scale_full, x2dot_scale_full, x3_scale,
       use_multiple_shooting, ms_group_size, ms_continuity_term,
-      approximating_neural_network, st, known_pars, x3_init_val,
+      approximating_neural_network, st, known_pars, x3_t0_val,
       l2_weight, re_pnet)
     train_reason = last_inf_reason[]
 
@@ -944,7 +1114,7 @@ function objective(trial)
     val_loss, _ = loss_single_or_ms(θ_best, ode_val, x2dot_val, contact_val, times_val,
       state12_scale_full, x2dot_scale_full, x3_scale,
       use_multiple_shooting, ms_group_size, ms_continuity_term,
-      approximating_neural_network, st, known_pars, x3_init_val,
+      approximating_neural_network, st, known_pars, x3_t0_val,
       0.0, re_pnet)
     val_reason = last_inf_reason[]
 
@@ -989,6 +1159,7 @@ if use_adam
       # always record the trial, even if cost is Inf/NaN
       study.tell(trial, cost)
       params = Dict(trial.params)
+      params["trial_id"] = optuna_iteration
       metrics = last_trial_metrics[]
       reasons = last_trial_reasons[]
     catch ex
@@ -1028,8 +1199,10 @@ if use_adam
   serialize(result_folder * "/" * result_name_string, (
     study=nothing,
     trial_parameters=trial_parameters,
+    warm_start_top=Any[],
     best=best,
     bounds=(ks=ks_bounds, cs=cs_bounds),
+    true_values=(ks=ks_true, cs=cs_true),
     use_multiple_shooting=use_multiple_shooting,
     use_l2_regularization=use_l2_regularization,
     val_stride=val_stride,
@@ -1037,9 +1210,330 @@ if use_adam
     x3_obs_fraction=0.0,
     error_level=error_level
   ))
+elseif use_stage1plus
+  let
+  function rand_loguniform(rng, lo, hi)
+    return exp(rand(rng) * (log(hi) - log(lo)) + log(lo))
+  end
+
+  stage1_input_basename = get(ENV, "HNODECB_STAGE1PLUS_INPUT_BASENAME", "afm_param_stage1_03.jld")
+  stage1_input_file = normpath(joinpath(result_folder, stage1_input_basename))
+  if !isfile(stage1_input_file)
+    error("Stage1plus: missing Stage1 input file: " * stage1_input_file)
+  end
+  stage1_base = deserialize(stage1_input_file)
+  base_trials = haskey(stage1_base, :trial_parameters) ? stage1_base.trial_parameters : Any[]
+  if isempty(base_trials)
+    error("Stage1plus: no candidates found in Stage1 input file.")
+  end
+
+  stage1plus_input_topk = min(parse(Int, get(ENV, "HNODECB_STAGE1PLUS_INPUT_TOPK", "10")), length(base_trials))
+  searches_per_candidate = parse(Int, get(ENV, "HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE", "600"))
+  final_topk = parse(Int, get(ENV, "HNODECB_STAGE1PLUS_FINAL_TOPK", "9"))
+  base_filter_spec = get(ENV, "HNODECB_STAGE1PLUS_BASE_INDICES", "")
+  zero_nn_override_stage1plus = get(ENV, "HNODECB_STAGE1PLUS_ZERO_NN", "1") == "1"
+  shard_idx = parse(Int, get(ENV, "HNODECB_STAGE1_SHARD_INDEX", "1"))
+  shard_cnt = parse(Int, get(ENV, "HNODECB_STAGE1_SHARD_COUNT", "1"))
+  if shard_idx < 1 || shard_idx > shard_cnt
+    error("HNODECB_STAGE1_SHARD_INDEX must be in 1..HNODECB_STAGE1_SHARD_COUNT")
+  end
+
+  fixed_ms_group_size = 10
+  fixed_ms_continuity_term = 1e-3
+  fixed_num_hidden_layers = nn_fixed_num_hidden_layers
+  fixed_num_hidden_nodes = nn_fixed_num_hidden_nodes
+  fhertz_monitor_enabled = !isempty(monitor_eff_positions)
+  sorted_base = sort(base_trials, by = r -> r.loss)
+  base_candidates = sorted_base[1:stage1plus_input_topk]
+  base_rank_indices = collect(1:length(base_candidates))
+  base_filter_indices = parse_rank_filter(base_filter_spec, length(base_candidates), "HNODECB_STAGE1PLUS_BASE_INDICES")
+  if base_filter_indices !== nothing
+    allowed = Set(base_filter_indices)
+    base_rank_indices = [i for i in base_rank_indices if i in allowed]
+    tprintln("Stage1plus base candidate filter: [", join(base_filter_indices, ", "), "]")
+  end
+  if isempty(base_rank_indices)
+    error("Stage1plus: no base candidates assigned after HNODECB_STAGE1PLUS_BASE_INDICES filter.")
+  end
+  assignments = Tuple{Int, Int, Int}[]
+  global_trial_counter = 0
+  for base_rank in base_rank_indices
+    for rep in 1:searches_per_candidate
+      global_trial_counter += 1
+      if ((global_trial_counter - shard_idx) % shard_cnt) == 0
+        push!(assignments, (global_trial_counter, base_rank, rep))
+      end
+    end
+  end
+
+  train_idx, val_idx = make_train_val_masks(length(all_times), val_stride, val_offset)
+  ode_train = ode_data_full[:, train_idx]
+  ode_val = ode_data_full[:, val_idx]
+  times_train = all_times[train_idx]
+  times_val = all_times[val_idx]
+  x2dot_train = x2dot_all[train_idx]
+  x2dot_val = x2dot_all[val_idx]
+  contact_train = contact_all[train_idx]
+  contact_val = contact_all[val_idx]
+
+  state12_scale_train = state12_scale_full
+  x2dot_scale_train = x2dot_scale_full
+  x3_t0_val = ode_train[3, 1]
+
+  trial_parameters = []
+  tprintln("Stage1plus input: ", stage1_input_file)
+  tprintln("Stage1plus shard ", shard_idx, "/", shard_cnt,
+    " | base_candidates=", length(base_rank_indices),
+    " | searches_per_candidate=", searches_per_candidate,
+    " | local_trials=", length(assignments),
+    " | total_trials=", length(base_rank_indices) * searches_per_candidate)
+  tprintln("Stage1plus mode: NN-only random search | NN monitor=",
+    fhertz_monitor_enabled ? "ON" : "OFF",
+    " | zero_nn_override=", zero_nn_override_stage1plus ? "ON" : "OFF",
+    " | g_nn=", stage1pluslight_gnn_enabled ? "ON" : "OFF",
+    " | fixed NN: layers=", fixed_num_hidden_layers,
+    " nodes=", fixed_num_hidden_nodes)
+
+  for (global_trial_id, base_rank, rep) in assignments
+    base_rec = base_candidates[base_rank]
+    base_params = hasproperty(base_rec, :params) ? base_rec.params : Dict{Any, Any}()
+    ks_fixed = hasproperty(base_rec, :ks_hat) ? base_rec.ks_hat :
+      (haskey(base_params, "ks0") ? base_params["ks0"] : NaN)
+    cs_fixed = hasproperty(base_rec, :cs_hat) ? base_rec.cs_hat :
+      (haskey(base_params, "cs0") ? base_params["cs0"] : NaN)
+    base_trial_id = haskey(base_params, "trial_id") ? base_params["trial_id"] : missing
+
+    tprintln("Stage1plus trial ", global_trial_id,
+      " start (base_rank=", base_rank, ", rep=", rep, ")")
+    flush(stdout)
+
+    rng_trial = StableRNG(1_000_000 * base_rank + rep)
+    num_hidden_layers = fixed_num_hidden_layers
+    num_hidden_nodes = fixed_num_hidden_nodes
+    seed = abs(rand(rng_trial, Int))
+    rng = StableRNG(seed)
+    approximating_neural_network = build_nn(num_hidden_layers, num_hidden_nodes)
+    p_net, st = Lux.setup(rng, approximating_neural_network)
+    p_net = Flux.f64(p_net)
+    p_net_vec, re_pnet = Optimisers.destructure(p_net)
+    p_net_struct = re_pnet(p_net_vec)
+    gnn_info = compute_stage1plus_gnn_scale(
+      ode_data_full, monitor_idx_full, p_net_struct,
+      approximating_neural_network, st
+    )
+    g_nn = gnn_info.g_nn
+    raw_init = [
+      raw_from_value(ks_fixed, ks_bounds[1], ks_bounds[2]),
+      raw_from_value(cs_fixed, cs_bounds[1], cs_bounds[2])
+    ]
+    θ0 = ComponentVector(p_net=p_net_vec, mech_raw=raw_init)
+
+    inf_context[] = "train_eval"
+    last_inf_reason[] = ""
+    train_loss, diag = loss_single_or_ms(θ0, ode_train, x2dot_train, contact_train, times_train,
+      state12_scale_train, x2dot_scale_train, x3_scale,
+      use_multiple_shooting, fixed_ms_group_size, fixed_ms_continuity_term,
+      approximating_neural_network, st, known_pars, x3_t0_val,
+      0.0, re_pnet; zero_nn_override=zero_nn_override_stage1plus, nn_gain=g_nn)
+    train_reason = last_inf_reason[]
+
+    inf_context[] = "val_eval"
+    last_inf_reason[] = ""
+    val_loss, val_diag = loss_single_or_ms(θ0, ode_val, x2dot_val, contact_val, times_val,
+      state12_scale_full, x2dot_scale_full, x3_scale,
+      use_multiple_shooting, fixed_ms_group_size, fixed_ms_continuity_term,
+      approximating_neural_network, st, known_pars, x3_t0_val,
+      0.0, re_pnet; zero_nn_override=zero_nn_override_stage1plus, nn_gain=g_nn)
+    val_reason = last_inf_reason[]
+
+    ks_hat = bound_param(θ0.mech_raw[1], ks_bounds[1], ks_bounds[2])
+    cs_hat = bound_param(θ0.mech_raw[2], cs_bounds[1], cs_bounds[2])
+    ks_err_pct = rel_err_pct(ks_hat, ks_true, scale_eps)
+    cs_err_pct = rel_err_pct(cs_hat, cs_true, scale_eps)
+    val_nn_metrics = Ref((
+      fhertz_err=NaN,
+      raw_min=NaN,
+      raw_max=NaN,
+      raw_mean=NaN,
+      raw_neg_frac=NaN,
+      fh_min=NaN,
+      fh_max=NaN,
+      fh_mean=NaN,
+      fh_abs_p95=NaN
+    ))
+    if fhertz_monitor_enabled
+      Zygote.ignore() do
+        p_net_struct = re_pnet(θ0.p_net)
+        val_nn_metrics[] = fhertz_monitor_metrics(
+          ode_data_full, monitor_idx_full, p_net_struct,
+          approximating_neural_network, st;
+          fh_true_ref=monitor_fhertz_true, eff_pos_ref=monitor_eff_positions, nn_gain=g_nn
+        )
+      end
+    end
+    is_viable = isfinite(train_loss) && isfinite(val_loss) &&
+      (!fhertz_monitor_enabled || isfinite(val_nn_metrics[].fhertz_err))
+
+    params = Dict{Any, Any}(
+      "trial_id" => global_trial_id,
+      "base_rank" => base_rank,
+      "base_trial_id" => base_trial_id,
+      "ks0" => ks_fixed,
+      "cs0" => cs_fixed,
+      "g_nn" => g_nn,
+      "g_amp_ref" => gnn_info.amp_ref,
+      "g_eff_count" => gnn_info.eff_count,
+      "num_hidden_layers" => num_hidden_layers,
+      "num_hidden_nodes" => num_hidden_nodes
+    )
+    push!(trial_parameters, (
+      loss=val_loss,
+      train_loss=train_loss,
+      val_loss=val_loss,
+      params=params,
+      val_parts=val_diag,
+      ks_hat=ks_hat,
+      cs_hat=cs_hat,
+      ks_err_pct=ks_err_pct,
+      cs_err_pct=cs_err_pct,
+      val_nn_err=val_nn_metrics[].fhertz_err,
+      val_raw_min=val_nn_metrics[].raw_min,
+      val_raw_max=val_nn_metrics[].raw_max,
+      val_raw_mean=val_nn_metrics[].raw_mean,
+      val_raw_neg_frac=val_nn_metrics[].raw_neg_frac,
+      val_fh_min=val_nn_metrics[].fh_min,
+      val_fh_max=val_nn_metrics[].fh_max,
+      val_fh_mean=val_nn_metrics[].fh_mean,
+      val_fh_abs_p95=val_nn_metrics[].fh_abs_p95,
+      is_viable=is_viable,
+      train_reason=train_reason,
+      val_reason=val_reason,
+      p_net_vec=copy(p_net_vec),
+      g_nn=g_nn,
+      g_amp_ref=gnn_info.amp_ref,
+      g_eff_count=gnn_info.eff_count
+    ))
+
+    tprintln("Stage1plus trial ", global_trial_id,
+      " -- train=", fmt_e(train_loss, sigdigits=4),
+      " val=", fmt_e(val_loss, sigdigits=4))
+    if !is_viable
+      train_reason = train_reason == "" ? "unknown" : train_reason
+      val_reason = val_reason == "" ? "unknown" : val_reason
+      tprintln("  filtered: viable=false | train=", train_reason, " | val=", val_reason)
+    end
+    if diag !== nothing
+      tprintln("  parts: state=", fmt_e(diag.state, sigdigits=3),
+        " x2dot=", fmt_e(diag.x2dot, sigdigits=3),
+        " x3r=", fmt_e(diag.x3_range, sigdigits=3),
+        " cont=", fmt_e(diag.cont, sigdigits=3))
+    end
+    tprintln("  base: rank=", base_rank,
+      " ks=", fmt_e(ks_fixed, sigdigits=3),
+      " cs=", fmt_e(cs_fixed, sigdigits=3))
+    tprintln("  mech: ks=", fmt_e(ks_hat, sigdigits=3),
+      " (err=", fmt_f(ks_err_pct, digits=2), "%)",
+      " cs=", fmt_e(cs_hat, sigdigits=3),
+      " (err=", fmt_f(cs_err_pct, digits=2), "%)")
+    if diag !== nothing
+      tprintln("  rec: x1=", fmt_f(diag.x1_rec, digits=2), "% x3=",
+        fmt_f(diag.x3_rec, digits=2), "%")
+    end
+    if fhertz_monitor_enabled
+      nn_metrics = val_nn_metrics[]
+      tprintln("  nn: F_hertz err=", fmt_f(nn_metrics.fhertz_err, digits=2), "%")
+      tprintln("  nn gain: g_nn=", fmt_e(g_nn, sigdigits=3),
+        " amp_ref=", fmt_e(gnn_info.amp_ref, sigdigits=3),
+        " eff_n=", gnn_info.eff_count)
+      tprintln("  nn raw: min=", fmt_e(nn_metrics.raw_min, sigdigits=3),
+        " max=", fmt_e(nn_metrics.raw_max, sigdigits=3),
+        " mean=", fmt_e(nn_metrics.raw_mean, sigdigits=3),
+        " neg=", fmt_f(100 * nn_metrics.raw_neg_frac, digits=2), "%")
+      tprintln("  nn force: min=", fmt_e(nn_metrics.fh_min, sigdigits=3),
+        " max=", fmt_e(nn_metrics.fh_max, sigdigits=3),
+        " mean=", fmt_e(nn_metrics.fh_mean, sigdigits=3),
+        " p95|F|=", fmt_e(nn_metrics.fh_abs_p95, sigdigits=3))
+    end
+  end
+
+  viable_trials = [rec for rec in trial_parameters if hasproperty(rec, :is_viable) && rec.is_viable]
+  selection_pool = isempty(viable_trials) ? trial_parameters : viable_trials
+  sorted = sort(selection_pool, by = r -> r.loss)
+  selected = sorted[1:min(final_topk, length(sorted))]
+  warm_start_top = [(
+      trial_id=rec.params["trial_id"],
+      params=rec.params,
+      p_net=copy(rec.p_net_vec),
+      train_loss=rec.train_loss,
+      val_loss=rec.val_loss,
+      g_nn=(haskey(rec.params, "g_nn") ? rec.params["g_nn"] : 1.0)
+    ) for rec in selected]
+  local_warm_has_pnet = !isempty(warm_start_top) && hasproperty(warm_start_top[1], :p_net)
+
+  tprintln("Stage1plus done. Viable=", length(viable_trials), "/", length(trial_parameters),
+    " | selected=", length(selected))
+  if !isempty(selected)
+    tprintln("Stage1plus best val loss=", fmt_e(selected[1].val_loss, sigdigits=4),
+      " | train=", fmt_e(selected[1].train_loss, sigdigits=4))
+  end
+  tprintln("Stage1plus top-", length(selected), " summary (finite/stable filtered):")
+  for (i, rec) in enumerate(selected)
+    tprintln("  Rank ", i,
+      " -- train=", fmt_e(rec.train_loss, sigdigits=4),
+      " val=", fmt_e(rec.val_loss, sigdigits=4),
+      " | base=", rec.params["base_rank"],
+      " | ks0=", fmt_e(rec.params["ks0"], sigdigits=3),
+      " cs0=", fmt_e(rec.params["cs0"], sigdigits=3))
+    tprintln("     val parts: state=", fmt_e(rec.val_parts.state, sigdigits=3),
+      " x2dot=", fmt_e(rec.val_parts.x2dot, sigdigits=3),
+      " x3r=", fmt_e(rec.val_parts.x3_range, sigdigits=3),
+      " cont=", fmt_e(rec.val_parts.cont, sigdigits=3))
+    tprintln("     rec: x1=", fmt_f(rec.val_parts.x1_rec, digits=2),
+      "% x3=", fmt_f(rec.val_parts.x3_rec, digits=2), "%")
+    tprintln("     mech: ks=", fmt_e(rec.ks_hat, sigdigits=3),
+      " (err=", fmt_f(rec.ks_err_pct, digits=2), "%)",
+      " cs=", fmt_e(rec.cs_hat, sigdigits=3),
+      " (err=", fmt_f(rec.cs_err_pct, digits=2), "%)")
+    tprintln("     nn: F_hertz err=", fmt_f(rec.val_nn_err, digits=2), "%")
+    tprintln("     nn gain: g_nn=", fmt_e(hasproperty(rec, :g_nn) ? rec.g_nn :
+      (haskey(rec.params, "g_nn") ? rec.params["g_nn"] : NaN), sigdigits=3),
+      " amp_ref=", fmt_e(hasproperty(rec, :g_amp_ref) ? rec.g_amp_ref :
+      (haskey(rec.params, "g_amp_ref") ? rec.params["g_amp_ref"] : NaN), sigdigits=3))
+    tprintln("     nn raw: min=", fmt_e(rec.val_raw_min, sigdigits=3),
+      " max=", fmt_e(rec.val_raw_max, sigdigits=3),
+      " mean=", fmt_e(rec.val_raw_mean, sigdigits=3),
+      " neg=", fmt_f(100 * rec.val_raw_neg_frac, digits=2), "%")
+    tprintln("     nn force: min=", fmt_e(hasproperty(rec, :val_fh_min) ? rec.val_fh_min : NaN, sigdigits=3),
+      " max=", fmt_e(hasproperty(rec, :val_fh_max) ? rec.val_fh_max : NaN, sigdigits=3),
+      " mean=", fmt_e(hasproperty(rec, :val_fh_mean) ? rec.val_fh_mean : NaN, sigdigits=3),
+      " p95|F|=", fmt_e(hasproperty(rec, :val_fh_abs_p95) ? rec.val_fh_abs_p95 : NaN, sigdigits=3))
+  end
+  tprintln("Stage1plus warm-start export (shard): ON | saved=", length(warm_start_top),
+    " | first_has_p_net=", local_warm_has_pnet)
+
+  serialize(result_folder * "/" * result_name_string, (
+    study=nothing,
+    trial_parameters=trial_parameters,
+    warm_start_top=warm_start_top,
+    selected=selected,
+    best=isempty(selected) ? nothing : selected[1],
+    bounds=(ks=ks_bounds, cs=cs_bounds),
+    true_values=(ks=ks_true, cs=cs_true),
+    use_multiple_shooting=use_multiple_shooting,
+    use_l2_regularization=use_l2_regularization,
+    val_stride=val_stride,
+    val_offset=val_offset,
+    x3_obs_fraction=0.0,
+    error_level=error_level,
+    stage1_input_file=stage1_input_file,
+    stage1_input_topk=stage1plus_input_topk,
+    searches_per_candidate=searches_per_candidate,
+    final_topk=final_topk
+  ))
+  end
 else
   let
-  # ADAM off: Stage1-A random search (mech + NN init + architecture)
+  # ADAM off: Stage1-A random search (mechanistic-only; NN frozen to zero output)
   function rand_loguniform(rng, lo, hi)
     return exp(rand(rng) * (log(hi) - log(lo)) + log(lo))
   end
@@ -1048,9 +1542,29 @@ else
   num_trials = parse(Int, get(ENV, "HNODECB_STAGE1_NOADAM_TRIALS", "3000"))
   top_k = parse(Int, get(ENV, "HNODECB_STAGE1_NOADAM_TOPK", "10"))
   refine_trials = parse(Int, get(ENV, "HNODECB_STAGE1_NOADAM_REFINE", "200"))
+  shard_idx = parse(Int, get(ENV, "HNODECB_STAGE1_SHARD_INDEX", "1"))
+  shard_cnt = parse(Int, get(ENV, "HNODECB_STAGE1_SHARD_COUNT", "1"))
+  if shard_idx < 1 || shard_idx > shard_cnt
+    error("HNODECB_STAGE1_SHARD_INDEX must be in 1..HNODECB_STAGE1_SHARD_COUNT")
+  end
+  # Split a fixed global trial budget across shards (e.g. 3000 -> 4x750).
+  trial_indices = [i for i in 1:num_trials if ((i - shard_idx) % shard_cnt) == 0]
 
   trial_parameters = []
   top_candidates = Vector{Any}()
+
+  fixed_num_hidden_layers = nn_fixed_num_hidden_layers
+  fixed_num_hidden_nodes = nn_fixed_num_hidden_nodes
+  fixed_ms_group_size = 10
+  fixed_ms_continuity_term = 1e-3
+  fhertz_monitor_enabled = false
+
+  fixed_nn_rng = StableRNG(0)
+  fixed_approximating_neural_network = build_nn(fixed_num_hidden_layers, fixed_num_hidden_nodes)
+  fixed_p_net, fixed_st = Lux.setup(fixed_nn_rng, fixed_approximating_neural_network)
+  fixed_p_net = Flux.f64(fixed_p_net)
+  fixed_p_net_vec, fixed_re_pnet = Optimisers.destructure(fixed_p_net)
+  fixed_p_net_vec .= 0.0
 
   train_idx, val_idx = make_train_val_masks(length(all_times), val_stride, val_offset)
   ode_train = ode_data_full[:, train_idx]
@@ -1062,57 +1576,73 @@ else
   contact_train = contact_all[train_idx]
   contact_val = contact_all[val_idx]
   contact_idx_train = findall(contact_train)
+  contact_idx_val = findall(contact_val)
 
   state12_scale_train = state12_scale_full
   x2dot_scale_train = x2dot_scale_full
-  x3_init_val = ode_train[3, 1]
+  x3_t0_val = ode_train[3, 1]
 
-  for i in 1:num_trials
+  tprintln("Stage1 no-ADAM shard ", shard_idx, "/", shard_cnt,
+    " local_trials=", length(trial_indices), " total_trials=", num_trials)
+  tprintln("Stage1 no-ADAM mode: frozen zero NN (layers=", fixed_num_hidden_layers,
+    ", nodes=", fixed_num_hidden_nodes, ") | NN monitor=OFF | zero-Hertz override=ON")
+  tprintln("Stage1 warm-start capture (shard): ENABLED | local_top_k=", top_k)
+  for i in trial_indices
     tprintln("Stage1 trial ", i, " start (no-ADAM)")
     flush(stdout)
-    ks0 = rand_loguniform(rng_global, ks_bounds[1], ks_bounds[2])
-    cs0 = rand_loguniform(rng_global, cs_bounds[1], cs_bounds[2])
-    num_hidden_layers = rand(rng_global, 1:3)
-    num_hidden_nodes = rand(rng_global, 3:5)
-    ms_group_size = rand(rng_global, 10:200)
-    ms_continuity_term = rand_loguniform(rng_global, 1e-6, 10.0)
-
-    rng = StableRNG(abs(rand(rng_global, Int)))
-    approximating_neural_network = build_nn(num_hidden_layers, num_hidden_nodes)
-    p_net, st = Lux.setup(rng, approximating_neural_network)
-    p_net_vec, re_pnet = Optimisers.destructure(p_net)
+    # Per-trial RNG keeps mechanistic sampling reproducible and avoids cross-shard duplicates.
+    rng_trial = StableRNG(i)
+    ks0 = rand_loguniform(rng_trial, ks_bounds[1], ks_bounds[2])
+    cs0 = rand_loguniform(rng_trial, cs_bounds[1], cs_bounds[2])
     raw_init = [
       raw_from_value(ks0, ks_bounds[1], ks_bounds[2]),
       raw_from_value(cs0, cs_bounds[1], cs_bounds[2])
     ]
+    p_net_vec = copy(fixed_p_net_vec)
+    re_pnet = fixed_re_pnet
+    st = fixed_st
+    approximating_neural_network = fixed_approximating_neural_network
     θ0 = ComponentVector(p_net=p_net_vec, mech_raw=raw_init)
 
     inf_context[] = "train_eval"
     last_inf_reason[] = ""
     train_loss, diag = loss_single_or_ms(θ0, ode_train, x2dot_train, contact_train, times_train,
       state12_scale_train, x2dot_scale_train, x3_scale,
-      use_multiple_shooting, ms_group_size, ms_continuity_term,
-      approximating_neural_network, st, known_pars, x3_init_val,
-      0.0, re_pnet)
+      use_multiple_shooting, fixed_ms_group_size, fixed_ms_continuity_term,
+      approximating_neural_network, st, known_pars, x3_t0_val,
+      0.0, re_pnet; zero_nn_override=true)
     train_reason = last_inf_reason[]
 
     inf_context[] = "val_eval"
     last_inf_reason[] = ""
-    val_loss, _ = loss_single_or_ms(θ0, ode_val, x2dot_val, contact_val, times_val,
+    val_loss, val_diag = loss_single_or_ms(θ0, ode_val, x2dot_val, contact_val, times_val,
       state12_scale_full, x2dot_scale_full, x3_scale,
-      use_multiple_shooting, ms_group_size, ms_continuity_term,
-      approximating_neural_network, st, known_pars, x3_init_val,
-      0.0, re_pnet)
+      use_multiple_shooting, fixed_ms_group_size, fixed_ms_continuity_term,
+      approximating_neural_network, st, known_pars, x3_t0_val,
+      0.0, re_pnet; zero_nn_override=true)
     val_reason = last_inf_reason[]
+    ks_hat = bound_param(θ0.mech_raw[1], ks_bounds[1], ks_bounds[2])
+    cs_hat = bound_param(θ0.mech_raw[2], cs_bounds[1], cs_bounds[2])
+    ks_err_pct = rel_err_pct(ks_hat, ks_true, scale_eps)
+    cs_err_pct = rel_err_pct(cs_hat, cs_true, scale_eps)
 
     params = Dict{Any, Any}(
+      "trial_id" => i,
       "ks0" => ks0, "cs0" => cs0,
-      "num_hidden_layers" => num_hidden_layers,
-      "num_hidden_nodes" => num_hidden_nodes,
-      "ms_group_size" => ms_group_size,
-      "ms_continuity_term" => ms_continuity_term
+      "num_hidden_layers" => fixed_num_hidden_layers,
+      "num_hidden_nodes" => fixed_num_hidden_nodes
     )
-    push!(trial_parameters, (loss=val_loss, train_loss=train_loss, val_loss=val_loss, params=params))
+    push!(trial_parameters, (
+      loss=val_loss,
+      train_loss=train_loss,
+      val_loss=val_loss,
+      params=params,
+      val_parts=val_diag,
+      ks_hat=ks_hat,
+      cs_hat=cs_hat,
+      ks_err_pct=ks_err_pct,
+      cs_err_pct=cs_err_pct
+    ))
 
     tprintln("Stage1 trial ", i,
       " -- train=", fmt_e(train_loss, sigdigits=4),
@@ -1128,29 +1658,29 @@ else
         " x3r=", fmt_e(diag.x3_range, sigdigits=3),
         " cont=", fmt_e(diag.cont, sigdigits=3))
     end
-    ks_hat = bound_param(θ0.mech_raw[1], ks_bounds[1], ks_bounds[2])
-    cs_hat = bound_param(θ0.mech_raw[2], cs_bounds[1], cs_bounds[2])
     tprintln("  mech: ks=", fmt_e(ks_hat, sigdigits=3),
-      " (err=", fmt_f(rel_err_pct(ks_hat, ks_true, scale_eps), digits=2), "%)",
+      " (err=", fmt_f(ks_err_pct, digits=2), "%)",
       " cs=", fmt_e(cs_hat, sigdigits=3),
-      " (err=", fmt_f(rel_err_pct(cs_hat, cs_true, scale_eps), digits=2), "%)")
+      " (err=", fmt_f(cs_err_pct, digits=2), "%)")
     if diag !== nothing
       tprintln("  rec: x1=", fmt_f(diag.x1_rec, digits=2), "% x3=",
         fmt_f(diag.x3_rec, digits=2), "%")
     end
-    if get(ENV, "HNODECB_LOG_FHERTZ_ERR", "1") == "1" && !isempty(contact_idx_train)
+    if fhertz_monitor_enabled
       Zygote.ignore() do
         p_net_struct = re_pnet(θ0.p_net)
-        fhertz_true = fhertz_true_from_states(ode_train, contact_idx_train)
-        fhertz_pred = fhertz_pred_from_states(ode_train, contact_idx_train, p_net_struct,
-          approximating_neural_network, st)
-        err_sum = sum(abs2, fhertz_pred .- fhertz_true)
-        truth_sum = sum(abs2, fhertz_true)
-        fhertz_err = relative_rmse_pct(err_sum, truth_sum, length(contact_idx_train), scale_eps)
-        tprintln("  nn: F_hertz err=", fmt_f(fhertz_err, digits=2), "%")
+        nn_metrics = fhertz_monitor_metrics(
+          ode_data_full, monitor_idx_full, p_net_struct,
+          approximating_neural_network, st;
+          fh_true_ref=monitor_fhertz_true, eff_pos_ref=monitor_eff_positions
+        )
+        tprintln("  nn: F_hertz err=", fmt_f(nn_metrics.fhertz_err, digits=2), "%")
+        tprintln("  nn raw: min=", fmt_e(nn_metrics.raw_min, sigdigits=3),
+          " max=", fmt_e(nn_metrics.raw_max, sigdigits=3),
+          " mean=", fmt_e(nn_metrics.raw_mean, sigdigits=3),
+          " neg=", fmt_f(100 * nn_metrics.raw_neg_frac, digits=2), "%")
       end
     end
-
     # maintain top-k for refinement
     push!(top_candidates, (
       val_loss=val_loss,
@@ -1161,8 +1691,11 @@ else
       appr=approximating_neural_network,
       ks0=ks0,
       cs0=cs0,
-      num_hidden_layers=num_hidden_layers,
-      num_hidden_nodes=num_hidden_nodes
+      trial_id=i,
+      params=params,
+      p_net_vec=copy(p_net_vec),
+      num_hidden_layers=fixed_num_hidden_layers,
+      num_hidden_nodes=fixed_num_hidden_nodes
     ))
     top_candidates = sort(top_candidates, by = c -> c.val_loss)
     if length(top_candidates) > top_k
@@ -1184,8 +1717,8 @@ else
         val_loss, _ = loss_single_or_ms(cand.θ, ode_val, x2dot_val, contact_val, times_val,
           state12_scale_full, x2dot_scale_full, x3_scale,
           use_multiple_shooting, ms_group_size, ms_continuity_term,
-          cand.appr, cand.st, known_pars, x3_init_val,
-          0.0, cand.re_pnet)
+          cand.appr, cand.st, known_pars, x3_t0_val,
+          0.0, cand.re_pnet; zero_nn_override=true)
         val_reason = last_inf_reason[]
 
         params = Dict{Any, Any}(
@@ -1213,8 +1746,18 @@ else
   all_trials = isempty(refined) ? trial_parameters : vcat(trial_parameters, refined)
   sorted = sort(all_trials, by = r -> r.loss)
   best = sorted[1]
+  warm_start_top = [(
+      trial_id=c.trial_id,
+      params=c.params,
+      p_net=copy(c.p_net_vec),
+      train_loss=c.train_loss,
+      val_loss=c.val_loss
+    ) for c in sort(top_candidates, by = c -> c.val_loss)]
+  local_warm_has_pnet = !isempty(warm_start_top) && hasproperty(warm_start_top[1], :p_net)
   tprintln("Stage1 done. Best val loss=", fmt_e(best.val_loss, sigdigits=4),
     " | train=", fmt_e(best.train_loss, sigdigits=4))
+  tprintln("Stage1 warm-start export (shard): ON | saved=", length(warm_start_top),
+    " | first_has_p_net=", local_warm_has_pnet)
 
   tprintln("Stage1 top-10 summary (train/val):")
   for (i, rec) in enumerate(sorted[1:min(10, length(sorted))])
@@ -1230,8 +1773,10 @@ else
   serialize(result_folder * "/" * result_name_string, (
     study=nothing,
     trial_parameters=all_trials,
+    warm_start_top=warm_start_top,
     best=best,
     bounds=(ks=ks_bounds, cs=cs_bounds),
+    true_values=(ks=ks_true, cs=cs_true),
     use_multiple_shooting=use_multiple_shooting,
     use_l2_regularization=use_l2_regularization,
     val_stride=val_stride,

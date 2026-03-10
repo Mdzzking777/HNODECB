@@ -246,6 +246,65 @@ plt.savefig(os.path.join(plots_dir, 'trajectory_overlay.png'), dpi=150)
 plt.savefig(os.path.join(plots_dir, 'trajectory_overlay.pdf'))
 print(f"  Saved: trajectory_overlay.png/pdf")
 
+# --- Phase-space plot: x1 vs x3 (full trajectory) ---
+
+fig, ax = plt.subplots(figsize=(8, 6))
+
+contact_idx = contact
+non_contact_idx = ~contact
+dist_nm = dist * 1e9
+
+# Draw non-contact and contact trajectories separately for clarity
+ax.plot(x_nm[non_contact_idx], y_nm[non_contact_idx],
+        color='tab:blue', linewidth=0.35, alpha=0.6, label='Non-contact')
+ax.plot(x_nm[contact_idx], y_nm[contact_idx],
+        color='tab:red', linewidth=0.35, alpha=0.8, label='Contact')
+
+# Contact boundary: s = dist + x1 - x3 = 0  =>  x3 = x1 + dist
+x_line = np.array([x_nm.min(), x_nm.max()])
+ax.plot(x_line, x_line + dist_nm, 'k--', linewidth=1.0, label='Boundary: s = 0')
+
+ax.scatter(x_nm[0], y_nm[0], s=20, c='k', marker='o', label='Start')
+ax.scatter(x_nm[-1], y_nm[-1], s=20, c='green', marker='x', label='End')
+
+ax.set_xlabel('x1 tip displacement [nm]')
+ax.set_ylabel('x3 sample displacement [nm]')
+ax.set_title('AFM DMT-KV Phase Space: x1 vs x3 (Full Trajectory)')
+ax.grid(True, alpha=0.3)
+ax.legend(loc='best')
+
+plt.tight_layout()
+plt.savefig(os.path.join(plots_dir, 'phase_space_x1_x3_full.png'), dpi=150)
+plt.savefig(os.path.join(plots_dir, 'phase_space_x1_x3_full.pdf'))
+print("  Saved: phase_space_x1_x3_full.png/pdf")
+
+# --- Phase-space plot: x1 vs x3 (zoomed steady-state) ---
+
+fig, ax = plt.subplots(figsize=(8, 6))
+x_zoom = x_nm[zoom_idx]
+y_zoom = y_nm[zoom_idx]
+contact_zoom = contact[zoom_idx]
+non_contact_zoom = ~contact_zoom
+
+ax.plot(x_zoom[non_contact_zoom], y_zoom[non_contact_zoom],
+        color='tab:blue', linewidth=0.8, alpha=0.8, label='Non-contact')
+ax.plot(x_zoom[contact_zoom], y_zoom[contact_zoom],
+        color='tab:red', linewidth=0.8, alpha=0.9, label='Contact')
+
+x_zoom_line = np.array([x_zoom.min(), x_zoom.max()])
+ax.plot(x_zoom_line, x_zoom_line + dist_nm, 'k--', linewidth=1.0, label='Boundary: s = 0')
+
+ax.set_xlabel('x1 tip displacement [nm]')
+ax.set_ylabel('x3 sample displacement [nm]')
+ax.set_title(f'AFM DMT-KV Phase Space: x1 vs x3 ({zoom_start_us}-{zoom_end_us} μs)')
+ax.grid(True, alpha=0.3)
+ax.legend(loc='best')
+
+plt.tight_layout()
+plt.savefig(os.path.join(plots_dir, 'phase_space_x1_x3_zoomed.png'), dpi=150)
+plt.savefig(os.path.join(plots_dir, 'phase_space_x1_x3_zoomed.pdf'))
+print("  Saved: phase_space_x1_x3_zoomed.png/pdf")
+
 # --- Statistics ---
 
 print("\n" + "="*60)

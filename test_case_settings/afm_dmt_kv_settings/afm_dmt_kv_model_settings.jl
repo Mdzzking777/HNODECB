@@ -23,6 +23,7 @@ cs = 0.24e-6
 
 # Adhesion smoothing width around s=0 (meters)
 adhesion_transition = 1.0e-10
+nn_monitor_effective_contact_frac = 0.01
 
 # original model parameters
 # order: k, wd, m, c, Fd, R, dist, Fad, Estar, ks, cs

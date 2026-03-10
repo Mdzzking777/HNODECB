@@ -5,6 +5,7 @@ Runs Stage1, then Stage2 (which loads Stage1 results).
 
 cd(@__DIR__)
 using Serialization
+using Printf
 
 if get(ENV, "HNODECB_PIPELINE03_AUTOTUNE", "1") == "1"
   if !haskey(ENV, "JULIA_NUM_THREADS")
@@ -98,6 +99,18 @@ if get(ENV, "HNODECB_PIPELINE03_AUTOSPAWN", "1") == "1" &&
   end
   sorted = sort(merged_trials, by = r -> r.loss)
   best = sorted[1]
+  println("=== Pipeline03: Stage1 global top-10 (merged) ===")
+  for (rank, rec) in enumerate(sorted[1:min(10, length(sorted))])
+    train_loss = hasproperty(rec, :train_loss) ? rec.train_loss : rec.loss
+    val_loss = hasproperty(rec, :val_loss) ? rec.val_loss : rec.loss
+    ks0 = hasproperty(rec, :params) && haskey(rec.params, "ks0") ? rec.params["ks0"] : NaN
+    cs0 = hasproperty(rec, :params) && haskey(rec.params, "cs0") ? rec.params["cs0"] : NaN
+    println("  Rank ", rank,
+      " -- train=", @sprintf("%.4e", train_loss),
+      " val=", @sprintf("%.4e", val_loss),
+      " | ks0=", @sprintf("%.3e", ks0),
+      " cs0=", @sprintf("%.3e", cs0))
+  end
   merged_file = joinpath(result_dir, "afm_param_stage1_03.jld")
   serialize(merged_file, (
     study=nothing,

@@ -1,0 +1,53 @@
+#!/bin/bash
+# DelftBlue SLURM template for AFM Stage1pluslight only (case 03).
+# Usage:
+#   sbatch DHPC/runners/run_stage1pluslight_03_delftblue.slurm
+#   sbatch --export=ALL,HNODECB_STAGE1PLUSLIGHT_CANDIDATE=4 DHPC/runners/run_stage1pluslight_03_delftblue.slurm
+
+#SBATCH --job-name=afm03_stage1pluslight
+#SBATCH --account=education-me-msc-me
+#SBATCH --partition=compute-p2
+#SBATCH --time=06:00:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=48
+#SBATCH --mem-per-cpu=4000M
+#SBATCH --output=logs/slurm_stage1pluslight_03_%j.out
+
+set -euo pipefail
+
+module purge
+module load julia
+
+REPO_DIR="$HOME/HNODECB"
+cd "$REPO_DIR"
+mkdir -p logs logs/stage1_step2a
+
+export JULIA_NUM_THREADS=16
+export OPENBLAS_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export HNODECB_STAGE1_VARIANT="${HNODECB_STAGE1_VARIANT:-stage1pluslight}"
+export HNODECB_STAGE1PLUS_MODE=1
+export HNODECB_STAGE1_RESULT_STEM="${HNODECB_STAGE1_RESULT_STEM:-afm_param_stage1pluslight_03}"
+export HNODECB_STAGE1PLUS_INPUT_BASENAME="${HNODECB_STAGE1PLUS_INPUT_BASENAME:-afm_param_stage1_03.jld}"
+export HNODECB_STAGE1PLUS_INPUT_TOPK="${HNODECB_STAGE1PLUS_INPUT_TOPK:-9}"
+export HNODECB_STAGE1PLUSLIGHT_CANDIDATE="${HNODECB_STAGE1PLUSLIGHT_CANDIDATE:-6}"
+export HNODECB_STAGE1PLUS_BASE_INDICES="${HNODECB_STAGE1PLUS_BASE_INDICES:-$HNODECB_STAGE1PLUSLIGHT_CANDIDATE}"
+export HNODECB_STAGE1_SHARD_COUNT="${HNODECB_STAGE1_SHARD_COUNT:-3}"
+export HNODECB_STAGE1PLUS_TRIALS_PER_SHARD="${HNODECB_STAGE1PLUS_TRIALS_PER_SHARD:-333}"
+if [[ -z "${HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE:-}" ]]; then
+  export HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE="$((HNODECB_STAGE1_SHARD_COUNT * HNODECB_STAGE1PLUS_TRIALS_PER_SHARD))"
+fi
+export HNODECB_STAGE1PLUS_FINAL_TOPK="${HNODECB_STAGE1PLUS_FINAL_TOPK:-10}"
+export HNODECB_STAGE1PLUS_ZERO_NN="${HNODECB_STAGE1PLUS_ZERO_NN:-0}"
+unset HNODECB_STAGE1_SHARD_INDEX
+export HNODECB_STAGE1_AUTOSPAWN=1
+export HNODECB_STAGE1PLUSLIGHT_LOG_SUBDIR="${HNODECB_STAGE1PLUSLIGHT_LOG_SUBDIR:-stage1_step2a}"
+export HNODECB_STAGE1PLUSLIGHT_LOG_PREFIX="${HNODECB_STAGE1PLUSLIGHT_LOG_PREFIX:-log2_03_step2a_stage1pluslight}"
+export HNODECB_STAGE1_LOG_EVERY=1
+export HNODECB_INF_LOG=1
+export HNODECB_LOG_NN_ERR=1
+export HNODECB_JULIA_PROJECT="$REPO_DIR/HPC_env"
+export JULIA_PROJECT="$REPO_DIR/HPC_env"
+
+STAGE1PLUSLIGHT_LOG="logs/stage1_step2a/log2_03_step2a_stage1pluslight_driver_${SLURM_JOB_ID}.txt"
+stdbuf -oL -eL julia --project="$REPO_DIR/HPC_env" runner/stagewise/afm_param_search_stage1pluslight_03.jl 2>&1 | tee "$STAGE1PLUSLIGHT_LOG"

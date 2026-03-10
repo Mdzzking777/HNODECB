@@ -14,7 +14,49 @@ function softplus(x, eps)
     end
     return eps * log1p(exp(z))
 end
+function softplus(x)
+    if x > 50.0
+        return x
+    elseif x < -50.0
+        return exp(x)
+    end
+    return log1p(exp(x))
+end
 contact_weight(s, eps) = 1.0 - exp(-softplus(-s, eps) / eps)
+
+function make_contact_weight_lookup(times, s_values)
+    tvals = collect(Float64, times)
+    svals = collect(Float64, s_values)
+    n = length(tvals)
+    n == length(svals) || error("times and s_values must have the same length.")
+    n > 0 || error("times and s_values must be non-empty.")
+
+    function weight_at_time(t)
+        if n == 1
+            s_t = svals[1]
+        elseif t <= tvals[1]
+            s_t = svals[1]
+        elseif t >= tvals[end]
+            s_t = svals[end]
+        else
+            idx_hi = searchsortedfirst(tvals, t)
+            if idx_hi <= 1
+                s_t = svals[1]
+            elseif tvals[idx_hi] == t
+                s_t = svals[idx_hi]
+            else
+                idx_lo = idx_hi - 1
+                t_lo = tvals[idx_lo]
+                t_hi = tvals[idx_hi]
+                alpha = (t - t_lo) / (t_hi - t_lo)
+                s_t = svals[idx_lo] + alpha * (svals[idx_hi] - svals[idx_lo])
+            end
+        end
+        return contact_weight(s_t, adhesion_transition)
+    end
+
+    return weight_at_time
+end
 
 function ground_truth_function(du, u, p, t)
     k, wd, m, c, Fd, R, dist, Fad, Estar, ks, cs = p
@@ -71,11 +113,15 @@ end
     get_uode_model_function_hertz_nn(appr_neural_network, state)
 
 Returns the model derivative function with the Hertz force term replaced by a neural network.
-The network input is [x1, x2, x3, delta] and the output is scaled by Estar and gated by contact.
+The network input is [x1, x2] and the output is gated by a supplied true
+contact-weight lookup when available, otherwise by the model-predicted soft
+contact gate.
 """
-function get_uode_model_function_hertz_nn(appr_neural_network, state)
+function get_uode_model_function_hertz_nn(appr_neural_network, state, true_contact_weight_at_time=nothing)
     f(du, u, p, t) =
-        let appr_neural_network = appr_neural_network, st = state
+        let appr_neural_network = appr_neural_network,
+            st = state,
+            true_contact_weight_at_time = true_contact_weight_at_time
 
             ode_par = p.ode_par
             k, wd, m, c, Fd, R, dist, Fad, Estar, ks, cs = ode_par
@@ -84,13 +130,14 @@ function get_uode_model_function_hertz_nn(appr_neural_network, state)
             s = dist + u[1] - u[3]
             delta = softplus(-s, adhesion_transition)
             delta = ifelse(delta > 0.0, delta, 0.0)
-            w = contact_weight(s, adhesion_transition)
+            w_pred = contact_weight(s, adhesion_transition)
+            w_true = true_contact_weight_at_time === nothing ? w_pred : true_contact_weight_at_time(t)
 
             # NN-based Hertz replacement (scalar output)
-            nn_in = [u[1], u[2], u[3], delta]
+            nn_in = collect(promote(u[1], u[2]))
             û = appr_neural_network(nn_in, p.p_net, st)[1]
-            F_hertz = Estar * softplus(û[1], adhesion_transition) * w
-            Fad_eff = Fad * w
+            F_hertz = û[1] * w_true
+            Fad_eff = Fad * w_pred
 
             # Tip kinematics
             @inbounds du[1] = u[2]
