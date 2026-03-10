@@ -1,0 +1,288 @@
+AFM03 Stage2light current difficulties
+Date: 2026-03-10
+
+Primary HPC logs reviewed
+- logs/stage2_step2a/HPC/log2_03_step2a_stage2light_driver_9310485.txt
+- logs/stage2_step2a/HPC/log2_03_step2a_stage2light_driver_9313691.txt
+- logs/stage2_step2a/HPC/slurm_stage2light_03_9310485.out
+- logs/stage2_step2a/HPC/slurm_stage2light_03_9313691.out
+
+Primary local logs reviewed
+- logs/stage2_step2a/local/log2_03_step2a_stage2light_local_driver_20260310_181507.txt
+- logs/stage2_step2a/local/log2_03_step2a_stage2light_precheck_profile_20260310_191146.txt
+- logs/stage2_step2a/local/log2_03_step2a_stage2light_precheck_profile_20260310_191949.txt
+- logs/stage2_step2a/local/log2_03_step2a_stage2light_precheck_profile_20260310_192233.txt
+
+Primary debug outputs reviewed
+- debug/stage2_mech_grad_diag.out
+- debug/stage2_mech_grad_adjoint_compare_hpcenv.out
+- debug/stage2_mech_grad_inplace_fdiff_hpcenv.out
+- debug/stage2_mech_grad_oop_qzygote_hpcenv.out
+- debug/stage2_pnet_grad_sample_hpcenv.out
+- debug/stage2_pnet_grad_oop_qzygote_hpcenv.out
+- debug/stage2_timing_matrix_oop_qzygote_hpcenv.out
+- debug/stage2_timing_full_oop_qzygote_n32_hpcenv.out
+- debug/stage2_timing_full_oop_qzygote_n64_hpcenv.out
+- debug/stage2_formal_vs_debug_oop_qzygote_hpcenv.out
+
+Purpose
+Record the current Stage2light bottlenecks, the logic used to diagnose them, the conclusions now supported by direct gradient evidence, the new formal-precheck profiling results, and the code changes already applied.
+
+==================================================
+1. Confirmed observations from the original HPC run
+==================================================
+
+1. Gradient wrt. p_mech was effectively zero in the original formal Stage2light run.
+- In the printed epochs of log2_03_step2a_stage2light_driver_9310485.txt, `grad_groups(raw)` showed `p_net > 0` and `mech_raw = 0.0`.
+- ks and cs therefore stayed constant through the run.
+
+2. Group scales did not adapt in that run.
+- `scale[p_net=0.2, mech_raw=1.0]` stayed unchanged.
+- This was not because the scales had converged.
+- It happened because current code required both raw group norms to be strictly positive before scale adaptation could run, and `grad(mech_raw)` stayed zero.
+
+3. NN force monitoring improved while trajectory quality degraded.
+- `nn: F_hertz err` decreased monotonically.
+- `x3_rec` worsened monotonically.
+- `state loss` became the dominant source of total loss increase.
+
+4. Step-guard triggered often, but mainly through `step_trial_loss_jump`.
+- The dominant issue in that run was not NaN / Inf explosion or repeated solver retcode failure.
+- The main pattern was: proposed step makes trial loss jump too much, step-guard reduces learning rate, retry follows.
+
+5. Best train loss happened early, then the run drifted upward.
+- Best loss appeared around epoch 9.
+- After that, the run mostly moved upward rather than converging further downward.
+
+==========================================================
+2. What the new diagnostics proved, and what they ruled out
+==========================================================
+
+The main problem is no longer interpreted as "just a learning-rate issue".
+It is now supported by direct AD vs FD comparisons.
+
+2.1. Local mech dependence is real; the physics chain itself is not missing.
+- The local RHS diagnostic showed that `bound_param -> mech -> local x3dot RHS` is healthy.
+- The model equations do depend on mech in the expected way.
+- Therefore the root issue is not "the equations forgot mech".
+
+2.2. The old x2dot mech gradient path contained an artificial cut.
+- Previously, x2dot loss used `Zygote.dropgrad(uhat)`.
+- This cut the indirect mech path inside x2dot loss.
+- Diagnostic result:
+  - with `dropgrad(uhat)`: AD(mech_raw) = 0 while FD(mech_raw) != 0
+  - without `dropgrad(uhat)`: AD(mech_raw) becomes nonzero
+- Conclusion:
+  - x2dot loss had a real AD-chain bug
+  - that specific hard cut has been repaired
+
+2.3. `QuadratureAdjoint(ReverseDiffVJP(true))` was not only wrong for p_mech; it was also suspicious for p_net.
+
+For p_mech:
+- `state loss` under the old formal route:
+  - AD(mech_raw) and FD(mech_raw) disagreed strongly
+  - especially the cs direction was wrong in magnitude and sometimes sign
+- `x2dot loss` after removing dropgrad:
+  - AD(mech_raw) became nonzero
+  - but still did not match FD(mech_raw)
+
+For p_net:
+- A new p_net sampling diagnostic tested 4 weight indices under the old formal route.
+- Result for `state loss`:
+  - sampled p_net AD values were approximately zero
+  - sampled p_net FD values were clearly nonzero
+- Result for `x2dot loss`:
+  - signs matched
+  - but relative errors were still large, roughly 35% to 60%
+- Conclusion:
+  - the old formal route cannot be trusted for p_mech
+  - and it is also not numerically clean for p_net
+
+2.4. `QuadratureAdjoint(ReverseDiffVJP(false))` did not fix the problem.
+- Switching `ReverseDiffVJP(true)` to `ReverseDiffVJP(false)` gave almost no improvement in the mech diagnostics.
+- Therefore the issue was not simply the `true/false` cache/tape mode.
+
+2.5. `InterpolatingAdjoint(ReverseDiffVJP(true/false))` is not a practical replacement here.
+- In this AFM setting, even the micro diagnostics became too slow to finish in reasonable time.
+- This is enough to reject it as a low-risk formal training replacement.
+
+2.6. `ForwardDiffSensitivity()` validated that the mech chains themselves are recoverable.
+- For both:
+  - `state loss -> mech_raw`
+  - `x2dot loss -> mech_raw` (after removing dropgrad)
+- AD from `ForwardDiffSensitivity()` matched FD very closely.
+- Conclusion:
+  - the mech dependence in the optimization objective is real
+  - the old reverse-adjoint route was the failing layer
+
+2.7. A uniform adjoint replacement was found that passed the micro tests.
+- `out-of-place RHS + QuadratureAdjoint(autojacvec=ZygoteVJP())`
+- This combination matched FD closely for mech on both:
+  - state loss
+  - x2dot loss
+- It also matched FD closely for sampled p_net entries on:
+  - active loss
+  - state loss
+  - x2dot loss
+- Therefore this was the first tested adjoint-family replacement that looked both mathematically correct and consistent with the desired "single formal route" philosophy.
+
+2.8. However, "micro-test correct" did not automatically mean "formal training practical".
+- The new qzygote route passed reduced diagnostics.
+- But the first formal local Stage2light precheck showed:
+  - `loss_done dt=6.192`
+  - `pullback_done dt=36.81`
+  - then the log stopped at `trace[precheck1]: backward_begin`
+- This meant the new route had to be re-evaluated from a runtime perspective, not only a gradient-correctness perspective.
+
+==================================================
+3. Current logic / interpretation of the failure mode
+==================================================
+
+Current best explanation of the original bad Stage2light behavior:
+
+1. Under the old formal route, optimizer-visible gradients were wrong or incomplete.
+2. The optimizer could still move p_net enough to improve the NN force monitor and part of x2dot-related behavior.
+3. But the state-loss gradients, especially through the ODE trajectory, were not being represented correctly.
+4. As a result, the training process could improve selected visible directions while the dominant total-loss term (`state`) deteriorated.
+
+This explains the previous combination:
+- NN force monitor improved
+- x3_rec worsened
+- state loss worsened
+- total loss rose after an early best point
+
+In short:
+the old Stage2light run was not just "poorly tuned";
+it was being optimized through a formally unreliable gradient route.
+
+The new qzygote route changes that interpretation:
+- its micro-test gradients are much more trustworthy
+- but its formal backward cost is currently the main bottleneck
+
+=====================================================
+4. Code changes already made during this diagnostic cycle
+=====================================================
+
+4.1. Repaired the x2dot loss hard cut.
+- Removed the use of `Zygote.dropgrad(uhat)` from the formal x2dot loss path in the Stage2 core.
+- This restored the indirect x2dot -> mech gradient path.
+
+4.2. Added detailed gradient diagnostics.
+- Added or extended diagnostics for:
+  - mech-grad AD(raw)
+  - mech-grad FD(raw)
+  - mech-bound slope dp/draw
+  - adam-group-probe
+  - adam-group-step-norms
+  - p_net AD vs FD sample checks
+
+4.3. Added dedicated micro-diagnostic script.
+- debug/stage2_mech_grad_diag.jl
+- This script does not run epoch training.
+- It performs single-loss / single-gradient comparisons under multiple sensealg and ODE-form combinations.
+
+4.4. Changed the formal Stage2 / Stage2light training core to the new candidate route.
+- The Stage2 core now uses:
+  - out-of-place RHS
+  - `QuadratureAdjoint(autojacvec=ZygoteVJP())`
+- This change was applied in:
+  - step2a_hyperparameter_tuning/hyperparameter_tuning_second_stage/afm_param_stage2_03.jl
+- Because Stage2 and Stage2light share this core file, both inherit the change.
+
+4.5. Added precheck-only formal trace in the formal training core.
+- The formal runner now prints segmented timing for the first precheck attempt:
+  - `loss_begin / loss_done`
+  - `pullback_begin / pullback_done`
+  - `backward_begin / backward_done`
+  - `gradnorm_done`
+- Epoch-first-attempt tracing was split into a separate env switch and disabled by default.
+- This keeps the extra timing focused on precheck rather than flooding epoch logs.
+
+4.6. Added `formal_precheck_profile` mode to the debug script.
+- The debug script can now reproduce a formal-precheck-style loss/pullback/backward call with timestamps.
+- It supports three branches:
+  - `state`
+  - `x2dot`
+  - `active`
+- It can also write the diagnostic output directly to a timestamped log file in `logs/stage2_step2a/local`.
+
+==============================================================
+5. What the formal-precheck profiles now show about the bottleneck
+==============================================================
+
+5.1. The new route is not a hard deadlock in the reduced profile case.
+- In the active formal-precheck profile:
+  - `loss_done dt_s=3.914`
+  - `pullback_done dt_s=16.810`
+  - `backward_done dt_s=185.320`
+- Therefore `back(1.0)` can return.
+- The problem is not "pure deadlock" in the reduced formal-precheck reproduction.
+
+5.2. Formal backward is still very heavy.
+- Active branch:
+  - backward about 185.3 s
+- State branch:
+  - backward about 75.2 s
+- x2dot branch:
+  - backward about 118.9 s
+
+5.3. In the formal-precheck profile, x2dot is heavier than state.
+- `state` backward is heavy
+- `x2dot` backward is heavier
+- Therefore the active-branch cost is not dominated only by state loss
+- It is significantly driven by the x2dot branch
+
+5.4. The hotspots show that the heavy cost is structured, not mysterious.
+- Dominant hotspot groups include:
+  - `SciMLSensitivity / quadrature_adjoint`
+  - `DifferentialEquations` solve / Rosenbrock stepping
+  - `FiniteDiff` Jacobian / gradient calculations inside solver differentiation
+  - Lux dense/applychain
+  - AFM `weight_at_time`
+  - `Zygote` accumulation / pullback internals
+
+5.5. Monitor logic is not the main culprit.
+- The profile with monitor enabled did not show monitor-related code as the dominant cost.
+- The main cost remained:
+  - adjoint backward
+  - solver finite-difference Jacobians
+  - NN forward/backward and AFM weight logic
+
+5.6. Current interpretation of the qzygote route.
+- The qzygote route is still the first route that passes the reduced gradient-correctness checks.
+- But in formal-precheck-style backward, it is computationally expensive.
+- This makes the current problem no longer "wrong gradients only".
+- It is now:
+  - old route: runnable but unreliable gradients
+  - new route: much more trustworthy gradients but expensive formal backward
+
+===========================================================
+6. Current working conclusion and what still remains unresolved
+===========================================================
+
+6.1. The old formal Stage2light route based on `QuadratureAdjoint(ReverseDiffVJP(true))` should not be trusted for AFM03.
+- It is numerically unreliable for p_mech.
+- It is also suspicious for p_net.
+
+6.2. The new qzygote route should currently be treated as "mathematically promising but runtime-costly".
+- It has passed the reduced AD-vs-FD tests for both p_mech and sampled p_net.
+- It has not yet been shown to be a practical formal-training route in full Stage2light execution.
+
+6.3. The next formal question is no longer "is the gradient correct?".
+- That question has largely shifted in favor of qzygote in reduced tests.
+- The current question is:
+  - whether formal backward cost can be reduced to a practical level
+  - or whether a different formal route is needed
+
+6.4. The most important currently unresolved items are:
+- why the full formal runner can still appear much worse than the reduced formal-precheck profile
+- whether the formal runtime pain is mainly due to:
+  - solver finite-difference Jacobians,
+  - x2dot-branch structure,
+  - repeated AFM weight/gating evaluations,
+  - or additional formal-runner overhead not present in the reduced profile
+
+6.5. Practical status at this moment.
+- We have a much better diagnosis of correctness than before.
+- We do not yet have a fully validated production backend for Stage2light.
+- Any next formal run should be interpreted primarily as a runtime-validation run, not as a final scientific training run.
