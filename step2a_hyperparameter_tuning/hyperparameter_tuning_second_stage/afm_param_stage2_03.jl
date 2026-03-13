@@ -66,6 +66,18 @@ error_level = "e0.0"
 ks_true = ks
 cs_true = cs
 
+function tprintln(args...)
+  ts = Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS")
+  println("[", ts, "] ", args...)
+  flush(stdout)
+end
+
+function env_int(name, default)
+  raw = strip(get(ENV, name, ""))
+  parsed = tryparse(Int, raw)
+  return parsed === nothing ? default : parsed
+end
+
 # Load stage1 results
 stage2_input_basename = get(ENV, "HNODECB_STAGE2_INPUT_BASENAME", "afm_param_stage1_03.jld")
 stage1 = deserialize("../hyperparameter_tuning_first_stage/results_afm/" * stage2_input_basename)
@@ -81,6 +93,20 @@ if contact_idx === nothing
 end
 solution_dataframe_full = solution_dataframe_full[contact_idx:end, :]
 ode_data_full = ode_data_full[:, contact_idx:end]
+
+stage2_window_start = env_int("HNODECB_STAGE2_WINDOW_START", 1)
+stage2_window_len = env_int("HNODECB_STAGE2_WINDOW_LEN", 0)
+stage2_window_active = stage2_window_len > 0
+stage2_window_full_count = nrow(solution_dataframe_full)
+stage2_window_start_used = 1
+stage2_window_stop_used = stage2_window_full_count
+if stage2_window_active
+  stage2_window_start_used = clamp(stage2_window_start, 1, stage2_window_full_count)
+  stage2_window_len_used = clamp(stage2_window_len, 1, stage2_window_full_count - stage2_window_start_used + 1)
+  stage2_window_stop_used = stage2_window_start_used + stage2_window_len_used - 1
+  solution_dataframe_full = solution_dataframe_full[stage2_window_start_used:stage2_window_stop_used, :]
+  ode_data_full = ode_data_full[:, stage2_window_start_used:stage2_window_stop_used]
+end
 
 # Times and signals
 all_times = solution_dataframe_full.t
@@ -100,19 +126,19 @@ x3_range_weight = 1.0
 # Contact weighting
 contact_loss_weight = 4.27
 noncontact_loss_weight = 1.0
-
-function tprintln(args...)
-  ts = Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS")
-  println("[", ts, "] ", args...)
-  flush(stdout)
+if stage2_window_active
+  tprintln("Stage2 windowed horizon: full_points=", stage2_window_full_count,
+    " | window=[", stage2_window_start_used, ", ", stage2_window_stop_used, "]",
+    " len=", length(all_times),
+    " | tspan=[", @sprintf("%.6e", all_times[1]), ", ", @sprintf("%.6e", all_times[end]), "]")
 end
 
 function nn_input_from_state(u)
-  return u[1:2]
+  return u[1:3]
 end
 
-function nn_input_from_values(x1, x2)
-  return [x1, x2]
+function nn_input_from_values(x1, x2, x3)
+  return [x1, x2, x3]
 end
 
 # Multiple shooting toggle (keep on to match baseline)
@@ -128,11 +154,13 @@ end
 tprintln("Switches: MS=", use_multiple_shooting, " | Sanity=", stage2_sanity, " | L2-grid pending...")
 
 # Solver settings
-integrator = Rosenbrock23(autodiff=false)
+solver_internal_ad = get(ENV, "HNODECB_SOLVER_INTERNAL_AD", "0") == "1"
+integrator = Rosenbrock23(autodiff=solver_internal_ad)
 abstol = 1e-8
 reltol = 1e-8
-sensealg = QuadratureAdjoint(autojacvec=ZygoteVJP())
+sensealg = GaussAdjoint(autojacvec=ZygoteVJP())
 ode_maxiters = parse(Int, get(ENV, "HNODECB_ODE_MAXITERS", "1000000"))
+tprintln("Solver: Rosenbrock23(autodiff=", solver_internal_ad, ") | rhs=out-of-place | sensealg=GaussAdjoint(ZygoteVJP())")
 
 # Parameter bounds (mechanistic unknowns)
 ks_bounds = stage1.bounds.ks
@@ -231,14 +259,30 @@ function make_train_val_masks(n, val_stride, val_offset)
   return sort(train_idx), sort(val_idx)
 end
 
-nn_fixed_num_hidden_layers = 3
-nn_fixed_num_hidden_nodes = 5
+nn_hidden_layers_range = 0:2
+nn_hidden_nodes_range = 1:3
+
+nn_fixed_num_hidden_layers = 2
+nn_fixed_num_hidden_nodes = 3
+
+if !(nn_fixed_num_hidden_layers in nn_hidden_layers_range)
+  error("nn_fixed_num_hidden_layers must lie in nn_hidden_layers_range")
+end
+if !(nn_fixed_num_hidden_nodes in nn_hidden_nodes_range)
+  error("nn_fixed_num_hidden_nodes must lie in nn_hidden_nodes_range")
+end
 
 function build_nn(num_hidden_layers::Int, num_hidden_nodes::Int)
-  hidden = 2^nn_fixed_num_hidden_nodes
+  if !(num_hidden_layers in nn_hidden_layers_range)
+    error("num_hidden_layers=$(num_hidden_layers) is outside nn_hidden_layers_range=$(collect(nn_hidden_layers_range))")
+  end
+  if !(num_hidden_nodes in nn_hidden_nodes_range)
+    error("num_hidden_nodes=$(num_hidden_nodes) is outside nn_hidden_nodes_range=$(collect(nn_hidden_nodes_range))")
+  end
+  hidden = 2^num_hidden_nodes
   layers = Any[]
-  push!(layers, Lux.Dense(2, hidden, gelu; init_weight=my_glorot_uniform, use_bias=false))
-  for _ in 1:nn_fixed_num_hidden_layers
+  push!(layers, Lux.Dense(3, hidden, gelu; init_weight=my_glorot_uniform, use_bias=false))
+  for _ in 1:num_hidden_layers
     push!(layers, Lux.Dense(hidden, hidden, gelu; init_weight=my_glorot_uniform, use_bias=false))
   end
   push!(layers, Lux.Dense(hidden, 1; init_weight=my_glorot_uniform, use_bias=false))
@@ -259,10 +303,11 @@ end
 function fhertz_pred_from_states(u_mat, idxs, p_net_struct, appr, st; nn_gain::Float64=1.0)
   out = Vector{Float64}(undef, length(idxs))
   @inbounds for (k, j) in enumerate(idxs)
-    w_true = true_contact_weight_all[j]
-    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j])
+    s = dist + u_mat[1, j] - u_mat[3, j]
+    w_pred = contact_weight(s, adhesion_transition)
+    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j], u_mat[3, j])
     uhat = appr(nn_in, p_net_struct, st)[1]
-    out[k] = nn_gain * uhat[1] * w_true
+    out[k] = nn_gain * uhat[1] * w_pred
   end
   return out
 end
@@ -271,11 +316,12 @@ function fhertz_pred_and_raw_from_states(u_mat, idxs, p_net_struct, appr, st; nn
   out = Vector{Float64}(undef, length(idxs))
   raw = Vector{Float64}(undef, length(idxs))
   @inbounds for (k, j) in enumerate(idxs)
-    w_true = true_contact_weight_all[j]
-    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j])
+    s = dist + u_mat[1, j] - u_mat[3, j]
+    w_pred = contact_weight(s, adhesion_transition)
+    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j], u_mat[3, j])
     uhat = appr(nn_in, p_net_struct, st)[1]
     raw[k] = uhat[1]
-    out[k] = nn_gain * uhat[1] * w_true
+    out[k] = nn_gain * uhat[1] * w_pred
   end
   return out, raw
 end
@@ -338,7 +384,7 @@ function make_uode_func(appr, st, known_pars; nn_gain::Float64=1.0)
       else
         nn_in = nn_input_from_state(u)
         uhat = appr(nn_in, p.p_net, st)[1]
-        nn_gain * uhat[1] * true_contact_weight_at_time(t)
+        nn_gain * uhat[1] * w_pred
       end
       Fad_eff = Fad * w_pred
 
@@ -365,7 +411,7 @@ function make_uode_func_oop(appr, st, known_pars; nn_gain::Float64=1.0)
     else
       nn_in = nn_input_from_state(u)
       uhat = appr(nn_in, p.p_net, st)[1]
-      nn_gain * uhat[1] * true_contact_weight_at_time(t)
+      nn_gain * uhat[1] * w_pred
     end
     Fad_eff = Fad * w_pred
 
@@ -389,10 +435,32 @@ function x2dot_rhs(u, mech, p_net, appr, st, known_pars, t; nn_gain::Float64=1.0
   else
     nn_in = nn_input_from_state(u)
     uhat = appr(nn_in, p_net, st)[1]
-    nn_gain * uhat[1] * true_contact_weight_at_time(t)
+    nn_gain * uhat[1] * w_pred
   end
   Fad_eff = Fad * w_pred
   return (Fd * cos(wd * t) - k * u[1] - c * u[2] + Fad_eff - F_hertz) / m
+end
+
+function x2dot_rhs_batch(uhat, contact_idx, mech, p_net, appr, st, known_pars, times; nn_gain::Float64=1.0)
+  isempty(contact_idx) && return Float64[]
+  k, wd, m, c, Fd, R, dist, Fad = known_pars
+  @views x1 = vec(uhat[1, contact_idx])
+  @views x2 = vec(uhat[2, contact_idx])
+  @views x3 = vec(uhat[3, contact_idx])
+  t_contact = times[contact_idx]
+  s = dist .+ x1 .- x3
+  w_pred = contact_weight.(s, adhesion_transition)
+  F_hertz = if appr === nothing
+    delta = softplus.(-s, adhesion_transition)
+    delta = ifelse.(delta .> 0.0, delta, 0.0)
+    (4.0 / 3.0) .* Estar .* sqrt(R) .* (delta .^ 1.5)
+  else
+    nn_in = @views uhat[1:2, contact_idx]
+    nn_out = appr(nn_in, p_net, st)[1]
+    nn_gain .* vec(nn_out) .* w_pred
+  end
+  Fad_eff = Fad .* w_pred
+  return (Fd .* cos.(wd .* t_contact) .- k .* x1 .- c .* x2 .+ Fad_eff .- F_hertz) ./ m
 end
 
 function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
@@ -496,10 +564,7 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
       if !isempty(contact_idx)
         x2dot_enabled = true
         local_idx = rg[contact_idx]
-        x2dot_pred_contact = [
-          x2dot_rhs(view(uhat, :, j_local), mech, p_net_struct, appr, st, known_pars, times[rg[j_local]]; nn_gain=nn_gain)
-          for j_local in contact_idx
-        ]
+        x2dot_pred_contact = x2dot_rhs_batch(uhat, contact_idx, mech, p_net_struct, appr, st, known_pars, times[rg]; nn_gain=nn_gain)
         if any(x -> !isfinite(x), x2dot_pred_contact)
           set_monitor_status("failed", "ms_x2dot_pred_nonfinite", Inf)
           return Inf
@@ -540,10 +605,7 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
     contact_idx = findall(contact_mask)
     if !isempty(contact_idx)
       x2dot_enabled = true
-      x2dot_pred_contact = [
-        x2dot_rhs(view(uhat, :, j), mech, p_net_struct, appr, st, known_pars, times[j]; nn_gain=nn_gain)
-        for j in contact_idx
-      ]
+      x2dot_pred_contact = x2dot_rhs_batch(uhat, contact_idx, mech, p_net_struct, appr, st, known_pars, times; nn_gain=nn_gain)
       if any(x -> !isfinite(x), x2dot_pred_contact)
         set_monitor_status("failed", "ss_x2dot_pred_nonfinite", Inf)
         return Inf
@@ -734,7 +796,9 @@ if stage2_nn_warm_enabled
         p_net_vec=copy(p_vec),
         g_nn=g_nn,
         train_loss=train_loss,
-        val_loss=val_loss
+        val_loss=val_loss,
+        num_hidden_layers=(haskey(params, "num_hidden_layers") ? try Int(params["num_hidden_layers"]) catch nn_fixed_num_hidden_layers end : nn_fixed_num_hidden_layers),
+        num_hidden_nodes=(haskey(params, "num_hidden_nodes") ? try Int(params["num_hidden_nodes"]) catch nn_fixed_num_hidden_nodes end : nn_fixed_num_hidden_nodes)
       ))
     end
     for recs in values(stage2_nn_warm_by_base_rank)
@@ -820,10 +884,12 @@ function grad_group_norms(grad_raw)
   end
 end
 
-function run_adam(theta0, loss_fn; lr_init, maxiters=500, log_every=100, monitor_ref=nothing)
+function run_adam(theta0, loss_fn; lr_init, maxiters=500, log_every=100, monitor_ref=nothing,
+  init_source="none", init_attempt=1, init_attempt_max=1)
   lr_adapt = get(ENV, "HNODECB_LR_ADAPT", "1") == "1"
   optimizer_name = lowercase(strip(get(ENV, "HNODECB_STAGE2_OPTIMIZER", "amsgrad")))
-  trace_epoch_first_attempt = get(ENV, "HNODECB_STAGE2_TRACE_EPOCH_FIRST_ATTEMPT", "0") == "1"
+  trace_epoch_first_attempt = get(ENV, "HNODECB_STAGE2_TRACE_EPOCH_FIRST_ATTEMPT",
+    get(ENV, "HNODECB_STAGE2_TRACE_FIRST_ATTEMPT", "1")) == "1"
   mech_grad_diag = get(ENV, "HNODECB_STAGE2_MECH_GRAD_DIAG", "1") == "1"
   group_step_probe = get(ENV, "HNODECB_STAGE2_GROUP_STEP_PROBE", "1") == "1"
   mech_fd_eps = env_float("HNODECB_STAGE2_MECH_FD_EPS", 1e-6)
@@ -878,7 +944,7 @@ function run_adam(theta0, loss_fn; lr_init, maxiters=500, log_every=100, monitor
   plateau_early_stop = get(ENV, "HNODECB_STAGE2_PLATEAU_EARLY_STOP", "0") == "1"
   plateau_window = 5
   plateau_tol = 1e-6
-  good_enough_loss = 1e-8
+  good_enough_loss = 1e-10
   epoch_retry_max = max(0, parse(Int, get(ENV, "HNODECB_STAGE2_EPOCH_RETRIES", "8")))
   epoch_retry_lr_factor = env_float("HNODECB_STAGE2_RETRY_LR_FACTOR", 0.2)
   if !isfinite(epoch_retry_lr_factor) || epoch_retry_lr_factor <= 0.0 || epoch_retry_lr_factor >= 1.0
@@ -918,6 +984,11 @@ function run_adam(theta0, loss_fn; lr_init, maxiters=500, log_every=100, monitor
   recent_losses = Float64[]
   p_grad_ema = Ref(NaN)
   m_grad_ema = Ref(NaN)
+  epoch1_loss = Inf
+  epoch1_gnorm_raw = NaN
+  epoch1_accept_logged = false
+  failure_epoch = 0
+  failure_reason = ""
   tprintln("  optimizer=", uppercase(optimizer_name),
     " | grad_scales: p_net=", fmt_e(grad_scale_p_net, sigdigits=3),
     " mech_raw=", fmt_e(grad_scale_mech, sigdigits=3))
@@ -1125,9 +1196,14 @@ function run_adam(theta0, loss_fn; lr_init, maxiters=500, log_every=100, monitor
       try
         pullback_t0 = trace_this_attempt ? time_ns() : 0
         if trace_this_attempt
+          tprintln("  trace[epoch1/attempt1]: init_source=", init_source,
+            " init_attempt=", init_attempt, "/", init_attempt_max)
           tprintln("  trace[epoch1/attempt1]: pullback_begin")
         end
         loss, back = Zygote.pullback(loss_fn, theta)
+        if epoch == 1
+          epoch1_loss = loss
+        end
         if trace_this_attempt
           tprintln("  trace[epoch1/attempt1]: pullback_done dt=", trace_dt_str(pullback_t0),
             " loss=", fmt_e(loss, sigdigits=4))
@@ -1142,6 +1218,9 @@ function run_adam(theta0, loss_fn; lr_init, maxiters=500, log_every=100, monitor
         end
         gradprep_t0 = trace_this_attempt ? time_ns() : 0
         gnorm_raw = grad_norm_safe(grad_raw)
+        if epoch == 1
+          epoch1_gnorm_raw = gnorm_raw
+        end
         gnorm_p_raw, gnorm_m_raw = grad_group_norms(grad_raw)
         if group_adapt && isfinite(gnorm_p_raw) && isfinite(gnorm_m_raw) &&
            gnorm_p_raw > 0.0 && gnorm_m_raw > 0.0
@@ -1207,8 +1286,31 @@ function run_adam(theta0, loss_fn; lr_init, maxiters=500, log_every=100, monitor
     end
 
     if fail_reason != ""
+      failure_epoch = epoch
+      failure_reason = fail_reason
       log_nonfinite_debug(epoch, loss, gnorm, theta)
-      return theta, Inf, "epoch_retry_exhausted: " * fail_reason
+      return theta, Inf, "epoch_retry_exhausted: " * fail_reason, (
+        epoch1_loss=epoch1_loss,
+        epoch1_gnorm_raw=epoch1_gnorm_raw,
+        failure_epoch=failure_epoch,
+        failure_reason=failure_reason
+      )
+    end
+
+    if epoch == 1 && !epoch1_accept_logged
+      tprintln("  init accepted on attempt ", init_attempt, "/", init_attempt_max,
+        " -- epoch1 loss=", fmt_e(epoch1_loss, sigdigits=4),
+        " grad_norm=", fmt_e(epoch1_gnorm_raw, sigdigits=3),
+        " | source=", init_source)
+      if monitor_ref !== nothing && monitor_ref[] !== nothing
+        diag = monitor_ref[]
+        tprintln("  epoch1 nn raw: min=", fmt_e(diag.raw_min, sigdigits=3),
+          " max=", fmt_e(diag.raw_max, sigdigits=3),
+          " span=", fmt_e(diag.raw_span, sigdigits=3),
+          " mean=", fmt_e(diag.raw_mean, sigdigits=3),
+          " neg=", fmt_f(100 * diag.raw_neg_frac, digits=2), "%")
+      end
+      epoch1_accept_logged = true
     end
 
     if epoch % log_every == 0
@@ -1395,22 +1497,32 @@ function run_adam(theta0, loss_fn; lr_init, maxiters=500, log_every=100, monitor
       end
     end
     if loss < good_enough_loss
-      tprintln("  early-stop: good_enough (loss < 1e-8)")
-      return theta, loss, "good_enough"
+      tprintln("  early-stop: good_enough (loss < 1e-10)")
+      return theta, loss, "good_enough", (
+        epoch1_loss=epoch1_loss,
+        epoch1_gnorm_raw=epoch1_gnorm_raw,
+        failure_epoch=failure_epoch,
+        failure_reason=failure_reason
+      )
     end
     if plateau_early_stop && length(recent_losses) == plateau_window &&
        abs(recent_losses[end] - recent_losses[1]) < plateau_tol
       tprintln("  early-stop: plateau_5ep (|Δloss| < 1e-6 over 5 epochs)")
-      return theta, loss, "plateau_5ep"
+      return theta, loss, "plateau_5ep", (
+        epoch1_loss=epoch1_loss,
+        epoch1_gnorm_raw=epoch1_gnorm_raw,
+        failure_epoch=failure_epoch,
+        failure_reason=failure_reason
+      )
     end
 
     if !step_guard
-      if trace_first_attempt && epoch == 1 && attempt == 1
+      if trace_epoch_first_attempt && epoch == 1 && attempt == 1
         update_t0 = time_ns()
         tprintln("  trace[epoch1/attempt1]: direct_update_begin")
       end
       opt_state, theta = Optimisers.update(opt_state, theta, grad_update)
-      if trace_first_attempt && epoch == 1 && attempt == 1
+      if trace_epoch_first_attempt && epoch == 1 && attempt == 1
         tprintln("  trace[epoch1/attempt1]: direct_update_done dt=", trace_dt_str(update_t0))
       end
     else
@@ -1421,7 +1533,7 @@ function run_adam(theta0, loss_fn; lr_init, maxiters=500, log_every=100, monitor
 
       while step_attempt <= step_retry_max
         step_attempt += 1
-        trace_this_step = trace_first_attempt && epoch == 1 && attempt == 1 && step_attempt == 1
+        trace_this_step = trace_epoch_first_attempt && epoch == 1 && attempt == 1 && step_attempt == 1
         step_fail_reason = ""
         trial_loss = Inf
         opt_input = deepcopy(opt_state_base)
@@ -1502,7 +1614,12 @@ function run_adam(theta0, loss_fn; lr_init, maxiters=500, log_every=100, monitor
     end
   end
 
-  return theta, loss_fn(theta), ""
+  return theta, loss_fn(theta), "", (
+    epoch1_loss=epoch1_loss,
+    epoch1_gnorm_raw=epoch1_gnorm_raw,
+    failure_epoch=failure_epoch,
+    failure_reason=failure_reason
+  )
 end
 
 # x3 initial value (allowed: first contact)
@@ -1587,16 +1704,12 @@ else
     params = cand.params
     ks0 = params["ks0"]
     cs0 = params["cs0"]
-    num_hidden_layers = nn_fixed_num_hidden_layers
-    num_hidden_nodes = nn_fixed_num_hidden_nodes
+    num_hidden_layers = get(params, "num_hidden_layers", nn_fixed_num_hidden_layers)
+    num_hidden_nodes = get(params, "num_hidden_nodes", nn_fixed_num_hidden_nodes)
     ms_group_size = get(params, "ms_group_size", 50)
     ms_continuity_term = get(params, "ms_continuity_term", 1e-3)
 
     for l2_weight in l2_grid
-      approximating_neural_network = build_nn(num_hidden_layers, num_hidden_nodes)
-      p_net_init_raw, st = Lux.setup(StableRNG(0), approximating_neural_network)
-      p_net_init = Flux.f64(p_net_init_raw)
-      p_net_template_vec, re_pnet = Optimisers.destructure(p_net_init)
       warm_init_vec = nothing
       warm_rank_used = 0
       g_nn_current = stage2_use_gnn ? stage2_gnn_default : 1.0
@@ -1606,12 +1719,18 @@ else
           warm_rank_used = min(stage2_nn_warm_rank, length(warm_recs))
           warm_pick = warm_recs[warm_rank_used]
           warm_init_vec = copy(warm_pick.p_net_vec)
+          num_hidden_layers = warm_pick.num_hidden_layers
+          num_hidden_nodes = warm_pick.num_hidden_nodes
           if stage2_use_gnn && hasproperty(warm_pick, :g_nn)
             g_nn_current = warm_pick.g_nn
           end
         end
       end
       warm_used = warm_init_vec !== nothing
+      approximating_neural_network = build_nn(num_hidden_layers, num_hidden_nodes)
+      p_net_init_raw, st = Lux.setup(StableRNG(0), approximating_neural_network)
+      p_net_init = Flux.f64(p_net_init_raw)
+      p_net_template_vec, re_pnet = Optimisers.destructure(p_net_init)
 
       raw_init = [
         raw_from_value(ks0, ks_bounds[1], ks_bounds[2]),
@@ -1650,23 +1769,24 @@ else
         " warm=", warm_used,
         (warm_used ? " (rank=" * string(warm_rank_used) * ")" : ""))
 
-      theta0 = nothing
+      theta_best = nothing
+      train_loss = Inf
+      reason = "init_not_run"
       init_attempts = 0
-      precheck_loss = Inf
-      precheck_gnorm = NaN
-      precheck_reason = "uninitialized"
-      precheck_source = "none"
+      epoch1_loss = Inf
+      epoch1_gnorm = NaN
+      init_reason = "uninitialized"
+      init_source = "none"
       while init_attempts < stage2_init_retries
         init_attempts += 1
-        precheck_reason = "ok"
         p_net_try_vec = nothing
-        precheck_source = "random"
+        init_source = "random"
         if init_attempts == 1 && warm_init_vec !== nothing
           if length(warm_init_vec) == length(p_net_template_vec)
             p_net_try_vec = copy(warm_init_vec)
-            precheck_source = "warm_rank_" * string(warm_rank_used)
+            init_source = "warm_rank_" * string(warm_rank_used)
           else
-            precheck_source = "random_after_warm_mismatch"
+            init_source = "random_after_warm_mismatch"
           end
         end
         if p_net_try_vec === nothing
@@ -1675,85 +1795,43 @@ else
           p_net_rand = Flux.f64(p_net_rand)
           p_net_try_vec, _ = Optimisers.destructure(p_net_rand)
         end
-        theta_try = ComponentVector(p_net=copy(p_net_try_vec), mech_raw=raw_init)
+        theta0 = ComponentVector(p_net=copy(p_net_try_vec), mech_raw=raw_init)
         train_monitor[] = nothing
-        precheck_loss = Inf
-        precheck_gnorm = NaN
-        trace_precheck = get(ENV, "HNODECB_STAGE2_TRACE_FIRST_ATTEMPT", "1") == "1" && init_attempts == 1
-        try
-          # Two-step precheck: first ensure the forward loss is finite, then
-          # spend memory on reverse-mode only for candidates that pass.
-          if precheck_reason == "ok"
-            precheck_loss_t0 = trace_precheck ? time_ns() : 0
-            if trace_precheck
-              tprintln("  trace[precheck1]: loss_begin")
-            end
-            precheck_loss = loss_fn(theta_try)
-            if trace_precheck
-              tprintln("  trace[precheck1]: loss_done dt=", fmt_e((time_ns() - precheck_loss_t0) / 1e9, sigdigits=4),
-                " loss=", fmt_e(precheck_loss, sigdigits=4))
-            end
-            if !isfinite(precheck_loss)
-              precheck_reason = "loss_nonfinite"
+        theta_try_best, train_loss_try, reason_try, run_meta = run_adam(theta0, loss_fn;
+          lr_init=lr_init, maxiters=500, log_every=stage2_log_every, monitor_ref=train_monitor,
+          init_source=init_source, init_attempt=init_attempts, init_attempt_max=stage2_init_retries)
+        epoch1_loss = run_meta.epoch1_loss
+        epoch1_gnorm = run_meta.epoch1_gnorm_raw
+
+        if run_meta.failure_epoch == 1
+          init_reason = run_meta.failure_reason
+          if init_attempts <= 3 || (init_attempts % stage2_init_retry_log_every == 0) || init_attempts == stage2_init_retries
+            tprintln("  init retry ", init_attempts, "/", stage2_init_retries,
+              " rejected -- epoch1 loss=", fmt_e(epoch1_loss, sigdigits=4),
+              " grad_norm=", fmt_e(epoch1_gnorm, sigdigits=3),
+              " | reason=", init_reason,
+              " | source=", init_source)
+            if train_monitor[] !== nothing
+              diag = train_monitor[]
+              tprintln("    epoch1 nn raw: min=", fmt_e(diag.raw_min, sigdigits=3),
+                " max=", fmt_e(diag.raw_max, sigdigits=3),
+                " span=", fmt_e(diag.raw_span, sigdigits=3),
+                " mean=", fmt_e(diag.raw_mean, sigdigits=3),
+                " neg=", fmt_f(100 * diag.raw_neg_frac, digits=2), "%")
             end
           end
-        catch ex
-          precheck_reason = "forward_exception: " * sprint(showerror, ex)
+          continue
         end
 
-        if precheck_reason == "ok"
-          try
-            precheck_pullback_t0 = trace_precheck ? time_ns() : 0
-            if trace_precheck
-              tprintln("  trace[precheck1]: pullback_begin")
-            end
-            _, back = Zygote.pullback(loss_fn, theta_try)
-            if trace_precheck
-              tprintln("  trace[precheck1]: pullback_done dt=", fmt_e((time_ns() - precheck_pullback_t0) / 1e9, sigdigits=4))
-            end
-            precheck_back_t0 = trace_precheck ? time_ns() : 0
-            if trace_precheck
-              tprintln("  trace[precheck1]: backward_begin")
-            end
-            precheck_grad = first(back(1.0))
-            if trace_precheck
-              tprintln("  trace[precheck1]: backward_done dt=", fmt_e((time_ns() - precheck_back_t0) / 1e9, sigdigits=4))
-            end
-            precheck_gnorm = grad_norm_safe(precheck_grad)
-            if trace_precheck
-              tprintln("  trace[precheck1]: gradnorm_done grad_norm=", fmt_e(precheck_gnorm, sigdigits=3))
-            end
-            if !isfinite(precheck_gnorm)
-              precheck_reason = "grad_nonfinite"
-            else
-              theta0 = theta_try
-              break
-            end
-          catch ex
-            precheck_reason = "grad_exception: " * sprint(showerror, ex)
-          end
-        end
-
-        if init_attempts <= 3 || (init_attempts % stage2_init_retry_log_every == 0) || init_attempts == stage2_init_retries
-          tprintln("  init retry ", init_attempts, "/", stage2_init_retries,
-            " rejected -- loss=", fmt_e(precheck_loss, sigdigits=4),
-            " grad_norm=", fmt_e(precheck_gnorm, sigdigits=3),
-            " | reason=", precheck_reason,
-            " | source=", precheck_source)
-          if train_monitor[] !== nothing
-            diag = train_monitor[]
-            tprintln("    precheck nn raw: min=", fmt_e(diag.raw_min, sigdigits=3),
-              " max=", fmt_e(diag.raw_max, sigdigits=3),
-              " span=", fmt_e(diag.raw_span, sigdigits=3),
-              " mean=", fmt_e(diag.raw_mean, sigdigits=3),
-              " neg=", fmt_f(100 * diag.raw_neg_frac, digits=2), "%")
-          end
-        end
+        theta_best = theta_try_best
+        train_loss = train_loss_try
+        reason = reason_try
+        break
       end
 
-      if theta0 === nothing
+      if theta_best === nothing
         tprintln("  init failed after ", stage2_init_retries,
-          " attempts -- skipping candidate (last reason=", precheck_reason, ")")
+          " attempts -- skipping candidate (last reason=", init_reason, ")")
         ks_hat = bound_param(raw_init[1], ks_bounds[1], ks_bounds[2])
         cs_hat = bound_param(raw_init[2], cs_bounds[1], cs_bounds[2])
         ks_err_pct = rel_err_pct(ks_hat, ks_true, scale_eps)
@@ -1772,11 +1850,13 @@ else
           "learning_rate_adam" => lr_init,
           "g_nn" => g_nn_current,
           "init_attempts" => init_attempts,
+          "init_source" => init_source,
           "nn_warm_enabled" => stage2_nn_warm_enabled,
           "nn_warm_rank" => warm_rank_used,
           "nn_warm_used" => warm_used,
           "nn_warm_file" => stage2_nn_warm_file,
-          "init_failed" => true
+          "init_failed" => true,
+          "init_failure_reason" => init_reason
         )
         push!(trial_parameters, (
           loss=Inf,
@@ -1793,22 +1873,10 @@ else
         continue
       end
 
-      tprintln("  init accepted on attempt ", init_attempts, "/", stage2_init_retries,
-        " -- precheck loss=", fmt_e(precheck_loss, sigdigits=4),
-        " grad_norm=", fmt_e(precheck_gnorm, sigdigits=3),
-        " | source=", precheck_source)
-      if train_monitor[] !== nothing
-        diag = train_monitor[]
-        tprintln("  precheck nn raw: min=", fmt_e(diag.raw_min, sigdigits=3),
-          " max=", fmt_e(diag.raw_max, sigdigits=3),
-          " span=", fmt_e(diag.raw_span, sigdigits=3),
-          " mean=", fmt_e(diag.raw_mean, sigdigits=3),
-          " neg=", fmt_f(100 * diag.raw_neg_frac, digits=2), "%")
-      end
-
-      theta_best, train_loss, reason = run_adam(theta0, loss_fn;
-        lr_init=lr_init, maxiters=500, log_every=stage2_log_every, monitor_ref=train_monitor)
-      if reason == "train_loss_nonfinite" || reason == "grad_norm_nonfinite" || startswith(reason, "exception:")
+      if startswith(reason, "epoch_retry_exhausted:") ||
+         reason == "train_loss_nonfinite" ||
+         reason == "grad_norm_nonfinite" ||
+         startswith(reason, "exception:")
         train_loss = Inf
       end
 
@@ -1839,6 +1907,7 @@ else
         "learning_rate_adam" => lr_init,
         "g_nn" => g_nn_current,
         "init_attempts" => init_attempts,
+        "init_source" => init_source,
         "nn_warm_enabled" => stage2_nn_warm_enabled,
         "nn_warm_rank" => warm_rank_used,
         "nn_warm_used" => warm_used,

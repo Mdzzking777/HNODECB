@@ -1,0 +1,118 @@
+AFM03 out-of-place + GaussAdjoint(ZygoteVJP())
+Date: 2026-03-12
+
+Primary local logs reviewed
+- logs/stage2_step2a/precheck/log2_03_stage2light_backward_precheck_gausszygote_w4_n8_exact.txt
+
+Primary AFM03 summaries reviewed
+- user requirements/AFM03/AFM_stage2light_current_difficulties_20260309.txt
+- user requirements/AFM03/AFM_stage2light_quantitative_summary_20260311.txt
+
+Purpose
+Record the current status of the unified AFM03 route based on:
+- out-of-place RHS
+- `GaussAdjoint(autojacvec=ZygoteVJP())`
+
+This file focuses on:
+- what this route fixed,
+- what runtime evidence it produced,
+- what the latest strict formal precheck now shows,
+- and how it should currently be interpreted.
+
+====================================================
+1. What this route originally achieved in AFM03
+====================================================
+
+1. It was the strongest unified-route candidate after the reduced diagnostics.
+- It passed the reduced AD-vs-FD checks for:
+  - `p_mech`
+  - sampled `p_net`
+
+2. It improved runtime relative to qzygote in the reduced formal-precheck regime.
+- In the reduced active formal-precheck profile, its backward was about:
+  - `145.9 s`
+- This was better than qzygote, which was about:
+  - `185.3 s`
+
+3. It therefore became the primary unified-route candidate.
+- qzygote remained useful as a correctness oracle,
+- but gausszygote became the preferred unified candidate among the tested Zygote-based routes.
+
+====================================================
+2. What the reduced evidence did and did not prove
+====================================================
+
+The reduced evidence supported two things:
+
+1. Correctness in reduced AD-vs-FD tests looked acceptable.
+2. Reduced formal backward was expensive, but still measurable.
+
+However, this did not prove that:
+
+- the exact full formal backward path in the current Stage2light core
+- would remain healthy at execution time.
+
+=========================================================
+3. What the latest strict exact formal precheck now shows
+=========================================================
+
+The latest exact formal precheck was run through the strict formal path.
+It reused the official Stage2 loss path and the official formal route.
+
+Observed behavior:
+
+1. Forward loss completed normally.
+- `compile warmup: loss_done dt_s=4.258`
+
+2. Pullback construction also completed normally.
+- `compile warmup: pullback_done dt_s=29.325`
+
+3. The process then stalled at:
+- `compile warmup: backward_begin`
+
+This means:
+
+- forward solve itself is not the main failure point,
+- pullback construction is not the failure point,
+- the pathological step is the actual backward execution:
+  - `back(1.0)`
+
+=========================================================
+4. Current interpretation of the failure mode
+=========================================================
+
+The current best interpretation is:
+
+1. This route still looks mathematically promising in reduced correctness tests.
+2. But its exact formal backward path is currently pathological in AFM03.
+3. Therefore the main contradiction is no longer just:
+   - "old route wrong, new route expensive"
+4. It is now:
+   - reduced correctness looks acceptable,
+   - but strict exact formal backward still does not behave like a usable production path.
+
+In other words:
+
+- this route cannot currently be treated as production-ready,
+- even though it remained the best-tested unified Zygote-based candidate before the latest exact precheck.
+
+====================================================
+5. Current engineering judgment
+====================================================
+
+At this moment, the route should be described as:
+
+- more credible than the old ReverseDiff-based formal route on reduced correctness,
+- but still not validated as a practical formal-training backend,
+- because the strict exact backward path stalls at `backward_begin`.
+
+Therefore:
+
+- it is not currently a reliable production route for Stage2light,
+- even though it remains an important diagnostic reference route.
+
+====================================================
+6. One-sentence conclusion
+====================================================
+
+`out-of-place + GaussAdjoint(ZygoteVJP())` was the strongest reduced-correctness unified candidate in AFM03, but the latest strict exact formal precheck shows that its backward path is still pathological, so it cannot currently be treated as a validated production Stage2light route.

@@ -1,8 +1,8 @@
 param(
   [int]$Threads = 8,
   [int]$Candidate = 6,
-  [int]$Shards = 3,
-  [int]$TrialsPerShard = 333,
+  [int]$Shards = 4,
+  [int]$TrialsPerShard = 250,
   [int]$FinalTopK = 10
 )
 
@@ -44,11 +44,28 @@ $env:HNODECB_STAGE1PLUS_FINAL_TOPK = "$FinalTopK"
 $env:HNODECB_STAGE1PLUS_ZERO_NN = "0"
 $env:HNODECB_STAGE1_SHARD_COUNT = "$Shards"
 $env:HNODECB_STAGE1_AUTOSPAWN = "1"
-$env:HNODECB_STAGE1PLUSLIGHT_LOG_SUBDIR = "stage1_step2a/local"
+$env:HNODECB_STAGE1PLUSLIGHT_LOG_SUBDIR = "stage1_step2a/1pluslight/local"
 $env:HNODECB_STAGE1PLUSLIGHT_LOG_PREFIX = "log2_03_step2a_stage1pluslight_local"
 $env:HNODECB_STAGE1_LOG_EVERY = "1"
 $env:HNODECB_INF_LOG = "1"
 $env:HNODECB_LOG_NN_ERR = "1"
+$env:HNODECB_STAGE1PLUS_ARCH_LR_ADAPT = "1"
+$env:HNODECB_STAGE1PLUS_ARCH_LR_MIN = "1e-30"
+$env:HNODECB_STAGE1PLUS_ARCH_LR_MAX = "5e1"
+$env:HNODECB_STAGE1PLUS_ARCH_LR_ETA = "0.5"
+$env:HNODECB_STAGE1PLUS_ARCH_LR_EMA = "0.85"
+$env:HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_P_NET = "0.5"
+$env:HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_MECH = "1.0"
+$env:HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_P_NET_MIN = "0.1"
+$env:HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_P_NET_MAX = "1.0"
+$env:HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_MECH_MIN = "0.5"
+$env:HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_MECH_MAX = "1.5"
+$env:HNODECB_STAGE1PLUS_ARCH_GROUP_ADAPT = "1"
+$env:HNODECB_STAGE1PLUS_ARCH_GROUP_ETA = "0.05"
+$env:HNODECB_STAGE1PLUS_ARCH_STEP_GUARD = "1"
+$env:HNODECB_STAGE1PLUS_ARCH_STEP_RETRIES = "6"
+$env:HNODECB_STAGE1PLUS_ARCH_STEP_RETRY_LR_FACTOR = "0.1"
+$env:HNODECB_STAGE1PLUS_ARCH_STEP_MAX_LOSS_FRAC = "0.1"
 $env:HNODECB_JULIA_PROJECT = "$projectPath"
 $env:JULIA_PROJECT = "$projectPath"
 
@@ -57,19 +74,19 @@ Remove-Item Env:HNODECB_STAGE1_SHARD_INDEX -ErrorAction SilentlyContinue
 if (-not (Test-Path -Path (Join-Path $repoRoot "logs"))) {
   New-Item -ItemType Directory -Path (Join-Path $repoRoot "logs") | Out-Null
 }
-if (-not (Test-Path -Path (Join-Path $repoRoot "logs\\stage1_step2a\\local"))) {
-  New-Item -ItemType Directory -Path (Join-Path $repoRoot "logs\\stage1_step2a\\local") -Force | Out-Null
+if (-not (Test-Path -Path (Join-Path $repoRoot "logs\\stage1_step2a\\1pluslight\\local"))) {
+  New-Item -ItemType Directory -Path (Join-Path $repoRoot "logs\\stage1_step2a\\1pluslight\\local") -Force | Out-Null
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$driverLog = Join-Path $repoRoot ("logs\\stage1_step2a\\local\\log2_03_step2a_stage1pluslight_local_driver_" + $timestamp + ".txt")
+$driverLog = Join-Path $repoRoot ("logs\\stage1_step2a\\1pluslight\\local\\log2_03_step2a_stage1pluslight_local_driver_" + $timestamp + ".txt")
 $runner = Join-Path $repoRoot "runner\\stagewise\\afm_param_search_stage1pluslight_03.jl"
 
 Write-Host "Running Stage1pluslight (03) with JULIA_NUM_THREADS=$env:JULIA_NUM_THREADS, CANDIDATE=$env:HNODECB_STAGE1PLUSLIGHT_CANDIDATE, SHARDS=$env:HNODECB_STAGE1_SHARD_COUNT, TRIALS_PER_SHARD=$TrialsPerShard, TOTAL_TRIALS=$env:HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE, FINAL_TOPK=$env:HNODECB_STAGE1PLUS_FINAL_TOPK"
 Write-Host "Repo root  -> $repoRoot"
 Write-Host "Project    -> $projectPath"
 Write-Host "Driver log -> $driverLog"
-Write-Host "Shard logs -> logs\\stage1_step2a\\local\\log2_03_step2a_stage1pluslight_local_p#.txt"
+Write-Host "Shard logs -> logs\\stage1_step2a\\1pluslight\\local\\log2_03_step2a_stage1pluslight_local_p#.txt"
 
 $prevErrorAction = $ErrorActionPreference
 $ErrorActionPreference = "Continue"

@@ -63,7 +63,10 @@ if get(ENV, "HNODECB_STAGE1_AUTOSPAWN", get(ENV, "HNODECB_PIPELINE03_AUTOSPAWN",
   project = get(ENV, "HNODECB_JULIA_PROJECT", repo_root)
   stage1_path = normpath(joinpath(@__DIR__, "..", "..", "step2a_hyperparameter_tuning",
     "hyperparameter_tuning_first_stage", "afm_param_stage1_03.jl"))
-  log_dir = normpath(joinpath(@__DIR__, "..", "..", "logs"))
+  log_subdir = get(ENV, "HNODECB_STAGE1_LOG_SUBDIR", "")
+  log_dir = isempty(strip(log_subdir)) ?
+    normpath(joinpath(@__DIR__, "..", "..", "logs")) :
+    normpath(joinpath(@__DIR__, "..", "..", "logs", log_subdir))
   isdir(log_dir) || mkpath(log_dir)
 
   println("=== Stage1 (03): spawning ", shard_cnt, " shards ===")
@@ -139,11 +142,6 @@ if get(ENV, "HNODECB_STAGE1_AUTOSPAWN", get(ENV, "HNODECB_PIPELINE03_AUTOSPAWN",
     cs_hat = hasproperty(rec, :cs_hat) ? rec.cs_hat : cs0
     ks_err_pct = hasproperty(rec, :ks_err_pct) ? rec.ks_err_pct : NaN
     cs_err_pct = hasproperty(rec, :cs_err_pct) ? rec.cs_err_pct : NaN
-    nn_err = hasproperty(rec, :val_nn_err) ? rec.val_nn_err : NaN
-    raw_min = hasproperty(rec, :val_raw_min) ? rec.val_raw_min : NaN
-    raw_max = hasproperty(rec, :val_raw_max) ? rec.val_raw_max : NaN
-    raw_mean = hasproperty(rec, :val_raw_mean) ? rec.val_raw_mean : NaN
-    raw_neg_frac = hasproperty(rec, :val_raw_neg_frac) ? rec.val_raw_neg_frac : NaN
     println("  Rank ", rank,
       " -- train=", fmt_e(train_loss, sigdigits=4),
       " val=", fmt_e(val_loss, sigdigits=4),
@@ -159,13 +157,6 @@ if get(ENV, "HNODECB_STAGE1_AUTOSPAWN", get(ENV, "HNODECB_PIPELINE03_AUTOSPAWN",
       " (true=", fmt_e(ks_true, sigdigits=3), " err=", fmt_pct(ks_err_pct, digits=2), ")",
       " cs=", fmt_e(cs_hat, sigdigits=3),
       " (true=", fmt_e(cs_true, sigdigits=3), " err=", fmt_pct(cs_err_pct, digits=2), ")")
-    if hasproperty(rec, :val_nn_err)
-      println("     nn: F_hertz err=", fmt_pct(nn_err, digits=2))
-      println("     nn raw: min=", fmt_e(raw_min, sigdigits=3),
-        " max=", fmt_e(raw_max, sigdigits=3),
-        " mean=", fmt_e(raw_mean, sigdigits=3),
-        " neg=", fmt_pct(100 * raw_neg_frac, digits=2))
-    end
   end
   merged_warm_has_pnet = !isempty(merged_warm_top) && hasproperty(merged_warm_top[1], :p_net)
   println("Stage1 warm-start export (merged): ",

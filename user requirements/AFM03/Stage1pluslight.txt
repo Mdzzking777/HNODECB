@@ -1,0 +1,257 @@
+日期：2026-03-13
+
+主题：
+AFM03 中 `Stage1pluslight` 的本次大改动总结
+
+1. 本次改动的总目标
+本次改动的核心目标，是把原先只做 `weights` 随机搜索的 `Stage1pluslight`，
+扩展成一个两阶段流程：
+
+- 先筛选 NN architecture（超参数）
+- 再固定最佳 architecture，继续做后续的大规模 `weights` 搜索
+
+这样做的理由是：
+
+- AFM03 的 `Stage2/Stage2light` 训练成本很高
+- 如果不先筛掉不合适的 NN 结构，后续正式训练的算力代价很容易失控
+
+====================================================
+2. `Stage1pluslight` 现在被拆成两个阶段
+====================================================
+
+2.1. 阶段 A：architecture screening
+
+这个阶段不再直接做原始的 `1000` 次权重搜索，而是先对一组小规模 NN 结构做预筛选。
+
+2.2. 阶段 B：固定最佳 architecture 后的 weight search
+
+阶段 A 选出最佳 architecture（`archi god`）后，
+阶段 B 再回到原来的 `Stage1pluslight` 思路：
+
+- 固定 architecture
+- 大规模随机搜索 `weights`
+- 选出最优 warm-start 作为后续 `Stage2` 的输入
+
+====================================================
+3. architecture search space
+====================================================
+
+目前给定的 architecture 超参数范围是：
+
+- `layers = 0:2`
+- `nodes = 1:3`
+
+这意味着：
+
+- 一共 `3 × 3 = 9` 种基础 architecture
+
+其中：
+
+- `nodes` 决定 hidden width 为 `2^nodes`
+- `layers` 表示在第一层 `input -> hidden` 之后，额外增加多少个 `hidden -> hidden` blocks
+
+====================================================
+4. architecture screening 的训练设定
+====================================================
+
+当前阶段 A 的默认设定是：
+
+- 每种 architecture 做 `10` 次 `weight trials`
+- 每个 `weight trial` 训练 `20` 个 epochs
+- 训练窗口固定为：
+  - `first contact` 后的连续 `5 μs`
+
+因此：
+
+- architecture screening 不是 full horizon 训练
+- 它是一个低成本预筛器
+- 用来比较不同 architecture 的可训练性、稳定性和单位代价
+
+====================================================
+5. `min_obj` 的定义
+====================================================
+
+architecture screening 不再只看 loss，而是使用一个三项组成的 `min_obj`：
+
+- `obj1 = (val_loss_end - val_loss_start) / 20`
+- `obj2 = time_per_epoch`
+- `obj3 = count(t2 > |t1|)`
+
+对应含义是：
+
+- `obj1`
+  - 反映 20 个 epochs 内 validation loss 的变化速度
+  - 越负越好
+
+- `obj2`
+  - 反映单位 epoch 的计算代价
+  - 越小越好
+
+- `obj3`
+  - 反映训练中的过冲/不稳定次数
+  - 越小越好
+
+目前权重关系为：
+
+- `b > a > c`
+
+当前默认数值为：
+
+- `a = 0.35`
+- `b = 0.45`
+- `c = 0.20`
+
+====================================================
+6. `min_obj` 的归一化与最终评选规则
+====================================================
+
+本次改动中，一个非常关键的逻辑已经明确：
+
+6.1. trial 级别
+
+每个 `weight trial` 跑完完整 `20` 个 epochs 后：
+
+- 立刻计算该 trial 的 `obj1 / obj2 / obj3`
+- 立刻进行归一化
+- 生成并冻结该 trial 的 `normalized min_obj_trial`
+
+也就是说：
+
+- 每个 trial 都有自己的最终归一化分数
+- 这个 trial 分数一旦生成，就不再在后续重新归一化
+
+6.2. architecture 级别
+
+最终对 9 种 architecture 做排名时：
+
+- 不再二次归一化
+- 只对该 architecture 下所有 `weight trials` 的：
+  - `min_obj_trial`
+  - 各组成部分的 `weighted / norm / raw`
+  做平均
+
+然后：
+
+- 按 architecture 的平均 `min_obj` 排名
+- 选出最小者
+- 记为 `archi god`
+
+====================================================
+7. 日志打印的增强
+====================================================
+
+architecture screening 现在会打印比原先更详细的训练信息。
+
+7.1. 每个 epoch 打印
+
+每个 epoch 现在会打印：
+
+- `training loss`
+- `validation loss`
+- 时间戳
+- `dt per epoch`
+- `t1`
+- `t2`
+- 当前 `lr`
+- 当前 `scale[p_net, mech_raw]`
+
+如果发生 step-guard retry，也会额外打印 retry 信息。
+
+7.2. 每个 trial 结束时打印
+
+每个 `weight trial` 完整跑完 `20` 个 epochs 后，会打印：
+
+- 该 trial 的最终 `min_obj`
+- 以及三项组成部分的细节：
+  - `weighted`
+  - `norm`
+  - `raw`
+
+7.3. 最终 architecture 排名打印
+
+在 9 种 architecture 全部完成后，最终排名也会打印：
+
+- 每个 architecture 的平均 `min_obj`
+- 以及三项组成部分的平均：
+  - `weighted`
+  - `norm`
+  - `raw`
+
+====================================================
+8. screening 现在已接入 Stage2/Stage2light 风格的训练机制
+====================================================
+
+这次改动后，architecture screening 不再是一个极简 Adam 循环，
+而是已经接入了接近 `Stage2/Stage2light` 的外层训练机制：
+
+- adaptive learning rate
+- `p_net / mech_raw` group scaling
+- step-guard retry
+- 联合更新 `p_net + mech_raw`
+
+特别是：
+
+- screening 已不再只更新 `p_net`
+- `mech_raw` 现在也在这个阶段参与更新
+
+====================================================
+9. step-guard 的过冲阈值
+====================================================
+
+和 `Stage2light` 不同，
+这里的 step-guard 过冲阈值没有使用极小固定值（例如 `1e-8`），
+而是改成了一个更适合 `Stage1pluslight` 的动态规则：
+
+- `allowed overshoot = current_train_loss / 10`
+
+例如：
+
+- 如果当前 loss 是 `8.2e-5`
+- 则允许的最大反冲是 `8.2e-6`
+
+其含义是：
+
+- screening 阶段仍允许一定幅度的探索
+- 但不允许单步更新把 loss 反冲得过于夸张
+
+====================================================
+10. 其它一并并入 `Stage1pluslight` 的结构性改动
+====================================================
+
+这次大改动并不只是“加 architecture screening”，
+还把以下与 `Stage1pluslight` 强相关的结构变化并入了当前路线：
+
+1. NN 输入现在统一改为：
+- `x1, x2, x3`
+
+2. NN raw output 与接触权重的耦合：
+- 由 `w_true` 改为 `w_pred`
+
+3. `g_nn` 的目标量级不再固定手写为 `5e-10`
+- 现在默认通过已知力项量级自动估算 `target`
+- 再用这个 `target` 去计算 `g_nn`
+
+也就是说，
+`Stage1pluslight` 现在不仅结构上变成两阶段流程，
+其 NN 输入、接触权重耦合方式、以及 `g_nn` 的量级校准逻辑，也都已经更新。
+
+====================================================
+11. 当前工程含义
+====================================================
+
+这次改动之后，
+`Stage1pluslight` 已经不再是原先单一的“随机权重 warm-start 搜索器”，
+而变成了：
+
+- 一个先做 architecture 预筛选，
+- 再做大规模权重搜索，
+- 并且训练机制更接近 `Stage2/Stage2light` 的两阶段 warm-start 生成器。
+
+这使得后续 AFM03 的 NN 结构选择，不再完全依赖人工拍板，
+而可以先通过一个低成本 screening 过程做出初步筛选。
+
+====================================================
+12. 一句话结论
+====================================================
+
+AFM03 的 `Stage1pluslight` 现已升级为一个“两阶段 NN warm-start 生成流程”：先在 `first contact` 后 `5 μs` 小窗口上，用 `min_obj` 对 9 种 architecture 做预筛选并选出 `archi god`，再固定该 architecture 做后续的大规模 `weights` 搜索；同时，这一 screening 阶段已经接入了接近 `Stage2/Stage2light` 的 adaptive lr、group scaling、joint `p_net+mech_raw` 更新与动态 step-guard 机制。

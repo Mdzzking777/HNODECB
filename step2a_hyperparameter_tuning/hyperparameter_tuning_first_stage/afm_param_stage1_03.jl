@@ -178,16 +178,58 @@ function env_float(key, default)
 end
 
 stage1pluslight_gnn_enabled = use_stage1pluslight && get(ENV, "HNODECB_STAGE1PLUS_GNN_ENABLE", "1") == "1"
-stage1pluslight_gnn_target = env_float("HNODECB_STAGE1PLUS_GNN_TARGET", 5e-10)
+stage1pluslight_gnn_target_spec = strip(get(ENV, "HNODECB_STAGE1PLUS_GNN_TARGET", ""))
+stage1pluslight_gnn_target_mode = lowercase(strip(get(ENV, "HNODECB_STAGE1PLUS_GNN_TARGET_MODE",
+  stage1pluslight_gnn_target_spec == "" ? "auto" : "manual")))
+if !(stage1pluslight_gnn_target_mode in ("auto", "manual"))
+  stage1pluslight_gnn_target_mode = stage1pluslight_gnn_target_spec == "" ? "auto" : "manual"
+end
+stage1pluslight_gnn_target_manual = stage1pluslight_gnn_target_spec == "" ? 5e-10 :
+  try
+    parse(Float64, stage1pluslight_gnn_target_spec)
+  catch
+    5e-10
+  end
 stage1pluslight_gnn_quantile = clamp(env_float("HNODECB_STAGE1PLUS_GNN_QUANTILE", 0.95), 0.0, 1.0)
 stage1pluslight_gnn_eps = env_float("HNODECB_STAGE1PLUS_GNN_EPS", 1e-30)
 stage1pluslight_gnn_contact_floor = clamp(env_float("HNODECB_STAGE1PLUS_GNN_CONTACT_FLOOR", 0.5), 0.0, 1.0)
+stage1pluslight_gnn_target_quantile = clamp(
+  env_float("HNODECB_STAGE1PLUS_GNN_TARGET_QUANTILE", stage1pluslight_gnn_quantile), 0.0, 1.0)
+stage1pluslight_gnn_target_min = env_float("HNODECB_STAGE1PLUS_GNN_TARGET_MIN", 1e-12)
+stage1pluslight_gnn_target_max = env_float("HNODECB_STAGE1PLUS_GNN_TARGET_MAX", Inf)
 
 function grad_norm_safe(g)
   try
     return norm(vec(g))
   catch
     return NaN
+  end
+end
+
+function scale_stage1plus_grad(grad_raw, p_net_scale::Float64, mech_scale::Float64)
+  if grad_raw === nothing
+    return nothing
+  end
+  p_scale = (isfinite(p_net_scale) && p_net_scale >= 0.0) ? p_net_scale : 1.0
+  m_scale = (isfinite(mech_scale) && mech_scale >= 0.0) ? mech_scale : 1.0
+  try
+    return ComponentVector(
+      p_net = p_scale .* grad_raw.p_net,
+      mech_raw = m_scale .* grad_raw.mech_raw
+    )
+  catch
+    return grad_raw
+  end
+end
+
+function grad_group_norms(grad_raw)
+  if grad_raw === nothing
+    return NaN, NaN
+  end
+  try
+    return sqrt(sum(abs2, grad_raw.p_net)), sqrt(sum(abs2, grad_raw.mech_raw))
+  catch
+    return NaN, NaN
   end
 end
 
@@ -207,10 +249,11 @@ end
 function fhertz_pred_from_states(u_mat, idxs, p_net_struct, appr, st; nn_gain::Float64=1.0)
   out = Vector{Float64}(undef, length(idxs))
   @inbounds for (k, j) in enumerate(idxs)
-    w_true = true_contact_weight_all[j]
-    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j])
+    s = dist + u_mat[1, j] - u_mat[3, j]
+    w_pred = contact_weight(s, adhesion_transition)
+    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j], u_mat[3, j])
     uhat = appr(nn_in, p_net_struct, st)[1]
-    out[k] = nn_gain * uhat[1] * w_true
+    out[k] = nn_gain * uhat[1] * w_pred
   end
   return out
 end
@@ -219,11 +262,12 @@ function fhertz_pred_and_raw_from_states(u_mat, idxs, p_net_struct, appr, st; nn
   out = Vector{Float64}(undef, length(idxs))
   raw = Vector{Float64}(undef, length(idxs))
   @inbounds for (k, j) in enumerate(idxs)
-    w_true = true_contact_weight_all[j]
-    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j])
+    s = dist + u_mat[1, j] - u_mat[3, j]
+    w_pred = contact_weight(s, adhesion_transition)
+    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j], u_mat[3, j])
     uhat = appr(nn_in, p_net_struct, st)[1]
     raw[k] = uhat[1]
-    out[k] = nn_gain * uhat[1] * w_true
+    out[k] = nn_gain * uhat[1] * w_pred
   end
   return out, raw
 end
@@ -250,31 +294,99 @@ function effective_contact_positions_by_wtrue(idxs; floor=0.5)
   return isempty(pos) ? collect(1:length(idxs)) : pos
 end
 
+function estimate_stage1plus_gnn_target(u_mat, idxs, eff_pos)
+  k, wd, m, c, Fd, _, _, Fad = known_pars
+  n = length(eff_pos)
+  inert_vals = Vector{Float64}(undef, n)
+  spring_vals = Vector{Float64}(undef, n)
+  damp_vals = Vector{Float64}(undef, n)
+  drive_vals = Vector{Float64}(undef, n)
+  fadh_vals = Vector{Float64}(undef, n)
+  fh_est_vals = Vector{Float64}(undef, n)
+  @inbounds for (m_idx, k_idx) in enumerate(eff_pos)
+    j = idxs[k_idx]
+    t = all_times[j]
+    x1 = u_mat[1, j]
+    x2 = u_mat[2, j]
+    w_true = true_contact_weight_all[j]
+    inert = m * x2dot_all[j]
+    spring = k * x1
+    damp = c * x2
+    drive = Fd * cos(wd * t)
+    fadh_eff = Fad * w_true
+    inert_vals[m_idx] = abs(inert)
+    spring_vals[m_idx] = abs(spring)
+    damp_vals[m_idx] = abs(damp)
+    drive_vals[m_idx] = abs(drive)
+    fadh_vals[m_idx] = abs(fadh_eff)
+    fh_est_vals[m_idx] = abs(drive - spring - damp + fadh_eff - inert)
+  end
+  q = stage1pluslight_gnn_target_quantile
+  p95_inert = quantile(inert_vals, q)
+  p95_spring = quantile(spring_vals, q)
+  p95_damp = quantile(damp_vals, q)
+  p95_drive = quantile(drive_vals, q)
+  p95_fadh = quantile(fadh_vals, q)
+  target_est = quantile(fh_est_vals, q)
+  if !isfinite(target_est) || target_est <= 0.0
+    target_est = maximum((p95_inert, p95_spring, p95_damp, p95_drive, p95_fadh, stage1pluslight_gnn_target_min))
+  end
+  target_est = clamp(max(target_est, stage1pluslight_gnn_target_min),
+    stage1pluslight_gnn_target_min, stage1pluslight_gnn_target_max)
+  return (
+    target_est=target_est,
+    p95_mx2dot=p95_inert,
+    p95_kx1=p95_spring,
+    p95_cx2=p95_damp,
+    p95_fd=p95_drive,
+    p95_fadh=p95_fadh
+  )
+end
+
 function compute_stage1plus_gnn_scale(u_mat, idxs, p_net_struct, appr, st)
   if !stage1pluslight_gnn_enabled || appr === nothing
-    return (g_nn=1.0, amp_ref=NaN, eff_count=0)
+    return (g_nn=1.0, amp_ref=NaN, eff_count=0,
+      target=NaN, target_mode=stage1pluslight_gnn_target_mode, target_est=NaN,
+      p95_mx2dot=NaN, p95_kx1=NaN, p95_cx2=NaN, p95_fd=NaN, p95_fadh=NaN)
   end
   eff_pos = effective_contact_positions_by_wtrue(idxs; floor=stage1pluslight_gnn_contact_floor)
   if isempty(eff_pos)
-    return (g_nn=1.0, amp_ref=NaN, eff_count=0)
+    return (g_nn=1.0, amp_ref=NaN, eff_count=0,
+      target=NaN, target_mode=stage1pluslight_gnn_target_mode, target_est=NaN,
+      p95_mx2dot=NaN, p95_kx1=NaN, p95_cx2=NaN, p95_fd=NaN, p95_fadh=NaN)
   end
   amp_vals = Vector{Float64}(undef, length(eff_pos))
   @inbounds for (m, k) in enumerate(eff_pos)
     j = idxs[k]
-    w_true = true_contact_weight_all[j]
-    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j])
+    s = dist + u_mat[1, j] - u_mat[3, j]
+    w_pred = contact_weight(s, adhesion_transition)
+    nn_in = nn_input_from_values(u_mat[1, j], u_mat[2, j], u_mat[3, j])
     uhat = appr(nn_in, p_net_struct, st)[1]
-    amp_vals[m] = abs(uhat[1] * w_true)
+    amp_vals[m] = abs(uhat[1] * w_pred)
   end
   amp_ref = quantile(amp_vals, stage1pluslight_gnn_quantile)
   if !isfinite(amp_ref) || amp_ref < 0.0
-    return (g_nn=1.0, amp_ref=amp_ref, eff_count=length(eff_pos))
+    target_info = estimate_stage1plus_gnn_target(u_mat, idxs, eff_pos)
+    target_val = stage1pluslight_gnn_target_mode == "manual" ?
+      stage1pluslight_gnn_target_manual : target_info.target_est
+    return (g_nn=1.0, amp_ref=amp_ref, eff_count=length(eff_pos),
+      target=target_val, target_mode=stage1pluslight_gnn_target_mode,
+      target_est=target_info.target_est,
+      p95_mx2dot=target_info.p95_mx2dot, p95_kx1=target_info.p95_kx1,
+      p95_cx2=target_info.p95_cx2, p95_fd=target_info.p95_fd, p95_fadh=target_info.p95_fadh)
   end
-  g_nn = stage1pluslight_gnn_target / (amp_ref + stage1pluslight_gnn_eps)
+  target_info = estimate_stage1plus_gnn_target(u_mat, idxs, eff_pos)
+  target_val = stage1pluslight_gnn_target_mode == "manual" ?
+    stage1pluslight_gnn_target_manual : target_info.target_est
+  g_nn = target_val / (amp_ref + stage1pluslight_gnn_eps)
   if !isfinite(g_nn) || g_nn <= 0.0
     g_nn = 1.0
   end
-  return (g_nn=g_nn, amp_ref=amp_ref, eff_count=length(eff_pos))
+  return (g_nn=g_nn, amp_ref=amp_ref, eff_count=length(eff_pos),
+    target=target_val, target_mode=stage1pluslight_gnn_target_mode,
+    target_est=target_info.target_est,
+    p95_mx2dot=target_info.p95_mx2dot, p95_kx1=target_info.p95_kx1,
+    p95_cx2=target_info.p95_cx2, p95_fd=target_info.p95_fd, p95_fadh=target_info.p95_fadh)
 end
 
 function fhertz_monitor_metrics(u_mat, idxs, p_net_struct, appr, st; fh_true_ref=nothing, eff_pos_ref=nothing, nn_gain::Float64=1.0)
@@ -420,7 +532,7 @@ function log_failure_diag(tag, sol, p, appr, st, known_pars, expected_n; zero_nn
     nn_out = if appr === nothing
       NaN
     else
-      nn_in = nn_input_from_values(u_last[1], u_last[2])
+      nn_in = nn_input_from_values(u_last[1], u_last[2], u_last[3])
       appr(nn_in, p.p_net, st)[1][1]
     end
     F_hertz = if zero_nn_override
@@ -428,7 +540,7 @@ function log_failure_diag(tag, sol, p, appr, st, known_pars, expected_n; zero_nn
     elseif appr === nothing
       (4.0 / 3.0) * Estar * sqrt(R) * (delta^1.5)
     else
-      nn_gain * nn_out * w_true
+      nn_gain * nn_out * w_pred
     end
     Fad_eff = Fad * w_pred
     rhs_x2dot = (Fd * cos(wd * t_last) - k * u_last[1] - c * u_last[2] + Fad_eff - F_hertz) / m
@@ -484,22 +596,38 @@ function parse_rank_filter(spec::AbstractString, nmax::Int, env_key::AbstractStr
   return idx
 end
 
-nn_fixed_num_hidden_layers = 3
-nn_fixed_num_hidden_nodes = 5
+nn_hidden_layers_range = 0:2
+nn_hidden_nodes_range = 1:3
+
+nn_fixed_num_hidden_layers = 2
+nn_fixed_num_hidden_nodes = 3
+
+if !(nn_fixed_num_hidden_layers in nn_hidden_layers_range)
+  error("nn_fixed_num_hidden_layers must lie in nn_hidden_layers_range")
+end
+if !(nn_fixed_num_hidden_nodes in nn_hidden_nodes_range)
+  error("nn_fixed_num_hidden_nodes must lie in nn_hidden_nodes_range")
+end
 
 function build_nn(num_hidden_layers::Int, num_hidden_nodes::Int)
-  hidden = 2^nn_fixed_num_hidden_nodes
+  if !(num_hidden_layers in nn_hidden_layers_range)
+    error("num_hidden_layers=$(num_hidden_layers) is outside nn_hidden_layers_range=$(collect(nn_hidden_layers_range))")
+  end
+  if !(num_hidden_nodes in nn_hidden_nodes_range)
+    error("num_hidden_nodes=$(num_hidden_nodes) is outside nn_hidden_nodes_range=$(collect(nn_hidden_nodes_range))")
+  end
+  hidden = 2^num_hidden_nodes
   layers = Any[]
-  push!(layers, Lux.Dense(2, hidden, gelu; init_weight=my_glorot_uniform, use_bias=false))
-  for _ in 1:nn_fixed_num_hidden_layers
+  push!(layers, Lux.Dense(3, hidden, gelu; init_weight=my_glorot_uniform, use_bias=false))
+  for _ in 1:num_hidden_layers
     push!(layers, Lux.Dense(hidden, hidden, gelu; init_weight=my_glorot_uniform, use_bias=false))
   end
   push!(layers, Lux.Dense(hidden, 1; init_weight=my_glorot_uniform, use_bias=false))
   return Lux.Chain(layers...)
 end
 
-nn_input_from_state(u) = u[1:2]
-nn_input_from_values(x1, x2) = [x1, x2]
+nn_input_from_state(u) = u[1:3]
+nn_input_from_values(x1, x2, x3) = [x1, x2, x3]
 
 function make_uode_func(appr, st, known_pars; zero_nn_override::Bool=false, nn_gain::Float64=1.0)
   k, wd, m, c, Fd, R, dist, Fad = known_pars
@@ -520,7 +648,7 @@ function make_uode_func(appr, st, known_pars; zero_nn_override::Bool=false, nn_g
       else
         nn_in = nn_input_from_state(u)
         uhat = appr(nn_in, p.p_net, st)[1]
-        nn_gain * uhat[1] * true_contact_weight_at_time(t)
+        nn_gain * uhat[1] * w_pred
       end
       Fad_eff = Fad * w_pred
 
@@ -545,7 +673,7 @@ function x2dot_rhs(u, mech, p_net, appr, st, known_pars, t; zero_nn_override::Bo
   else
     nn_in = nn_input_from_state(u)
     uhat = appr(nn_in, p_net, st)[1]
-    nn_gain * uhat[1] * true_contact_weight_at_time(t)
+    nn_gain * uhat[1] * w_pred
   end
   Fad_eff = Fad * w_pred
   return (Fd * cos(wd * t) - k * u[1] - c * u[2] + Fad_eff - F_hertz) / m
@@ -737,6 +865,418 @@ function loss_single_or_ms(θ, ode_data, x2dot_data, contact_mask, times,
     x1_rec=x1_rec_ref[], x3_rec=x3_rec_ref[])
 end
 
+function stage1plus_window_indices(times::AbstractVector, window_span::Float64)
+  n = length(times)
+  if n == 0
+    error("stage1plus window selection received an empty time vector")
+  end
+  if !isfinite(window_span) || window_span <= 0
+    return collect(1:n)
+  end
+  t0 = times[1]
+  stop_idx = findlast(t -> (t - t0) <= window_span, times)
+  if stop_idx === nothing
+    stop_idx = 1
+  end
+  return collect(1:max(1, stop_idx))
+end
+
+function normalize_min_obj_metric(values::Vector{Float64})
+  finite_vals = [v for v in values if isfinite(v)]
+  if isempty(finite_vals)
+    return fill(1.0, length(values))
+  end
+  vmin = minimum(finite_vals)
+  vmax = maximum(finite_vals)
+  span = vmax - vmin
+  if !isfinite(span) || span <= 0
+    return [isfinite(v) ? 0.0 : 1.0 for v in values]
+  end
+  return [isfinite(v) ? (v - vmin) / span : 1.0 for v in values]
+end
+
+function score_architecture_trials_running(trial_recs, obj_a::Float64, obj_b::Float64, obj_c::Float64)
+  isempty(trial_recs) && return Any[]
+  obj1_vals = Float64[rec.obj1 for rec in trial_recs]
+  obj2_vals = Float64[rec.obj2 for rec in trial_recs]
+  obj3_vals = Float64[rec.obj3 for rec in trial_recs]
+  obj1_norm = normalize_min_obj_metric(obj1_vals)
+  obj2_norm = normalize_min_obj_metric(obj2_vals)
+  obj3_norm = normalize_min_obj_metric(obj3_vals)
+  scored = Any[]
+  for i in eachindex(trial_recs)
+    rec = trial_recs[i]
+    min_obj = obj_a * obj1_norm[i] + obj_b * obj2_norm[i] + obj_c * obj3_norm[i]
+    push!(scored, merge(rec, (
+      norm_obj1=obj1_norm[i],
+      norm_obj2=obj2_norm[i],
+      norm_obj3=obj3_norm[i],
+      weighted_obj1=obj_a * obj1_norm[i],
+      weighted_obj2=obj_b * obj2_norm[i],
+      weighted_obj3=obj_c * obj3_norm[i],
+      min_obj=min_obj
+    )))
+  end
+  return scored
+end
+
+function stage1plus_architecture_trial(base_rec, base_rank, rep,
+  num_hidden_layers::Int, num_hidden_nodes::Int,
+  ode_train, x2dot_train, contact_train, times_train,
+  ode_val, x2dot_val, contact_val, times_val,
+  state12_scale, x2dot_scale, x3_t0_val,
+  ms_group_size, ms_continuity_term,
+  zero_nn_override::Bool, arch_epochs::Int, arch_lr::Float64,
+  obj_a::Float64, obj_b::Float64, obj_c::Float64)
+
+  base_params = hasproperty(base_rec, :params) ? base_rec.params : Dict{Any, Any}()
+  ks_fixed = hasproperty(base_rec, :ks_hat) ? base_rec.ks_hat :
+    (haskey(base_params, "ks0") ? base_params["ks0"] : NaN)
+  cs_fixed = hasproperty(base_rec, :cs_hat) ? base_rec.cs_hat :
+    (haskey(base_params, "cs0") ? base_params["cs0"] : NaN)
+
+  rng_trial = StableRNG(10_000_000 * num_hidden_layers + 1_000_000 * num_hidden_nodes + 10_000 * base_rank + rep)
+  seed = abs(rand(rng_trial, Int))
+  rng = StableRNG(seed)
+  approximating_neural_network = build_nn(num_hidden_layers, num_hidden_nodes)
+  p_net_init, st = Lux.setup(rng, approximating_neural_network)
+  p_net_init = Flux.f64(p_net_init)
+  p_net_vec0, re_pnet = Optimisers.destructure(p_net_init)
+  gnn_info = compute_stage1plus_gnn_scale(
+    ode_data_full, monitor_idx_full, re_pnet(p_net_vec0),
+    approximating_neural_network, st
+  )
+  g_nn = gnn_info.g_nn
+
+  raw_init = [
+    raw_from_value(ks_fixed, ks_bounds[1], ks_bounds[2]),
+    raw_from_value(cs_fixed, cs_bounds[1], cs_bounds[2])
+  ]
+
+  theta0 = ComponentVector(p_net=p_net_vec0, mech_raw=raw_init)
+
+  function train_loss_fn(theta)
+    loss_single_or_ms(theta, ode_train, x2dot_train, contact_train, times_train,
+      state12_scale, x2dot_scale, x3_scale,
+      use_multiple_shooting, ms_group_size, ms_continuity_term,
+      approximating_neural_network, st, known_pars, x3_t0_val,
+      0.0, re_pnet; zero_nn_override=zero_nn_override, nn_gain=g_nn)[1]
+  end
+
+  function val_loss_fn(theta)
+    loss_single_or_ms(theta, ode_val, x2dot_val, contact_val, times_val,
+      state12_scale, x2dot_scale, x3_scale,
+      use_multiple_shooting, ms_group_size, ms_continuity_term,
+      approximating_neural_network, st, known_pars, x3_t0_val,
+      0.0, re_pnet; zero_nn_override=zero_nn_override, nn_gain=g_nn)[1]
+  end
+
+  lr_adapt = get(ENV, "HNODECB_STAGE1PLUS_ARCH_LR_ADAPT", get(ENV, "HNODECB_LR_ADAPT", "1")) == "1"
+  lr = arch_lr
+  lr_min = env_float("HNODECB_STAGE1PLUS_ARCH_LR_MIN", env_float("HNODECB_LR_MIN", 1e-30))
+  lr_max = env_float("HNODECB_STAGE1PLUS_ARCH_LR_MAX", env_float("HNODECB_LR_MAX", 5e1))
+  lr_eta = env_float("HNODECB_STAGE1PLUS_ARCH_LR_ETA", env_float("HNODECB_LR_ETA", 0.5))
+  lr_ema_alpha = env_float("HNODECB_STAGE1PLUS_ARCH_LR_EMA", env_float("HNODECB_LR_EMA", 0.85))
+  lr_eps = env_float("HNODECB_STAGE1PLUS_ARCH_LR_EPS", env_float("HNODECB_LR_EPS", 1e-30))
+  lr_target_init = env_float("HNODECB_STAGE1PLUS_ARCH_LR_TARGET", NaN)
+  grad_ema = Ref(isfinite(lr_target_init) && lr_target_init > 0 ? lr_target_init : NaN)
+  grad_target = Ref(isfinite(lr_target_init) && lr_target_init > 0 ? lr_target_init : NaN)
+
+  grad_scale_p_net = env_float("HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_P_NET", 0.5)
+  grad_scale_mech = env_float("HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_MECH", 1.0)
+  group_adapt = get(ENV, "HNODECB_STAGE1PLUS_ARCH_GROUP_ADAPT", "1") == "1"
+  group_ema_alpha = env_float("HNODECB_STAGE1PLUS_ARCH_GROUP_EMA", 0.90)
+  group_eta = env_float("HNODECB_STAGE1PLUS_ARCH_GROUP_ETA", 0.05)
+  group_eps = env_float("HNODECB_STAGE1PLUS_ARCH_GROUP_EPS", 1e-30)
+  grad_scale_p_min = env_float("HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_P_NET_MIN", 0.1)
+  grad_scale_p_max = env_float("HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_P_NET_MAX", 1.0)
+  grad_scale_m_min = env_float("HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_MECH_MIN", 0.5)
+  grad_scale_m_max = env_float("HNODECB_STAGE1PLUS_ARCH_GRAD_SCALE_MECH_MAX", 1.5)
+  grad_scale_p_net = clamp(grad_scale_p_net, grad_scale_p_min, grad_scale_p_max)
+  grad_scale_mech = clamp(grad_scale_mech, grad_scale_m_min, grad_scale_m_max)
+  p_grad_ema = Ref(NaN)
+  m_grad_ema = Ref(NaN)
+
+  step_guard = get(ENV, "HNODECB_STAGE1PLUS_ARCH_STEP_GUARD", "1") == "1"
+  step_retry_max = max(0, parse(Int, get(ENV, "HNODECB_STAGE1PLUS_ARCH_STEP_RETRIES", "6")))
+  step_retry_lr_factor = env_float("HNODECB_STAGE1PLUS_ARCH_STEP_RETRY_LR_FACTOR", 0.1)
+  step_max_loss_frac = env_float("HNODECB_STAGE1PLUS_ARCH_STEP_MAX_LOSS_FRAC", 0.1)
+
+  val_loss_start = val_loss_fn(theta0)
+  theta = deepcopy(theta0)
+  opt_state = Optimisers.setup(Optimisers.Adam(lr), theta)
+  epoch_durations = Float64[]
+  t2_gt_abs_t1_count = 0
+  retry_count_total = 0
+  completed_epochs = 0
+  val_loss_last = val_loss_start
+  train_loss_last = Inf
+  trial_tag = "layers=" * string(num_hidden_layers) *
+    " nodes=" * string(num_hidden_nodes) *
+    " base=" * string(base_rank) *
+    " rep=" * string(rep)
+
+  for epoch in 1:arch_epochs
+    epoch_t0 = Zygote.ignore() do
+      time()
+    end
+    train_loss_before, back = Zygote.pullback(train_loss_fn, theta)
+    grad_raw = first(back(1.0))
+    if grad_raw === nothing
+      tprintln("    arch epoch ", epoch, "/", arch_epochs,
+        " -- ", trial_tag, " | grad=None -> stop")
+      break
+    end
+    grad_norm_raw = grad_norm_safe(grad_raw)
+    if !isfinite(train_loss_before) || !isfinite(grad_norm_raw)
+      tprintln("    arch epoch ", epoch, "/", arch_epochs,
+        " -- ", trial_tag,
+        " | nonfinite train/grad -> stop",
+        " | train=", fmt_e(train_loss_before, sigdigits=4),
+        " grad_norm=", fmt_e(grad_norm_raw, sigdigits=4))
+      break
+    end
+
+    gnorm_p_raw, gnorm_m_raw = grad_group_norms(grad_raw)
+    if group_adapt && isfinite(gnorm_p_raw) && isfinite(gnorm_m_raw) &&
+       gnorm_p_raw > 0.0 && gnorm_m_raw > 0.0
+      if !isfinite(p_grad_ema[])
+        p_grad_ema[] = gnorm_p_raw
+      else
+        p_grad_ema[] = group_ema_alpha * p_grad_ema[] + (1 - group_ema_alpha) * gnorm_p_raw
+      end
+      if !isfinite(m_grad_ema[])
+        m_grad_ema[] = gnorm_m_raw
+      else
+        m_grad_ema[] = group_ema_alpha * m_grad_ema[] + (1 - group_ema_alpha) * gnorm_m_raw
+      end
+      eff_p = grad_scale_p_net * p_grad_ema[]
+      eff_m = grad_scale_mech * m_grad_ema[]
+      if isfinite(eff_p) && isfinite(eff_m) && eff_p > 0.0 && eff_m > 0.0
+        r = log((eff_p + group_eps) / (eff_m + group_eps))
+        mult = exp(-group_eta * r)
+        grad_scale_p_net = clamp(grad_scale_p_net * mult, grad_scale_p_min, grad_scale_p_max)
+        grad_scale_mech = clamp(grad_scale_mech / mult, grad_scale_m_min, grad_scale_m_max)
+      end
+    end
+    grad_update = scale_stage1plus_grad(grad_raw, grad_scale_p_net, grad_scale_mech)
+    grad_norm_scaled = grad_norm_safe(grad_update)
+
+    if lr_adapt && isfinite(grad_norm_scaled) && grad_norm_scaled > 0
+      if !isfinite(grad_ema[])
+        grad_ema[] = grad_norm_scaled
+      else
+        grad_ema[] = lr_ema_alpha * grad_ema[] + (1 - lr_ema_alpha) * grad_norm_scaled
+      end
+      if !isfinite(grad_target[])
+        grad_target[] = grad_ema[]
+      end
+      ratio = grad_target[] / (grad_ema[] + lr_eps)
+      lr_new = clamp(lr * ratio^lr_eta, lr_min, lr_max)
+      if lr_new != lr
+        Optimisers.adjust!(opt_state, lr_new)
+        lr = lr_new
+      end
+    end
+
+    theta_base = deepcopy(theta)
+    opt_state_base = deepcopy(opt_state)
+    train_loss_after = Inf
+    val_loss_epoch = Inf
+    t1 = NaN
+    t2 = NaN
+    recovered_after = 0
+    epoch_bad_t2 = false
+    step_fail_reason = ""
+    step_accepted = false
+
+    if !step_guard
+      opt_state, theta = Optimisers.update(opt_state, theta, grad_update)
+      train_loss_after = train_loss_fn(theta)
+      val_loss_epoch = val_loss_fn(theta)
+      step_vec = theta .- theta_base
+      t1 = sum(grad_raw .* step_vec)
+      t2 = (train_loss_after - train_loss_before) - t1
+      epoch_bad_t2 = !(isfinite(t2) && isfinite(t1)) || t2 > abs(t1)
+    else
+      step_attempt = 0
+      while step_attempt <= step_retry_max
+        step_attempt += 1
+        opt_input = deepcopy(opt_state_base)
+        opt_trial, theta_trial = Optimisers.update(opt_input, theta_base, grad_update)
+        train_loss_trial = train_loss_fn(theta_trial)
+        step_vec = theta_trial .- theta_base
+        t1_trial = sum(grad_raw .* step_vec)
+        t2_trial = (train_loss_trial - train_loss_before) - t1_trial
+        if !(isfinite(t2_trial) && isfinite(t1_trial)) || t2_trial > abs(t1_trial)
+          epoch_bad_t2 = true
+        end
+        step_max_loss_increase = isfinite(train_loss_before) ? abs(train_loss_before) * step_max_loss_frac : Inf
+        if !isfinite(train_loss_trial)
+          step_fail_reason = "step_trial_loss_nonfinite"
+        elseif isfinite(step_max_loss_increase) && train_loss_trial > train_loss_before + step_max_loss_increase
+          step_fail_reason = "step_trial_loss_jump"
+        else
+          step_fail_reason = ""
+        end
+
+        if step_fail_reason == ""
+          opt_state = opt_trial
+          theta = theta_trial
+          train_loss_after = train_loss_trial
+          val_loss_epoch = val_loss_fn(theta)
+          t1 = t1_trial
+          t2 = t2_trial
+          step_accepted = true
+          recovered_after = step_attempt - 1
+          retry_count_total += recovered_after
+          if recovered_after > 0
+            tprintln("      step-guard: accepted after ", recovered_after,
+              " retry/reduction(s) | lr=", fmt_e(lr, sigdigits=3),
+              " | train=", fmt_e(train_loss_after, sigdigits=4))
+          end
+          break
+        end
+
+        if step_attempt > step_retry_max
+          retry_count_total += step_retry_max
+          tprintln("      step-guard: rejected update after ", step_retry_max,
+            " retries | reason=", step_fail_reason,
+            " | lr=", fmt_e(lr, sigdigits=3))
+          theta = theta_base
+          opt_state = opt_state_base
+          train_loss_after = train_loss_before
+          val_loss_epoch = val_loss_fn(theta)
+          t1 = t1_trial
+          t2 = t2_trial
+          break
+        end
+
+        lr_new = max(lr * step_retry_lr_factor, lr_min)
+        if lr_new < lr
+          lr = lr_new
+        end
+        Optimisers.adjust!(opt_state_base, lr)
+        tprintln("      step-guard retry ", step_attempt, "/", step_retry_max,
+          " -- reason=", step_fail_reason,
+          " | lr=", fmt_e(lr, sigdigits=3),
+          " | scale[p_net=", fmt_e(grad_scale_p_net, sigdigits=3),
+          ", mech_raw=", fmt_e(grad_scale_mech, sigdigits=3), "]")
+      end
+      if !step_accepted && train_loss_after === Inf
+        train_loss_after = train_loss_before
+        val_loss_epoch = val_loss_fn(theta)
+      end
+    end
+
+    if epoch_bad_t2
+      t2_gt_abs_t1_count += 1
+    end
+    epoch_dt = Zygote.ignore() do
+      time() - epoch_t0
+    end
+    push!(epoch_durations, epoch_dt)
+    tprintln("    arch epoch ", epoch, "/", arch_epochs,
+      " -- ", trial_tag,
+      " | train=", fmt_e(train_loss_after, sigdigits=4),
+      " val=", fmt_e(val_loss_epoch, sigdigits=4),
+      " | dt=", fmt_f(epoch_dt, digits=2), "s",
+      " | t1=", fmt_e(t1, sigdigits=4),
+      " t2=", fmt_e(t2, sigdigits=4),
+      " | lr=", fmt_e(lr, sigdigits=3),
+      " | scale[p_net=", fmt_e(grad_scale_p_net, sigdigits=3),
+      ", mech_raw=", fmt_e(grad_scale_mech, sigdigits=3), "]")
+    train_loss_last = train_loss_after
+    val_loss_last = val_loss_epoch
+    completed_epochs += 1
+  end
+
+  val_loss_end = completed_epochs > 0 ? val_loss_last : val_loss_fn(theta)
+  trial_complete = completed_epochs == arch_epochs && isfinite(val_loss_start) && isfinite(val_loss_end)
+  time_per_epoch = trial_complete ? (sum(epoch_durations) / arch_epochs) : Inf
+  obj1 = trial_complete ? (val_loss_end - val_loss_start) / arch_epochs : Inf
+  obj2 = time_per_epoch
+  obj3 = trial_complete ? Float64(t2_gt_abs_t1_count) : Float64(arch_epochs)
+
+  return (
+    base_rank=base_rank,
+    rep=rep,
+    num_hidden_layers=num_hidden_layers,
+    num_hidden_nodes=num_hidden_nodes,
+    hidden=2^num_hidden_nodes,
+    param_count=length(p_net_vec0),
+    trial_complete=trial_complete,
+    completed_epochs=completed_epochs,
+    train_loss_end=train_loss_last,
+    val_loss_start=val_loss_start,
+    val_loss_end=val_loss_end,
+    time_per_epoch=time_per_epoch,
+    t2_gt_abs_t1_count=t2_gt_abs_t1_count,
+    retry_count_total=retry_count_total,
+    obj1=obj1,
+    obj2=obj2,
+    obj3=obj3,
+    g_nn=g_nn,
+    g_target=gnn_info.target,
+    g_amp_ref=gnn_info.amp_ref
+  )
+end
+
+function summarize_architecture_trials(arch_trials, obj_a::Float64, obj_b::Float64, obj_c::Float64)
+  grouped = Dict{Tuple{Int, Int}, Vector{Any}}()
+  for rec in arch_trials
+    key = (rec.num_hidden_layers, rec.num_hidden_nodes)
+    if !haskey(grouped, key)
+      grouped[key] = Any[]
+    end
+    push!(grouped[key], rec)
+  end
+
+  summaries = Any[]
+  for (key, recs) in grouped
+    push!(summaries, (
+      num_hidden_layers=key[1],
+      num_hidden_nodes=key[2],
+      hidden=2^key[2],
+      param_count=Int(round(mean([rec.param_count for rec in recs]))),
+      n_trials=length(recs),
+      mean_obj1=mean([rec.obj1 for rec in recs]),
+      mean_obj2=mean([rec.obj2 for rec in recs]),
+      mean_obj3=mean([rec.obj3 for rec in recs]),
+      mean_norm_obj1=mean([rec.norm_obj1 for rec in recs]),
+      mean_norm_obj2=mean([rec.norm_obj2 for rec in recs]),
+      mean_norm_obj3=mean([rec.norm_obj3 for rec in recs]),
+      mean_weighted_obj1=mean([rec.weighted_obj1 for rec in recs]),
+      mean_weighted_obj2=mean([rec.weighted_obj2 for rec in recs]),
+      mean_weighted_obj3=mean([rec.weighted_obj3 for rec in recs]),
+      mean_min_obj=mean([rec.min_obj for rec in recs]),
+      mean_retry_count=mean([rec.retry_count_total for rec in recs]),
+      mean_completed_epochs=mean([rec.completed_epochs for rec in recs]),
+      mean_val_loss_start=mean([rec.val_loss_start for rec in recs]),
+      mean_val_loss_end=mean([rec.val_loss_end for rec in recs]),
+      mean_g_nn=mean([rec.g_nn for rec in recs]),
+      mean_g_target=mean([rec.g_target for rec in recs]),
+      mean_g_amp_ref=mean([rec.g_amp_ref for rec in recs])
+    ))
+  end
+
+  sort!(summaries, by = rec -> (rec.num_hidden_layers, rec.num_hidden_nodes))
+  scored = Any[
+    merge(rec, (
+      norm_obj1=rec.mean_norm_obj1,
+      norm_obj2=rec.mean_norm_obj2,
+      norm_obj3=rec.mean_norm_obj3,
+      weighted_obj1=rec.mean_weighted_obj1,
+      weighted_obj2=rec.mean_weighted_obj2,
+      weighted_obj3=rec.mean_weighted_obj3,
+      min_obj=rec.mean_min_obj
+    )) for rec in summaries
+  ]
+
+  sort!(scored, by = rec -> rec.min_obj)
+  return scored
+end
+
 use_multiple_shooting = false
 use_l2_regularization = false
 l2_weight = 0.0
@@ -807,9 +1347,9 @@ if selftest
     delta = ifelse(delta > 0.0, delta, 0.0)
     w_pred = contact_weight(s, adhesion_transition)
     w_true = true_contact_weight_at_time(t0)
-    nn_in = nn_input_from_values(u0[1], u0[2])
+    nn_in = nn_input_from_values(u0[1], u0[2], u0[3])
     uhat = approximating_neural_network(nn_in, p_net_struct, st)[1]
-    F_hertz = uhat[1] * w_true
+    F_hertz = uhat[1] * w_pred
     Fad_eff = Fad * w_pred
     x2dot0 = (Fd * cos(wd * t0) - k * u0[1] - c * u0[2] + Fad_eff - F_hertz) / m
     x3dot0 = (Fad_eff - F_hertz - mech[1] * u0[3]) / mech[2]
@@ -1189,11 +1729,25 @@ if use_adam
   for (i, rec) in enumerate(sorted[1:min(10, length(sorted))])
     ks0 = rec.params["ks0"]
     cs0 = rec.params["cs0"]
+    ks_hat = hasproperty(rec, :ks_hat) ? rec.ks_hat : ks0
+    cs_hat = hasproperty(rec, :cs_hat) ? rec.cs_hat : cs0
+    ks_err_pct = hasproperty(rec, :ks_err_pct) ? rec.ks_err_pct : NaN
+    cs_err_pct = hasproperty(rec, :cs_err_pct) ? rec.cs_err_pct : NaN
     tprintln("  Rank ", i,
       " -- train=", fmt_e(rec.train_loss, sigdigits=4),
       " val=", fmt_e(rec.val_loss, sigdigits=4),
       " | ks0=", fmt_e(ks0, sigdigits=3),
       " cs0=", fmt_e(cs0, sigdigits=3))
+    tprintln("     val parts: state=", fmt_e(rec.val_parts.state, sigdigits=3),
+      " x2dot=", fmt_e(rec.val_parts.x2dot, sigdigits=3),
+      " x3r=", fmt_e(rec.val_parts.x3_range, sigdigits=3),
+      " cont=", fmt_e(rec.val_parts.cont, sigdigits=3))
+    tprintln("     rec: x1=", fmt_f(rec.val_parts.x1_rec, digits=2),
+      "% x3=", fmt_f(rec.val_parts.x3_rec, digits=2), "%")
+    tprintln("     mech: ks=", fmt_e(ks_hat, sigdigits=3),
+      " (err=", fmt_f(ks_err_pct, digits=2), "%)",
+      " cs=", fmt_e(cs_hat, sigdigits=3),
+      " (err=", fmt_f(cs_err_pct, digits=2), "%)")
   end
 
   serialize(result_folder * "/" * result_name_string, (
@@ -1240,8 +1794,32 @@ elseif use_stage1plus
 
   fixed_ms_group_size = 10
   fixed_ms_continuity_term = 1e-3
-  fixed_num_hidden_layers = nn_fixed_num_hidden_layers
-  fixed_num_hidden_nodes = nn_fixed_num_hidden_nodes
+  arch_selected_layers = begin
+    raw = strip(get(ENV, "HNODECB_STAGE1PLUS_SELECTED_LAYERS", string(nn_fixed_num_hidden_layers)))
+    v = tryparse(Int, raw)
+    (v === nothing) ? nn_fixed_num_hidden_layers : v
+  end
+  arch_selected_nodes = begin
+    raw = strip(get(ENV, "HNODECB_STAGE1PLUS_SELECTED_NODES", string(nn_fixed_num_hidden_nodes)))
+    v = tryparse(Int, raw)
+    (v === nothing) ? nn_fixed_num_hidden_nodes : v
+  end
+  if !(arch_selected_layers in nn_hidden_layers_range)
+    error("HNODECB_STAGE1PLUS_SELECTED_LAYERS=$(arch_selected_layers) is outside nn_hidden_layers_range=$(collect(nn_hidden_layers_range))")
+  end
+  if !(arch_selected_nodes in nn_hidden_nodes_range)
+    error("HNODECB_STAGE1PLUS_SELECTED_NODES=$(arch_selected_nodes) is outside nn_hidden_nodes_range=$(collect(nn_hidden_nodes_range))")
+  end
+  arch_screen_only = get(ENV, "HNODECB_STAGE1PLUS_ARCH_SCREEN_ONLY", "0") == "1"
+  arch_screen_trials_per_arch = max(1, parse(Int, get(ENV, "HNODECB_STAGE1PLUS_ARCH_TRIALS_PER_ARCH", "10")))
+  arch_screen_epochs = max(1, parse(Int, get(ENV, "HNODECB_STAGE1PLUS_ARCH_EPOCHS", "20")))
+  arch_screen_warmup = get(ENV, "HNODECB_STAGE1PLUS_ARCH_WARMUP", "1") == "1"
+  arch_screen_warmup_epochs = max(1, parse(Int, get(ENV, "HNODECB_STAGE1PLUS_ARCH_WARMUP_EPOCHS", "1")))
+  arch_screen_window_us = env_float("HNODECB_STAGE1PLUS_ARCH_WINDOW_US", 5e-6)
+  arch_screen_lr = env_float("HNODECB_STAGE1PLUS_ARCH_LR", 1e-3)
+  arch_obj_a = env_float("HNODECB_STAGE1PLUS_ARCH_OBJ_A", 0.35)
+  arch_obj_b = env_float("HNODECB_STAGE1PLUS_ARCH_OBJ_B", 0.45)
+  arch_obj_c = env_float("HNODECB_STAGE1PLUS_ARCH_OBJ_C", 0.20)
   fhertz_monitor_enabled = !isempty(monitor_eff_positions)
   sorted_base = sort(base_trials, by = r -> r.loss)
   base_candidates = sorted_base[1:stage1plus_input_topk]
@@ -1255,6 +1833,175 @@ elseif use_stage1plus
   if isempty(base_rank_indices)
     error("Stage1plus: no base candidates assigned after HNODECB_STAGE1PLUS_BASE_INDICES filter.")
   end
+
+  if arch_screen_only
+    arch_window_idx = stage1plus_window_indices(all_times, arch_screen_window_us)
+    ode_window = ode_data_full[:, arch_window_idx]
+    times_window = all_times[arch_window_idx]
+    x2dot_window = x2dot_all[arch_window_idx]
+    contact_window = contact_all[arch_window_idx]
+    train_idx_screen, val_idx_screen = make_train_val_masks(length(times_window), val_stride, val_offset)
+    if isempty(train_idx_screen) || isempty(val_idx_screen)
+      error("Stage1plus architecture screen window is too small to form train/val splits")
+    end
+    ode_train_screen = ode_window[:, train_idx_screen]
+    ode_val_screen = ode_window[:, val_idx_screen]
+    x2dot_train_screen = x2dot_window[train_idx_screen]
+    x2dot_val_screen = x2dot_window[val_idx_screen]
+    contact_train_screen = contact_window[train_idx_screen]
+    contact_val_screen = contact_window[val_idx_screen]
+    times_train_screen = times_window[train_idx_screen]
+    times_val_screen = times_window[val_idx_screen]
+    x3_t0_screen = ode_train_screen[3, 1]
+    arch_trials = Any[]
+
+    tprintln("Stage1plus architecture screen: ON")
+    tprintln("  window_us=", fmt_e(arch_screen_window_us, sigdigits=4),
+      " | points=", length(arch_window_idx),
+      " | tspan=[", fmt_e(times_window[1], sigdigits=4), ", ", fmt_e(times_window[end], sigdigits=4), "]")
+    tprintln("  trials_per_arch=", arch_screen_trials_per_arch,
+      " | epochs=", arch_screen_epochs,
+      " | lr=", fmt_e(arch_screen_lr, sigdigits=3),
+      " | obj_weights[a=", fmt_f(arch_obj_a, digits=2),
+      " b=", fmt_f(arch_obj_b, digits=2),
+      " c=", fmt_f(arch_obj_c, digits=2), "]")
+    tprintln("  dummy_warmup=", arch_screen_warmup ? "ON" : "OFF",
+      arch_screen_warmup ? " | epochs=" * string(arch_screen_warmup_epochs) : "")
+
+    if arch_screen_warmup
+      warmup_layers = first(nn_hidden_layers_range)
+      warmup_nodes = first(nn_hidden_nodes_range)
+      warmup_base_rank = first(base_rank_indices)
+      warmup_base_rec = base_candidates[warmup_base_rank]
+      tprintln("  architecture screen warm-up: layers=", warmup_layers,
+        " nodes=", warmup_nodes,
+        " hidden=", 2^warmup_nodes,
+        " | base=", warmup_base_rank,
+        " | epochs=", arch_screen_warmup_epochs)
+      stage1plus_architecture_trial(
+        warmup_base_rec, warmup_base_rank, 0,
+        warmup_layers, warmup_nodes,
+        ode_train_screen, x2dot_train_screen, contact_train_screen, times_train_screen,
+        ode_val_screen, x2dot_val_screen, contact_val_screen, times_val_screen,
+        state12_scale_full, x2dot_scale_full, x3_t0_screen,
+        fixed_ms_group_size, fixed_ms_continuity_term,
+        zero_nn_override_stage1plus, arch_screen_warmup_epochs, arch_screen_lr,
+        arch_obj_a, arch_obj_b, arch_obj_c
+      )
+    end
+
+    for num_hidden_layers in nn_hidden_layers_range
+      for num_hidden_nodes in nn_hidden_nodes_range
+        tprintln("  screening arch: layers=", num_hidden_layers,
+          " nodes=", num_hidden_nodes,
+          " hidden=", 2^num_hidden_nodes)
+        for base_rank in base_rank_indices
+          base_rec = base_candidates[base_rank]
+          for rep in 1:arch_screen_trials_per_arch
+            rec = stage1plus_architecture_trial(
+              base_rec, base_rank, rep,
+              num_hidden_layers, num_hidden_nodes,
+              ode_train_screen, x2dot_train_screen, contact_train_screen, times_train_screen,
+              ode_val_screen, x2dot_val_screen, contact_val_screen, times_val_screen,
+              state12_scale_full, x2dot_scale_full, x3_t0_screen,
+              fixed_ms_group_size, fixed_ms_continuity_term,
+              zero_nn_override_stage1plus, arch_screen_epochs, arch_screen_lr,
+              arch_obj_a, arch_obj_b, arch_obj_c
+            )
+            arch_trials_same = Any[
+              r for r in arch_trials
+              if r.num_hidden_layers == num_hidden_layers &&
+                 r.num_hidden_nodes == num_hidden_nodes
+            ]
+            arch_progress_scored = score_architecture_trials_running(
+              vcat(arch_trials_same, Any[rec]), arch_obj_a, arch_obj_b, arch_obj_c
+            )
+            current_trial = only([r for r in arch_progress_scored if
+              r.num_hidden_layers == num_hidden_layers &&
+              r.num_hidden_nodes == num_hidden_nodes &&
+              r.base_rank == rec.base_rank && r.rep == rec.rep])
+            push!(arch_trials, current_trial)
+            tprintln("      trial min_obj after ", arch_screen_epochs,
+              " epochs -- layers=", num_hidden_layers,
+              " nodes=", num_hidden_nodes,
+              " base=", base_rank,
+              " rep=", rep,
+              " | min_obj=", fmt_e(current_trial.min_obj, sigdigits=4))
+            tprintln("         detail: (", fmt_f(arch_obj_a, digits=2), ")*part_a=",
+              fmt_e(current_trial.weighted_obj1, sigdigits=4),
+              ", raw_a=", fmt_e(current_trial.obj1, sigdigits=4),
+              ", norm_a=", fmt_e(current_trial.norm_obj1, sigdigits=4),
+              " ; (", fmt_f(arch_obj_b, digits=2), ")*part_b=",
+              fmt_e(current_trial.weighted_obj2, sigdigits=4),
+              ", raw_b=", fmt_e(current_trial.obj2, sigdigits=4),
+              ", norm_b=", fmt_e(current_trial.norm_obj2, sigdigits=4),
+              " ; (", fmt_f(arch_obj_c, digits=2), ")*part_c=",
+              fmt_e(current_trial.weighted_obj3, sigdigits=4),
+              ", raw_c=", fmt_e(current_trial.obj3, sigdigits=4),
+              ", norm_c=", fmt_e(current_trial.norm_obj3, sigdigits=4))
+          end
+        end
+      end
+    end
+
+    arch_ranked = summarize_architecture_trials(arch_trials, arch_obj_a, arch_obj_b, arch_obj_c)
+    selected_arch = arch_ranked[1]
+    tprintln("Stage1plus architecture ranking (9 architectures):")
+    for (rank, rec) in enumerate(arch_ranked)
+      tprintln("  Rank ", rank,
+        " -- layers=", rec.num_hidden_layers,
+        " nodes=", rec.num_hidden_nodes,
+        " hidden=", rec.hidden,
+        " params=", rec.param_count,
+        " | min_obj=", fmt_e(rec.min_obj, sigdigits=4))
+      tprintln("     min_obj detail: (", fmt_f(arch_obj_a, digits=2), ")*part_a=",
+        fmt_e(rec.weighted_obj1, sigdigits=4),
+        ", raw_a=", fmt_e(rec.mean_obj1, sigdigits=4),
+        ", norm_a=", fmt_e(rec.norm_obj1, sigdigits=4),
+        " ; (", fmt_f(arch_obj_b, digits=2), ")*part_b=",
+        fmt_e(rec.weighted_obj2, sigdigits=4),
+        ", raw_b=", fmt_e(rec.mean_obj2, sigdigits=4),
+        ", norm_b=", fmt_e(rec.norm_obj2, sigdigits=4),
+        " ; (", fmt_f(arch_obj_c, digits=2), ")*part_c=",
+        fmt_e(rec.weighted_obj3, sigdigits=4),
+        ", raw_c=", fmt_e(rec.mean_obj3, sigdigits=4),
+        ", norm_c=", fmt_e(rec.norm_obj3, sigdigits=4))
+    end
+    tprintln("Stage1plus architecture winner: layers=", selected_arch.num_hidden_layers,
+      " nodes=", selected_arch.num_hidden_nodes,
+      " hidden=", selected_arch.hidden,
+      " | min_obj=", fmt_e(selected_arch.min_obj, sigdigits=4))
+
+    serialize(result_folder * "/" * result_name_string, (
+      study=nothing,
+      trial_parameters=arch_trials,
+      warm_start_top=Any[],
+      selected=arch_ranked,
+      best=selected_arch,
+      architecture_ranked=arch_ranked,
+      selected_architecture=(
+        num_hidden_layers=selected_arch.num_hidden_layers,
+        num_hidden_nodes=selected_arch.num_hidden_nodes
+      ),
+      bounds=(ks=ks_bounds, cs=cs_bounds),
+      true_values=(ks=ks_true, cs=cs_true),
+      use_multiple_shooting=use_multiple_shooting,
+      use_l2_regularization=use_l2_regularization,
+      val_stride=val_stride,
+      val_offset=val_offset,
+      x3_obs_fraction=0.0,
+      error_level=error_level,
+      stage1_input_file=stage1_input_file,
+      stage1_input_topk=stage1plus_input_topk,
+      arch_trials_per_arch=arch_screen_trials_per_arch,
+      arch_epochs=arch_screen_epochs,
+      arch_window_us=arch_screen_window_us,
+      arch_lr=arch_screen_lr,
+      arch_obj_weights=(a=arch_obj_a, b=arch_obj_b, c=arch_obj_c)
+    ))
+  else
+    fixed_num_hidden_layers = arch_selected_layers
+    fixed_num_hidden_nodes = arch_selected_nodes
   assignments = Tuple{Int, Int, Int}[]
   global_trial_counter = 0
   for base_rank in base_rank_indices
@@ -1291,6 +2038,7 @@ elseif use_stage1plus
     fhertz_monitor_enabled ? "ON" : "OFF",
     " | zero_nn_override=", zero_nn_override_stage1plus ? "ON" : "OFF",
     " | g_nn=", stage1pluslight_gnn_enabled ? "ON" : "OFF",
+    " | g_target_mode=", stage1pluslight_gnn_target_mode,
     " | fixed NN: layers=", fixed_num_hidden_layers,
     " nodes=", fixed_num_hidden_nodes)
 
@@ -1381,8 +2129,16 @@ elseif use_stage1plus
       "ks0" => ks_fixed,
       "cs0" => cs_fixed,
       "g_nn" => g_nn,
+      "g_target" => gnn_info.target,
+      "g_target_mode" => gnn_info.target_mode,
+      "g_target_est" => gnn_info.target_est,
       "g_amp_ref" => gnn_info.amp_ref,
       "g_eff_count" => gnn_info.eff_count,
+      "g_p95_mx2dot" => gnn_info.p95_mx2dot,
+      "g_p95_kx1" => gnn_info.p95_kx1,
+      "g_p95_cx2" => gnn_info.p95_cx2,
+      "g_p95_fd" => gnn_info.p95_fd,
+      "g_p95_fadh" => gnn_info.p95_fadh,
       "num_hidden_layers" => num_hidden_layers,
       "num_hidden_nodes" => num_hidden_nodes
     )
@@ -1410,8 +2166,16 @@ elseif use_stage1plus
       val_reason=val_reason,
       p_net_vec=copy(p_net_vec),
       g_nn=g_nn,
+      g_target=gnn_info.target,
+      g_target_mode=gnn_info.target_mode,
+      g_target_est=gnn_info.target_est,
       g_amp_ref=gnn_info.amp_ref,
-      g_eff_count=gnn_info.eff_count
+      g_eff_count=gnn_info.eff_count,
+      g_p95_mx2dot=gnn_info.p95_mx2dot,
+      g_p95_kx1=gnn_info.p95_kx1,
+      g_p95_cx2=gnn_info.p95_cx2,
+      g_p95_fd=gnn_info.p95_fd,
+      g_p95_fadh=gnn_info.p95_fadh
     ))
 
     tprintln("Stage1plus trial ", global_trial_id,
@@ -1443,8 +2207,15 @@ elseif use_stage1plus
       nn_metrics = val_nn_metrics[]
       tprintln("  nn: F_hertz err=", fmt_f(nn_metrics.fhertz_err, digits=2), "%")
       tprintln("  nn gain: g_nn=", fmt_e(g_nn, sigdigits=3),
+        " target=", fmt_e(gnn_info.target, sigdigits=3),
         " amp_ref=", fmt_e(gnn_info.amp_ref, sigdigits=3),
-        " eff_n=", gnn_info.eff_count)
+        " eff_n=", gnn_info.eff_count,
+        " mode=", gnn_info.target_mode)
+      tprintln("  nn target est: |m*x2dot|=", fmt_e(gnn_info.p95_mx2dot, sigdigits=3),
+        " |k*x1|=", fmt_e(gnn_info.p95_kx1, sigdigits=3),
+        " |c*x2|=", fmt_e(gnn_info.p95_cx2, sigdigits=3),
+        " |Fd|=", fmt_e(gnn_info.p95_fd, sigdigits=3),
+        " |Fad_eff|=", fmt_e(gnn_info.p95_fadh, sigdigits=3))
       tprintln("  nn raw: min=", fmt_e(nn_metrics.raw_min, sigdigits=3),
         " max=", fmt_e(nn_metrics.raw_max, sigdigits=3),
         " mean=", fmt_e(nn_metrics.raw_mean, sigdigits=3),
@@ -1497,6 +2268,8 @@ elseif use_stage1plus
     tprintln("     nn: F_hertz err=", fmt_f(rec.val_nn_err, digits=2), "%")
     tprintln("     nn gain: g_nn=", fmt_e(hasproperty(rec, :g_nn) ? rec.g_nn :
       (haskey(rec.params, "g_nn") ? rec.params["g_nn"] : NaN), sigdigits=3),
+      " target=", fmt_e(hasproperty(rec, :g_target) ? rec.g_target :
+      (haskey(rec.params, "g_target") ? rec.params["g_target"] : NaN), sigdigits=3),
       " amp_ref=", fmt_e(hasproperty(rec, :g_amp_ref) ? rec.g_amp_ref :
       (haskey(rec.params, "g_amp_ref") ? rec.params["g_amp_ref"] : NaN), sigdigits=3))
     tprintln("     nn raw: min=", fmt_e(rec.val_raw_min, sigdigits=3),
@@ -1528,8 +2301,12 @@ elseif use_stage1plus
     stage1_input_file=stage1_input_file,
     stage1_input_topk=stage1plus_input_topk,
     searches_per_candidate=searches_per_candidate,
-    final_topk=final_topk
+    final_topk=final_topk,
+    gnn_target_mode=stage1pluslight_gnn_target_mode,
+    gnn_target_manual=stage1pluslight_gnn_target_manual,
+    gnn_target_quantile=stage1pluslight_gnn_target_quantile
   ))
+  end
   end
 else
   let
@@ -1763,11 +2540,25 @@ else
   for (i, rec) in enumerate(sorted[1:min(10, length(sorted))])
     ks0 = rec.params["ks0"]
     cs0 = rec.params["cs0"]
+    ks_hat = hasproperty(rec, :ks_hat) ? rec.ks_hat : ks0
+    cs_hat = hasproperty(rec, :cs_hat) ? rec.cs_hat : cs0
+    ks_err_pct = hasproperty(rec, :ks_err_pct) ? rec.ks_err_pct : NaN
+    cs_err_pct = hasproperty(rec, :cs_err_pct) ? rec.cs_err_pct : NaN
     tprintln("  Rank ", i,
       " -- train=", fmt_e(rec.train_loss, sigdigits=4),
       " val=", fmt_e(rec.val_loss, sigdigits=4),
       " | ks0=", fmt_e(ks0, sigdigits=3),
       " cs0=", fmt_e(cs0, sigdigits=3))
+    tprintln("     val parts: state=", fmt_e(rec.val_parts.state, sigdigits=3),
+      " x2dot=", fmt_e(rec.val_parts.x2dot, sigdigits=3),
+      " x3r=", fmt_e(rec.val_parts.x3_range, sigdigits=3),
+      " cont=", fmt_e(rec.val_parts.cont, sigdigits=3))
+    tprintln("     rec: x1=", fmt_f(rec.val_parts.x1_rec, digits=2),
+      "% x3=", fmt_f(rec.val_parts.x3_rec, digits=2), "%")
+    tprintln("     mech: ks=", fmt_e(ks_hat, sigdigits=3),
+      " (err=", fmt_f(ks_err_pct, digits=2), "%)",
+      " cs=", fmt_e(cs_hat, sigdigits=3),
+      " (err=", fmt_f(cs_err_pct, digits=2), "%)")
   end
 
   serialize(result_folder * "/" * result_name_string, (

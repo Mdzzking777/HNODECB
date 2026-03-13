@@ -9,7 +9,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48
 #SBATCH --mem-per-cpu=4000M
-#SBATCH --output=logs/slurm_stage2_03_%j.out
+#SBATCH --output=logs/stage2_step2a/slurm_stage2_03_%j.out
 
 set -euo pipefail
 

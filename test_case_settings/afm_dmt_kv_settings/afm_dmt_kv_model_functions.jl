@@ -131,12 +131,11 @@ function get_uode_model_function_hertz_nn(appr_neural_network, state, true_conta
             delta = softplus(-s, adhesion_transition)
             delta = ifelse(delta > 0.0, delta, 0.0)
             w_pred = contact_weight(s, adhesion_transition)
-            w_true = true_contact_weight_at_time === nothing ? w_pred : true_contact_weight_at_time(t)
 
             # NN-based Hertz replacement (scalar output)
-            nn_in = collect(promote(u[1], u[2]))
+            nn_in = collect(promote(u[1], u[2], u[3]))
             û = appr_neural_network(nn_in, p.p_net, st)[1]
-            F_hertz = û[1] * w_true
+            F_hertz = û[1] * w_pred
             Fad_eff = Fad * w_pred
 
             # Tip kinematics

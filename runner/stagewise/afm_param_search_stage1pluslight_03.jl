@@ -32,7 +32,7 @@ if !haskey(ENV, "HNODECB_STAGE1PLUS_BASE_INDICES")
   ENV["HNODECB_STAGE1PLUS_BASE_INDICES"] = string(stage1pluslight_candidate_index())
 end
 if !haskey(ENV, "HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE")
-  ENV["HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE"] = "999"
+  ENV["HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE"] = "1000"
 end
 if !haskey(ENV, "HNODECB_STAGE1PLUS_FINAL_TOPK")
   ENV["HNODECB_STAGE1PLUS_FINAL_TOPK"] = "10"
@@ -45,6 +45,27 @@ if !haskey(ENV, "HNODECB_STAGE1_SHARD_COUNT")
 end
 if !haskey(ENV, "HNODECB_STAGE1_AUTOSPAWN")
   ENV["HNODECB_STAGE1_AUTOSPAWN"] = "1"
+end
+if !haskey(ENV, "HNODECB_STAGE1PLUS_ARCH_SCREEN_ENABLE")
+  ENV["HNODECB_STAGE1PLUS_ARCH_SCREEN_ENABLE"] = "1"
+end
+if !haskey(ENV, "HNODECB_STAGE1PLUS_ARCH_TRIALS_PER_ARCH")
+  ENV["HNODECB_STAGE1PLUS_ARCH_TRIALS_PER_ARCH"] = "10"
+end
+if !haskey(ENV, "HNODECB_STAGE1PLUS_ARCH_EPOCHS")
+  ENV["HNODECB_STAGE1PLUS_ARCH_EPOCHS"] = "20"
+end
+if !haskey(ENV, "HNODECB_STAGE1PLUS_ARCH_WINDOW_US")
+  ENV["HNODECB_STAGE1PLUS_ARCH_WINDOW_US"] = "5e-6"
+end
+if !haskey(ENV, "HNODECB_STAGE1PLUS_ARCH_OBJ_A")
+  ENV["HNODECB_STAGE1PLUS_ARCH_OBJ_A"] = "0.35"
+end
+if !haskey(ENV, "HNODECB_STAGE1PLUS_ARCH_OBJ_B")
+  ENV["HNODECB_STAGE1PLUS_ARCH_OBJ_B"] = "0.45"
+end
+if !haskey(ENV, "HNODECB_STAGE1PLUS_ARCH_OBJ_C")
+  ENV["HNODECB_STAGE1PLUS_ARCH_OBJ_C"] = "0.20"
 end
 
 fmt_e(x; sigdigits=4) = (x isa Number && isfinite(x)) ? @sprintf("%.*e", max(sigdigits - 1, 0), x) : "None"
@@ -71,8 +92,12 @@ if get(ENV, "HNODECB_STAGE1_AUTOSPAWN", "1") == "1" &&
 
   result_stem = get(ENV, "HNODECB_STAGE1_RESULT_STEM", "afm_param_stage1pluslight_03")
   merged_file = joinpath(result_dir, result_stem * ".jld")
+  archscreen_file = joinpath(result_dir, result_stem * "_archscreen.jld")
   if isfile(merged_file)
     rm(merged_file; force=true)
+  end
+  if isfile(archscreen_file)
+    rm(archscreen_file; force=true)
   end
   for i in 1:shard_cnt
     shard_file = joinpath(result_dir, result_stem * "_p" * string(i) * ".jld")
@@ -81,9 +106,46 @@ if get(ENV, "HNODECB_STAGE1_AUTOSPAWN", "1") == "1" &&
     end
   end
 
+  arch_screen_enable = get(ENV, "HNODECB_STAGE1PLUS_ARCH_SCREEN_ENABLE", "1") == "1"
+  arch_screen_only = get(ENV, "HNODECB_STAGE1PLUS_ARCH_SCREEN_ONLY", "0") == "1"
+  have_selected_arch = haskey(ENV, "HNODECB_STAGE1PLUS_SELECTED_LAYERS") && haskey(ENV, "HNODECB_STAGE1PLUS_SELECTED_NODES")
+  archscreen_data = nothing
+  if arch_screen_enable && !have_selected_arch
+    println("=== Stage1pluslight (03): architecture screening ===")
+    flush(stdout)
+    arch_env = copy(ENV)
+    arch_env["HNODECB_STAGE1_AUTOSPAWN"] = "0"
+    arch_env["HNODECB_STAGE1PLUS_ARCH_SCREEN_ONLY"] = "1"
+    arch_env["HNODECB_STAGE1_RESULT_STEM"] = result_stem * "_archscreen"
+    arch_cmd = `$(Base.julia_cmd()) --project=$project $stage1plus_path`
+    run(setenv(arch_cmd, arch_env))
+    if !isfile(archscreen_file)
+      error("Missing architecture screening result file: " * archscreen_file)
+    end
+    archscreen_data = deserialize(archscreen_file)
+    if !haskey(archscreen_data, :selected_architecture)
+      error("Architecture screening result file does not contain selected_architecture: " * archscreen_file)
+    end
+    selected_arch = archscreen_data.selected_architecture
+    ENV["HNODECB_STAGE1PLUS_SELECTED_LAYERS"] = string(selected_arch.num_hidden_layers)
+    ENV["HNODECB_STAGE1PLUS_SELECTED_NODES"] = string(selected_arch.num_hidden_nodes)
+    println("=== Stage1pluslight (03): architecture screen complete ===")
+    println("Selected architecture -> layers=", selected_arch.num_hidden_layers,
+      " nodes=", selected_arch.num_hidden_nodes)
+    flush(stdout)
+    if arch_screen_only
+      did_autospawn = true
+    end
+  end
+
+  if !did_autospawn
   println("=== Stage1pluslight (03): spawning ", shard_cnt, " shards ===")
   println("Candidate=", get(ENV, "HNODECB_STAGE1PLUS_BASE_INDICES", "6"),
-    " | TrialsPerCandidate=", get(ENV, "HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE", "999"))
+    " | TrialsPerCandidate=", get(ENV, "HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE", "1000"))
+  if haskey(ENV, "HNODECB_STAGE1PLUS_SELECTED_LAYERS") && haskey(ENV, "HNODECB_STAGE1PLUS_SELECTED_NODES")
+    println("Selected architecture: layers=", ENV["HNODECB_STAGE1PLUS_SELECTED_LAYERS"],
+      " nodes=", ENV["HNODECB_STAGE1PLUS_SELECTED_NODES"])
+  end
   flush(stdout)
 
   procs = []
@@ -94,6 +156,7 @@ if get(ENV, "HNODECB_STAGE1_AUTOSPAWN", "1") == "1" &&
     env["HNODECB_STAGE1_SHARD_COUNT"] = string(shard_cnt)
     env["HNODECB_STAGE1_RUN_TAG"] = "p" * string(i)
     env["HNODECB_STAGE1_AUTOSPAWN"] = "0"
+    env["HNODECB_STAGE1PLUS_ARCH_SCREEN_ONLY"] = "0"
     logfile = joinpath(log_dir, log_prefix * "_p" * string(i) * ".txt")
     io = open(logfile, "w")
     cmd = `$(Base.julia_cmd()) --project=$project $stage1plus_path`
@@ -179,20 +242,22 @@ if get(ENV, "HNODECB_STAGE1_AUTOSPAWN", "1") == "1" &&
     error_level=first_meta.error_level,
     stage1_input_file=(haskey(first_meta, :stage1_input_file) ? first_meta.stage1_input_file : ""),
     stage1_input_topk=(haskey(first_meta, :stage1_input_topk) ? first_meta.stage1_input_topk : 0),
-    searches_per_candidate=parse(Int, get(ENV, "HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE", "999")),
+    searches_per_candidate=parse(Int, get(ENV, "HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE", "1000")),
     final_topk=final_topk,
-    shard_count=shard_cnt
+    shard_count=shard_cnt,
+    architecture_screen=archscreen_data
   ))
   println("=== Stage1pluslight (03): merged results -> ", merged_file, " ===")
   flush(stdout)
   did_autospawn = true
+  end
 end
 
 if !did_autospawn
   let
     threads = get(ENV, "JULIA_NUM_THREADS", "1")
     candidate = get(ENV, "HNODECB_STAGE1PLUS_BASE_INDICES", string(stage1pluslight_candidate_index()))
-    trials = get(ENV, "HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE", "999")
+    trials = get(ENV, "HNODECB_STAGE1PLUS_TRIALS_PER_CANDIDATE", "1000")
     input_file = get(ENV, "HNODECB_STAGE1PLUS_INPUT_BASENAME", "afm_param_stage1_03.jld")
     result_stem = get(ENV, "HNODECB_STAGE1_RESULT_STEM", "afm_param_stage1pluslight_03")
     println("=== Stage1pluslight (03) runtime config ===")
