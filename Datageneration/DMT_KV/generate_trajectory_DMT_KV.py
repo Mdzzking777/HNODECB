@@ -5,6 +5,7 @@ Now saves x1dot and x2dot directly from ODE (no numerical differentiation!)
 """
 
 import numpy as np
+import os
 
 # ============================================================================
 # Fixed Parameters
@@ -20,12 +21,15 @@ c = m * wd / Q
 
 # Contact & geometry
 Estar = 15e6
+eta_star = 1.3
 R = 10e-9
-Fad = 2.0e-9
+A = 6.0e-20
+a0 = 3.0e-10
+beta = 5.0e11
 dist = 24e-9
 
 # Drive
-Fd = 2.05e-9
+Fd = 4.10e-9
 
 # Surface (Kelvin-Voigt)
 ks = 0.1
@@ -51,6 +55,44 @@ def rk4_step(f, t, X, dt):
 # DMT-KV Model
 # ============================================================================
 
+def sigmoid(x):
+    x = np.clip(x, -60.0, 60.0)
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def f_ts_from_state(x, v, y):
+    """
+    Unified DMT-like force with explicit x3dot closure.
+
+        g(s) = sigmoid(beta * (s - a0))
+        delta = max(a0 - s, 0)
+        delta_dot = (a0 - s)_dot = -x_dot + y_dot
+
+        F_ts(s) =
+            -A*R / (6 * (g(s) * (s - a0) + a0)^2)
+            + (1 - g(s)) * (4/3) * Estar * sqrt(R) * delta^(3/2)
+            + eta_star * sqrt(R) * delta^(1/2) * delta_dot
+
+    First solve x3dot explicitly from the x3 state equation, then recover the
+    full F_ts at the same time point.
+    """
+    s = dist + x - y
+    g = sigmoid(beta * (s - a0))
+    denom = g * (s - a0) + a0
+    denom = max(denom, 1.0e-15)
+    adhesion = -(A * R) / (6.0 * (denom ** 2))
+    delta = max(a0 - s, 0.0)
+    f_hertz = (4.0 / 3.0) * Estar * np.sqrt(R) * (delta ** 1.5)
+    kv_coeff = eta_star * np.sqrt(R) * np.sqrt(delta)
+
+    # x3dot = (-F_ts - ks*y) / cs, with
+    # F_ts = adhesion + (1-g)*f_hertz + kv_coeff*(-v + x3dot).
+    ydot = (-adhesion - (1.0 - g) * f_hertz + kv_coeff * v - ks * y) / (cs + kv_coeff)
+    delta_dot = ydot - v if delta > 0.0 else 0.0
+    f_ts = adhesion + (1.0 - g) * f_hertz + kv_coeff * delta_dot
+    return f_ts, ydot, delta_dot
+
+
 def rhs_dmt_kv(t, X):
     """
     B) MOVING SURFACE (Kelvin-Voigt) + Hertz-DMT
@@ -60,18 +102,13 @@ def rhs_dmt_kv(t, X):
     """
     x, v, y = X
 
-    # Separation
+    # Tip-sample distance
     s = dist + x - y
 
-    # Contact detection
-    if s <= 0:  # Contact
-        delta = -s  # Indentation depth: delta = y - x - dist
-        F_Hertz = (4.0/3.0) * Estar * np.sqrt(R) * (delta ** 1.5) if delta > 0 else 0.0
-        dvdt = (Fd * np.cos(wd * t) - k*x - c*v + Fad - F_Hertz) / m
-        dydt = (Fad - F_Hertz - ks*y) / cs
-    else:  # Non-contact
-        dvdt = (Fd * np.cos(wd * t) - k*x - c*v) / m
-        dydt = -ks * y / cs
+    # Unified DMT-like interaction force
+    F_ts, ydot, _ = f_ts_from_state(x, v, y)
+    dvdt = (Fd * np.cos(wd * t) - k*x - c*v + F_ts) / m
+    dydt = ydot
 
     dxdt = v
 
@@ -91,14 +128,18 @@ x = np.zeros(nsteps + 1)
 v = np.zeros(nsteps + 1)  # x1dot (velocity)
 y = np.zeros(nsteps + 1)
 x2dot = np.zeros(nsteps + 1)  # x2dot (acceleration)
+ydot = np.zeros(nsteps + 1)   # x3dot (sample velocity)
+delta_dot = np.zeros(nsteps + 1)
+f_ts_hist = np.zeros(nsteps + 1)
 
 # Initial condition
 X = np.array([0.0, 0.0, 0.0])
 x[0], v[0], y[0] = X
 
-# Compute initial acceleration
+# Compute initial acceleration / force / sample velocity
 derivs = rhs_dmt_kv(t[0], X)
 x2dot[0] = derivs[1]  # dvdt
+f_ts_hist[0], ydot[0], delta_dot[0] = f_ts_from_state(X[0], X[1], X[2])
 
 # RK4 integration
 for i in range(nsteps):
@@ -108,10 +149,11 @@ for i in range(nsteps):
     # Compute acceleration directly from ODE (no numerical differentiation!)
     derivs = rhs_dmt_kv(t[i+1], X)
     x2dot[i+1] = derivs[1]  # dvdt = x2dot
+    f_ts_hist[i+1], ydot[i+1], delta_dot[i+1] = f_ts_from_state(X[0], X[1], X[2])
 
-# Compute separation and contact
+# Compute tip-sample distance and Hertz-active region
 s = dist + x - y
-contact = (s <= 0)
+contact = (s <= a0)
 
 print(f"Complete: {len(t)} time points")
 print(f"Contact fraction: {contact.sum()/len(contact)*100:.2f}%")
@@ -121,13 +163,15 @@ print(f"Contact fraction: {contact.sum()/len(contact)*100:.2f}%")
 # ============================================================================
 
 # Save as CSV with x1dot (v) and x2dot (acceleration)
-data = np.column_stack([t, x, y, s, contact.astype(int), v, x2dot])
-np.savetxt('trajectory.csv', data, delimiter=',',
-           header='time_s,x_tip_m,y_sample_m,s_separation_m,contact_status,x1dot_velocity,x2dot_acceleration',
+script_dir = os.path.dirname(__file__)
+csv_path = os.path.join(script_dir, 'trajectory.csv')
+data = np.column_stack([t, x, y, s, contact.astype(int), v, x2dot, ydot, delta_dot, f_ts_hist])
+np.savetxt(csv_path, data, delimiter=',',
+           header='time_s,x_tip_m,y_sample_m,s_tip_sample_distance_m,contact_status,x1dot_velocity,x2dot_acceleration,x3dot_sample_velocity,delta_dot_indentation_rate,fts_interaction_force',
            comments='')
 
-print("Saved: trajectory.csv")
-print("  - Includes x1dot (velocity) and x2dot (acceleration) directly from ODE")
+print(f"Saved: {csv_path}")
+print("  - Includes x1dot, x2dot, x3dot, delta_dot, and exact F_ts directly from ODE")
 print("  - No numerical differentiation used!")
 
 # ============================================================================
@@ -135,7 +179,6 @@ print("  - No numerical differentiation used!")
 # ============================================================================
 
 import matplotlib.pyplot as plt
-import os
 
 # Create plots directory
 plots_dir = os.path.join(os.path.dirname(__file__), 'plots')
@@ -168,12 +211,12 @@ ax2.set_ylabel('Sample motion y [nm]')
 ax2.grid(True, alpha=0.3)
 ax2.axhline(y=0, color='k', linestyle='--', linewidth=0.5)
 
-# Plot 3: Tip-sample separation
+# Plot 3: Tip-sample distance
 ax3 = axes[2]
 ax3.plot(t_us, s_nm, 'g-', linewidth=0.5)
-ax3.axhline(y=0, color='r', linestyle='-', linewidth=1, label='Contact threshold (s=0)')
-ax3.fill_between(t_us, s_nm, 0, where=(s_nm <= 0), alpha=0.3, color='red', label='Contact region')
-ax3.set_ylabel('Separation s [nm]')
+ax3.axhline(y=a0 * 1e9, color='r', linestyle='-', linewidth=1, label='Hertz threshold (s=a0)')
+ax3.fill_between(t_us, s_nm, a0 * 1e9, where=(s_nm <= a0 * 1e9), alpha=0.3, color='red', label='Hertz-active region')
+ax3.set_ylabel('Distance s [nm]')
 ax3.set_xlabel('Time [μs]')
 ax3.grid(True, alpha=0.3)
 ax3.legend(loc='upper right')
@@ -206,13 +249,13 @@ ax2.set_ylabel('Sample motion y [nm]')
 ax2.grid(True, alpha=0.3)
 ax2.axhline(y=0, color='k', linestyle='--', linewidth=0.5)
 
-# Plot 3: Tip-sample separation (zoomed)
+# Plot 3: Tip-sample distance (zoomed)
 ax3 = axes[2]
 ax3.plot(t_us[zoom_idx], s_nm[zoom_idx], 'g-', linewidth=1)
-ax3.axhline(y=0, color='r', linestyle='-', linewidth=1, label='Contact threshold (s=0)')
-ax3.fill_between(t_us[zoom_idx], s_nm[zoom_idx], 0,
-                  where=(s_nm[zoom_idx] <= 0), alpha=0.3, color='red', label='Contact region')
-ax3.set_ylabel('Separation s [nm]')
+ax3.axhline(y=a0 * 1e9, color='r', linestyle='-', linewidth=1, label='Hertz threshold (s=a0)')
+ax3.fill_between(t_us[zoom_idx], s_nm[zoom_idx], a0 * 1e9,
+                  where=(s_nm[zoom_idx] <= a0 * 1e9), alpha=0.3, color='red', label='Hertz-active region')
+ax3.set_ylabel('Distance s [nm]')
 ax3.set_xlabel('Time [μs]')
 ax3.grid(True, alpha=0.3)
 ax3.legend(loc='upper right')
@@ -229,15 +272,16 @@ fig, ax = plt.subplots(figsize=(12, 6))
 # Plot all three on same axes for comparison
 ax.plot(t_us[zoom_idx], x_nm[zoom_idx], 'b-', linewidth=1, label='Tip displacement x')
 ax.plot(t_us[zoom_idx], y_nm[zoom_idx], 'r-', linewidth=1, label='Sample motion y')
-ax.plot(t_us[zoom_idx], s_nm[zoom_idx], 'g-', linewidth=1, label='Separation s')
+ax.plot(t_us[zoom_idx], s_nm[zoom_idx], 'g-', linewidth=1, label='Tip-sample distance s')
 ax.axhline(y=0, color='k', linestyle='--', linewidth=0.5)
 
-# Mark equilibrium separation
+# Mark equilibrium distance and Hertz threshold
 ax.axhline(y=dist*1e9, color='gray', linestyle=':', linewidth=1, label=f'd = {dist*1e9:.1f} nm (equilibrium)')
+ax.axhline(y=a0*1e9, color='tab:red', linestyle='-.', linewidth=1, label=f'a0 = {a0*1e9:.1f} nm')
 
 ax.set_xlabel('Time [μs]')
 ax.set_ylabel('Displacement [nm]')
-ax.set_title(f'AFM DMT-KV: Tip, Sample, and Separation ({zoom_start_us}-{zoom_end_us} μs, Steady-State)')
+ax.set_title(f'AFM DMT-KV: Tip, Sample, and Distance s ({zoom_start_us}-{zoom_end_us} μs, Steady-State)')
 ax.legend(loc='upper right')
 ax.grid(True, alpha=0.3)
 
@@ -260,9 +304,9 @@ ax.plot(x_nm[non_contact_idx], y_nm[non_contact_idx],
 ax.plot(x_nm[contact_idx], y_nm[contact_idx],
         color='tab:red', linewidth=0.35, alpha=0.8, label='Contact')
 
-# Contact boundary: s = dist + x1 - x3 = 0  =>  x3 = x1 + dist
+# Hertz boundary: s = dist + x1 - x3 = a0  =>  x3 = x1 + dist - a0
 x_line = np.array([x_nm.min(), x_nm.max()])
-ax.plot(x_line, x_line + dist_nm, 'k--', linewidth=1.0, label='Boundary: s = 0')
+ax.plot(x_line, x_line + dist_nm - a0 * 1e9, 'k--', linewidth=1.0, label='Boundary: s = a0')
 
 ax.scatter(x_nm[0], y_nm[0], s=20, c='k', marker='o', label='Start')
 ax.scatter(x_nm[-1], y_nm[-1], s=20, c='green', marker='x', label='End')
@@ -292,7 +336,7 @@ ax.plot(x_zoom[contact_zoom], y_zoom[contact_zoom],
         color='tab:red', linewidth=0.8, alpha=0.9, label='Contact')
 
 x_zoom_line = np.array([x_zoom.min(), x_zoom.max()])
-ax.plot(x_zoom_line, x_zoom_line + dist_nm, 'k--', linewidth=1.0, label='Boundary: s = 0')
+ax.plot(x_zoom_line, x_zoom_line + dist_nm - a0 * 1e9, 'k--', linewidth=1.0, label='Boundary: s = a0')
 
 ax.set_xlabel('x1 tip displacement [nm]')
 ax.set_ylabel('x3 sample displacement [nm]')
@@ -312,10 +356,13 @@ print("Trajectory Statistics:")
 print("="*60)
 print(f"  Tip displacement range: [{x_nm.min():.2f}, {x_nm.max():.2f}] nm")
 print(f"  Sample motion range:    [{y_nm.min():.2f}, {y_nm.max():.2f}] nm")
-print(f"  Separation range:       [{s_nm.min():.2f}, {s_nm.max():.2f}] nm")
+print(f"  Tip-sample distance s:  [{s_nm.min():.2f}, {s_nm.max():.2f}] nm")
 print(f"  Contact fraction:       {contact.sum()/len(contact)*100:.2f}%")
 print(f"  Oscillation period:     {1/f0*1e6:.3f} μs")
 print(f"  Number of cycles:       {t_end * f0:.0f}")
 
-plt.show()
+if os.environ.get("HNODECB_SHOW_PLOTS", "0") == "1":
+    plt.show()
+else:
+    plt.close("all")
 print("\nDone!")

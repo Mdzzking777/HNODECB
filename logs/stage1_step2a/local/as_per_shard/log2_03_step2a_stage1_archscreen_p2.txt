@@ -1,0 +1,858 @@
+[2026-03-27 16:36:21] === AFM Stage1plus (03) ===
+[2026-03-27 16:36:21] Switches: MS=false L2=false (λ=0.0)
+[2026-03-27 16:36:21] Stage1 ADAM: OFF
+[2026-03-27 16:36:21] Stage1plus mode: ON
+[2026-03-27 16:36:21] Stage1 warm-start export: ON (top candidates will save NN states for Stage2)
+[2026-03-27 16:36:21] === Stage1 SANITY (oracle F_contact + true mech) ===
+[2026-03-27 16:36:27]   sanity loss=1.803e-10
+[2026-03-27 16:36:27]   sanity parts: state=3.03e-11 x2dot=5.13e-12 x3=1.45e-10 x3r=0.0 ftsr=8.79e-14 cont=0.0
+[2026-03-27 16:36:27]   sanity rec: x1=0.0% x3=0.03%
+[2026-03-27 16:36:28]   sanity nn: F_contact err=0.0%
+[2026-03-27 16:36:28]   sanity nn raw: min=NaN max=NaN mean=NaN neg=0.0%
+[2026-03-27 16:36:28] Stage1pluslight architecture screen: ON (standalone)
+[2026-03-27 16:36:28]   run_seed=314159265 | window_us=5.0e-6 | points=313 | tspan=[0.001032, 0.001037]
+[2026-03-27 16:36:28]   shared_mech_draws=10 | epochs=10 | lr=0.01 | obj_weights[a=0.35 b=0.45 c=0.2]
+[2026-03-27 16:36:28]   arch_screen_shard=2/3 | assigned_architectures=(layers=1, nodes=1), (layers=1, nodes=2), (layers=1, nodes=3)
+[2026-03-27 16:36:28]   mech sharing: identical ks/cs draw pool reused across all architectures
+[2026-03-27 16:36:28]   dummy_warmup=ON | epochs=1
+[2026-03-27 16:36:28]   architecture screen warm-up: layers=0 nodes=1 hidden=2 | draw=0 | epochs=1
+[2026-03-27 16:36:32]       g_nn init=1.0e-7 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.004201 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.33 | reason=init_quantized
+[2026-03-27 16:38:06]     arch epoch 1/1 -- layers=0 nodes=1 draw=0 | train_final=3.509e-5 val=2.713e-6 | dt=94.14s | t1=-6.487e-8 t2=2.378e-10 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.609, mech_raw=0.821]
+[2026-03-27 16:38:06]       mech/nn | ks=0.1794 (true=0.1, err=25.39%) | cs=1.347e-6 (true=2.4e-7, err=74.91%) | nnErr(train)=109.01%
+[2026-03-27 16:38:06]   screening arch: layers=1 nodes=1 hidden=2
+[2026-03-27 16:38:09]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.00081 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.615 | reason=init_quantized
+[2026-03-27 16:39:22]     arch epoch 1/10 -- layers=1 nodes=1 draw=1 | train_final=4.095e-5 val=2.717e-6 | dt=73.33s | t1=-2.194e-9 t2=1.07e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.497, mech_raw=1.01]
+[2026-03-27 16:39:22]       mech/nn | ks=0.4414 (true=0.1, err=64.48%) | cs=2.904e-7 (true=2.4e-7, err=8.28%) | nnErr(train)=117.37%
+[2026-03-27 16:39:59]     arch epoch 2/10 -- layers=1 nodes=1 draw=1 | train_final=4.095e-5 val=2.716e-6 | dt=37.02s | t1=-2.236e-9 t2=9.615e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.494, mech_raw=1.01]
+[2026-03-27 16:39:59]       mech/nn | ks=0.4382 (true=0.1, err=64.17%) | cs=2.922e-7 (true=2.4e-7, err=8.54%) | nnErr(train)=115.51%
+[2026-03-27 16:40:37]     arch epoch 3/10 -- layers=1 nodes=1 draw=1 | train_final=4.094e-5 val=2.715e-6 | dt=37.61s | t1=-2.285e-9 t2=8.521e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.493, mech_raw=1.01]
+[2026-03-27 16:40:37]       mech/nn | ks=0.4351 (true=0.1, err=63.86%) | cs=2.94e-7 (true=2.4e-7, err=8.81%) | nnErr(train)=113.7%
+[2026-03-27 16:41:03]     arch epoch 4/10 -- layers=1 nodes=1 draw=1 | train_final=4.094e-5 val=2.714e-6 | dt=26.0s | t1=-2.343e-9 t2=7.417e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.492, mech_raw=1.02]
+[2026-03-27 16:41:03]       mech/nn | ks=0.4319 (true=0.1, err=63.54%) | cs=2.958e-7 (true=2.4e-7, err=9.08%) | nnErr(train)=111.94%
+[2026-03-27 16:41:26]     arch epoch 5/10 -- layers=1 nodes=1 draw=1 | train_final=4.094e-5 val=2.713e-6 | dt=22.78s | t1=-2.411e-9 t2=6.292e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.492, mech_raw=1.02]
+[2026-03-27 16:41:26]       mech/nn | ks=0.4288 (true=0.1, err=63.22%) | cs=2.977e-7 (true=2.4e-7, err=9.35%) | nnErr(train)=110.22%
+[2026-03-27 16:41:47]     arch epoch 6/10 -- layers=1 nodes=1 draw=1 | train_final=4.094e-5 val=2.712e-6 | dt=21.0s | t1=-2.49e-9 t2=5.144e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.494, mech_raw=1.01]
+[2026-03-27 16:41:47]       mech/nn | ks=0.4255 (true=0.1, err=62.89%) | cs=2.996e-7 (true=2.4e-7, err=9.63%) | nnErr(train)=108.54%
+[2026-03-27 16:42:05]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.093e-5 -> gnn_new=1.0e-5 after_gnn=4.099e-5 | A_true=1.963e-9 A_pred=0.0003001 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-5.184 | val_before=2.71e-6 val_after=2.754e-6 | reason=updated_quantized
+[2026-03-27 16:42:05]     arch epoch 7/10 -- layers=1 nodes=1 draw=1 | train_final=4.099e-5 val=2.754e-6 | dt=18.85s | t1=-2.582e-9 t2=3.973e-11 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.496, mech_raw=1.01]
+[2026-03-27 16:42:05]       mech/nn | ks=0.4223 (true=0.1, err=62.56%) | cs=3.016e-7 (true=2.4e-7, err=9.92%) | nnErr(train)=178.12%
+[2026-03-27 16:42:51]     arch epoch 8/10 -- layers=1 nodes=1 draw=1 | train_final=4.098e-5 val=2.743e-6 | dt=45.43s | t1=-1.468e-8 t2=1.496e-9 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.485, mech_raw=1.03]
+[2026-03-27 16:42:51]       mech/nn | ks=0.4191 (true=0.1, err=62.23%) | cs=3.036e-7 (true=2.4e-7, err=10.2%) | nnErr(train)=159.94%
+[2026-03-27 16:43:33]     arch epoch 9/10 -- layers=1 nodes=1 draw=1 | train_final=4.096e-5 val=2.731e-6 | dt=41.7s | t1=-1.704e-8 t2=1.231e-9 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.468, mech_raw=1.07]
+[2026-03-27 16:43:33]       mech/nn | ks=0.4158 (true=0.1, err=61.89%) | cs=3.056e-7 (true=2.4e-7, err=10.5%) | nnErr(train)=140.01%
+[2026-03-27 16:44:16]     arch epoch 10/10 -- layers=1 nodes=1 draw=1 | train_final=4.094e-5 val=2.719e-6 | dt=43.52s | t1=-1.902e-8 t2=1.058e-9 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.449, mech_raw=1.11]
+[2026-03-27 16:44:16]       mech/nn | ks=0.4125 (true=0.1, err=61.54%) | cs=3.077e-7 (true=2.4e-7, err=10.79%) | nnErr(train)=119.53%
+[2026-03-27 16:44:16]       trial raw objectives after 10 epochs -- layers=1 nodes=1 draw=1 ks0=0.444 cs0=2.89e-7
+[2026-03-27 16:44:16]          detail: raw_a=4.748e-11 ; raw_b=36.73 ; raw_c=0.0
+[2026-03-27 16:44:16]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.001022 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.717 | reason=init_quantized
+[2026-03-27 16:45:35]     arch epoch 1/10 -- layers=1 nodes=1 draw=2 | train_final=4.094e-5 val=2.715e-6 | dt=79.41s | t1=-8.106e-10 t2=4.538e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.424, mech_raw=1.18]
+[2026-03-27 16:45:35]       mech/nn | ks=4.455 (true=0.1, err=164.88%) | cs=2.051e-7 (true=2.4e-7, err=6.83%) | nnErr(train)=121.38%
+[2026-03-27 16:46:54]     arch epoch 2/10 -- layers=1 nodes=1 draw=2 | train_final=4.094e-5 val=2.714e-6 | dt=78.57s | t1=-7.76e-10 t2=4.177e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.365, mech_raw=1.37]
+[2026-03-27 16:46:54]       mech/nn | ks=4.455 (true=0.1, err=164.88%) | cs=2.049e-7 (true=2.4e-7, err=6.87%) | nnErr(train)=118.52%
+[2026-03-27 16:48:08]     arch epoch 3/10 -- layers=1 nodes=1 draw=2 | train_final=4.094e-5 val=2.713e-6 | dt=74.2s | t1=-7.425e-10 t2=3.85e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.319, mech_raw=1.5]
+[2026-03-27 16:48:08]       mech/nn | ks=4.455 (true=0.1, err=164.88%) | cs=2.047e-7 (true=2.4e-7, err=6.91%) | nnErr(train)=115.83%
+[2026-03-27 16:49:21]     arch epoch 4/10 -- layers=1 nodes=1 draw=2 | train_final=4.094e-5 val=2.711e-6 | dt=72.88s | t1=-1.186e-9 t2=5.934e-11 | gnn=1.0e-6 | lr=0.0167 | scale[p_net=0.282, mech_raw=1.5]
+[2026-03-27 16:49:21]       mech/nn | ks=4.455 (true=0.1, err=164.89%) | cs=2.044e-7 (true=2.4e-7, err=6.97%) | nnErr(train)=111.6%
+[2026-03-27 16:50:30]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.094e-5 -> gnn_new=1.0e-5 after_gnn=4.095e-5 | A_true=1.963e-9 A_pred=0.0001443 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-4.866 | val_before=2.706e-6 val_after=2.718e-6 | reason=updated_quantized
+[2026-03-27 16:50:30]     arch epoch 5/10 -- layers=1 nodes=1 draw=2 | train_final=4.095e-5 val=2.718e-6 | dt=68.81s | t1=-2.476e-9 t2=1.164e-10 | gnn=1.0e-5 | lr=0.0366 | scale[p_net=0.25, mech_raw=1.5]
+[2026-03-27 16:50:30]       mech/nn | ks=4.455 (true=0.1, err=164.89%) | cs=2.038e-7 (true=2.4e-7, err=7.09%) | nnErr(train)=134.04%
+[2026-03-27 16:51:52]     arch epoch 6/10 -- layers=1 nodes=1 draw=2 | train_final=4.092e-5 val=2.673e-6 | dt=82.17s | t1=-2.914e-8 t2=-1.301e-9 | gnn=1.0e-5 | lr=0.0366 | scale[p_net=0.216, mech_raw=1.5]
+[2026-03-27 16:51:52]       mech/nn | ks=4.456 (true=0.1, err=164.89%) | cs=2.032e-7 (true=2.4e-7, err=7.23%) | nnErr(train)=68.94%
+[2026-03-27 16:53:27]       gnn-loss-flow | gnn_old=1.0e-5 theta_fixed=4.087e-5 -> gnn_new=1.0e-6 after_gnn=4.093e-5 | A_true=1.963e-9 A_pred=0.0007868 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.603 | val_before=2.619e-6 val_after=2.697e-6 | reason=updated_quantized
+[2026-03-27 16:53:27]     arch epoch 7/10 -- layers=1 nodes=1 draw=2 | train_final=4.093e-5 val=2.697e-6 | dt=95.21s | t1=-3.768e-8 t2=-8.337e-9 | gnn=1.0e-6 | lr=0.0366 | scale[p_net=0.187, mech_raw=1.5]
+[2026-03-27 16:53:27]       mech/nn | ks=4.456 (true=0.1, err=164.89%) | cs=2.031e-7 (true=2.4e-7, err=7.24%) | nnErr(train)=83.9%
+[2026-03-27 16:54:45]     arch epoch 8/10 -- layers=1 nodes=1 draw=2 | train_final=4.093e-5 val=2.693e-6 | dt=77.33s | t1=-3.116e-9 t2=-2.584e-10 | gnn=1.0e-6 | lr=0.0366 | scale[p_net=0.163, mech_raw=1.5]
+[2026-03-27 16:54:45]       mech/nn | ks=4.456 (true=0.1, err=164.89%) | cs=2.032e-7 (true=2.4e-7, err=7.23%) | nnErr(train)=76.74%
+[2026-03-27 16:56:08]     arch epoch 9/10 -- layers=1 nodes=1 draw=2 | train_final=4.093e-5 val=2.689e-6 | dt=82.96s | t1=-2.823e-9 t2=-2.435e-10 | gnn=1.0e-6 | lr=0.0366 | scale[p_net=0.143, mech_raw=1.5]
+[2026-03-27 16:56:08]       mech/nn | ks=4.455 (true=0.1, err=164.89%) | cs=2.034e-7 (true=2.4e-7, err=7.18%) | nnErr(train)=71.83%
+[2026-03-27 16:57:34]     arch epoch 10/10 -- layers=1 nodes=1 draw=2 | train_final=4.092e-5 val=2.685e-6 | dt=86.02s | t1=-2.58e-9 t2=5.947e-10 | gnn=1.0e-6 | lr=0.0366 | scale[p_net=0.128, mech_raw=1.5]
+[2026-03-27 16:57:34]       mech/nn | ks=4.455 (true=0.1, err=164.89%) | cs=2.038e-7 (true=2.4e-7, err=7.1%) | nnErr(train)=68.87%
+[2026-03-27 16:57:34]       trial raw objectives after 10 epochs -- layers=1 nodes=1 draw=2 ks0=4.45 cs0=2.05e-7
+[2026-03-27 16:57:34]          detail: raw_a=-3.117e-9 ; raw_b=79.76 ; raw_c=0.0
+[2026-03-27 16:57:34]       g_nn init=1.0e-7 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.004363 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.347 | reason=init_quantized
+[2026-03-27 16:57:49]     arch epoch 1/10 -- layers=1 nodes=1 draw=3 | train_final=3.995e-5 val=2.714e-6 | dt=15.19s | t1=-3.775e-8 t2=-4.118e-10 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.646, mech_raw=0.774]
+[2026-03-27 16:57:49]       mech/nn | ks=0.6668 (true=0.1, err=82.4%) | cs=1.35e-6 (true=2.4e-7, err=75.01%) | nnErr(train)=109.96%
+[2026-03-27 16:58:04]     arch epoch 2/10 -- layers=1 nodes=1 draw=3 | train_final=3.991e-5 val=2.713e-6 | dt=15.03s | t1=-3.819e-8 t2=-3.995e-10 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.813, mech_raw=0.615]
+[2026-03-27 16:58:04]       mech/nn | ks=0.6612 (true=0.1, err=82.03%) | cs=1.359e-6 (true=2.4e-7, err=75.31%) | nnErr(train)=109.75%
+[2026-03-27 16:58:19]     arch epoch 3/10 -- layers=1 nodes=1 draw=3 | train_final=3.987e-5 val=2.713e-6 | dt=14.81s | t1=-3.841e-8 t2=-3.832e-10 | gnn=1.0e-7 | lr=0.01 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 16:58:19]       mech/nn | ks=0.6557 (true=0.1, err=81.67%) | cs=1.369e-6 (true=2.4e-7, err=75.6%) | nnErr(train)=109.52%
+[2026-03-27 16:58:33]     arch epoch 4/10 -- layers=1 nodes=1 draw=3 | train_final=3.98e-5 val=2.713e-6 | dt=14.58s | t1=-6.926e-8 t2=-1.202e-9 | gnn=1.0e-7 | lr=0.0177 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 16:58:33]       mech/nn | ks=0.6461 (true=0.1, err=81.03%) | cs=1.385e-6 (true=2.4e-7, err=76.13%) | nnErr(train)=109.12%
+[2026-03-27 16:58:48]     arch epoch 5/10 -- layers=1 nodes=1 draw=3 | train_final=3.965e-5 val=2.712e-6 | dt=14.37s | t1=-1.481e-7 t2=-5.056e-9 | gnn=1.0e-7 | lr=0.0366 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 16:58:48]       mech/nn | ks=0.6267 (true=0.1, err=79.7%) | cs=1.42e-6 (true=2.4e-7, err=77.2%) | nnErr(train)=108.31%
+[2026-03-27 16:59:02]       gnn-loss-flow | gnn_old=1.0e-7 theta_fixed=3.926e-5 -> gnn_new=1.0e-6 after_gnn=3.938e-5 | A_true=1.963e-9 A_pred=0.002888 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-6.167 | val_before=2.71e-6 val_after=2.761e-6 | reason=updated_quantized
+[2026-03-27 16:59:02]     arch epoch 6/10 -- layers=1 nodes=1 draw=3 | train_final=3.938e-5 val=2.761e-6 | dt=14.47s | t1=-3.586e-7 t2=-2.424e-8 | gnn=1.0e-6 | lr=0.0826 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 16:59:02]       mech/nn | ks=0.5844 (true=0.1, err=76.67%) | cs=1.5e-6 (true=2.4e-7, err=79.59%) | nnErr(train)=175.1%
+[2026-03-27 16:59:34]     arch epoch 7/10 -- layers=1 nodes=1 draw=3 | train_final=3.833e-5 val=2.736e-6 | dt=32.15s | t1=-9.57e-7 t2=-9.25e-8 | gnn=1.0e-6 | lr=0.185 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 16:59:34]       mech/nn | ks=0.498 (true=0.1, err=69.72%) | cs=1.691e-6 (true=2.4e-7, err=84.79%) | nnErr(train)=140.1%
+[2026-03-27 17:00:03]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=3.608e-5 -> gnn_new=1.0e-5 after_gnn=3.62e-5 | A_true=1.963e-9 A_pred=0.000187 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-4.979 | val_before=2.709e-6 val_after=2.742e-6 | reason=updated_quantized
+[2026-03-27 17:00:03]     arch epoch 8/10 -- layers=1 nodes=1 draw=3 | train_final=3.62e-5 val=2.742e-6 | dt=28.34s | t1=-2.207e-6 t2=-4.236e-8 | gnn=1.0e-5 | lr=0.355 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 17:00:03]       mech/nn | ks=0.3621 (true=0.1, err=55.89%) | cs=2.094e-6 (true=2.4e-7, err=94.08%) | nnErr(train)=146.93%
+[2026-03-27 17:00:36]     arch epoch 9/10 -- layers=1 nodes=1 draw=3 | train_final=3.417e-5 val=2.713e-6 | dt=33.49s | t1=-2.652e-6 t2=6.187e-7 | gnn=1.0e-5 | lr=0.355 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 17:00:36]       mech/nn | ks=0.2605 (true=0.1, err=41.58%) | cs=2.525e-6 (true=2.4e-7, err=102.2%) | nnErr(train)=108.21%
+[2026-03-27 17:00:55]     arch epoch 10/10 -- layers=1 nodes=1 draw=3 | train_final=3.262e-5 val=2.68e-6 | dt=18.63s | t1=-1.736e-6 t2=1.869e-7 | gnn=1.0e-5 | lr=0.355 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 17:00:55]       mech/nn | ks=0.1864 (true=0.1, err=27.05%) | cs=2.948e-6 (true=2.4e-7, err=108.94%) | nnErr(train)=74.43%
+[2026-03-27 17:00:55]       trial raw objectives after 10 epochs -- layers=1 nodes=1 draw=3 ks0=0.673 cs0=1.34e-6
+[2026-03-27 17:00:55]          detail: raw_a=-3.33e-9 ; raw_b=20.11 ; raw_c=0.0
+[2026-03-27 17:00:55]       g_nn init=1.0e-5 | mode=DYNAMIC | A_true=1.963e-9 A_pred=9.628e-5 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-4.69 | reason=init_quantized
+[2026-03-27 17:02:16]     arch epoch 1/10 -- layers=1 nodes=1 draw=4 | train_final=3.11e-5 val=2.63e-6 | dt=81.35s | t1=-1.994e-6 t2=-1.216e-6 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.433, mech_raw=1.15]
+[2026-03-27 17:02:16]       mech/nn | ks=0.01083 (true=0.1, err=96.54%) | cs=5.765e-8 (true=2.4e-7, err=61.94%) | nnErr(train)=72.54%
+[2026-03-27 17:03:51]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.001 | scale[p_net=0.378, mech_raw=1.32]
+[2026-03-27 17:03:51]       step-guard: accepted after 1 retry/reduction(s) | lr=0.001 | train=3.053e-5
+[2026-03-27 17:03:51]     arch epoch 2/10 -- layers=1 nodes=1 draw=4 | train_final=3.053e-5 val=2.621e-6 | dt=94.67s | t1=-5.187e-7 t2=-5.057e-8 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.378, mech_raw=1.32]
+[2026-03-27 17:03:51]       mech/nn | ks=0.01082 (true=0.1, err=96.56%) | cs=5.765e-8 (true=2.4e-7, err=61.94%) | nnErr(train)=71.95%
+[2026-03-27 17:05:27]     arch epoch 3/10 -- layers=1 nodes=1 draw=4 | train_final=2.982e-5 val=2.608e-6 | dt=96.32s | t1=-6.358e-7 t2=-7.662e-8 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.332, mech_raw=1.5]
+[2026-03-27 17:05:27]       mech/nn | ks=0.01082 (true=0.1, err=96.58%) | cs=5.765e-8 (true=2.4e-7, err=61.94%) | nnErr(train)=71.37%
+[2026-03-27 17:07:07]     arch epoch 4/10 -- layers=1 nodes=1 draw=4 | train_final=2.889e-5 val=2.593e-6 | dt=99.65s | t1=-8.035e-7 t2=-1.239e-7 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.294, mech_raw=1.5]
+[2026-03-27 17:07:07]       mech/nn | ks=0.01081 (true=0.1, err=96.61%) | cs=5.764e-8 (true=2.4e-7, err=61.95%) | nnErr(train)=70.82%
+[2026-03-27 17:08:48]     arch epoch 5/10 -- layers=1 nodes=1 draw=4 | train_final=2.758e-5 val=2.573e-6 | dt=101.68s | t1=-1.077e-6 t2=-2.323e-7 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.26, mech_raw=1.5]
+[2026-03-27 17:08:48]       mech/nn | ks=0.01081 (true=0.1, err=96.63%) | cs=5.763e-8 (true=2.4e-7, err=61.95%) | nnErr(train)=70.31%
+[2026-03-27 17:10:34]     arch epoch 6/10 -- layers=1 nodes=1 draw=4 | train_final=2.539e-5 val=2.54e-6 | dt=106.04s | t1=-1.603e-6 t2=-5.883e-7 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.229, mech_raw=1.5]
+[2026-03-27 17:10:34]       mech/nn | ks=0.0108 (true=0.1, err=96.65%) | cs=5.763e-8 (true=2.4e-7, err=61.96%) | nnErr(train)=69.84%
+[2026-03-27 17:12:26]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.0001 | scale[p_net=0.201, mech_raw=1.5]
+[2026-03-27 17:12:26]       step-guard: accepted after 1 retry/reduction(s) | lr=0.0001 | train=2.507e-5
+[2026-03-27 17:12:26]     arch epoch 7/10 -- layers=1 nodes=1 draw=4 | train_final=2.507e-5 val=2.536e-6 | dt=111.17s | t1=-3.017e-7 t2=-1.387e-8 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.201, mech_raw=1.5]
+[2026-03-27 17:12:26]       mech/nn | ks=0.0108 (true=0.1, err=96.66%) | cs=5.763e-8 (true=2.4e-7, err=61.96%) | nnErr(train)=69.79%
+[2026-03-27 17:14:18]     arch epoch 8/10 -- layers=1 nodes=1 draw=4 | train_final=2.472e-5 val=2.529e-6 | dt=112.57s | t1=-3.374e-7 t2=-1.744e-8 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.176, mech_raw=1.5]
+[2026-03-27 17:14:18]       mech/nn | ks=0.0108 (true=0.1, err=96.66%) | cs=5.763e-8 (true=2.4e-7, err=61.96%) | nnErr(train)=69.75%
+[2026-03-27 17:16:10]     arch epoch 9/10 -- layers=1 nodes=1 draw=4 | train_final=2.431e-5 val=2.522e-6 | dt=111.61s | t1=-3.826e-7 t2=-2.241e-8 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.155, mech_raw=1.5]
+[2026-03-27 17:16:10]       mech/nn | ks=0.0108 (true=0.1, err=96.66%) | cs=5.762e-8 (true=2.4e-7, err=61.96%) | nnErr(train)=69.7%
+[2026-03-27 17:18:03]     arch epoch 10/10 -- layers=1 nodes=1 draw=4 | train_final=2.384e-5 val=2.514e-6 | dt=113.45s | t1=-4.396e-7 t2=-3.436e-8 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.136, mech_raw=1.5]
+[2026-03-27 17:18:03]       mech/nn | ks=0.0108 (true=0.1, err=96.66%) | cs=5.762e-8 (true=2.4e-7, err=61.96%) | nnErr(train)=69.66%
+[2026-03-27 17:18:03]       trial raw objectives after 10 epochs -- layers=1 nodes=1 draw=4 ks0=0.0109 cs0=5.76e-8
+[2026-03-27 17:18:03]          detail: raw_a=-1.663e-8 ; raw_b=102.9 ; raw_c=2.0
+[2026-03-27 17:18:03]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.001046 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.726 | reason=init_quantized
+[2026-03-27 17:19:15]     arch epoch 1/10 -- layers=1 nodes=1 draw=5 | train_final=4.058e-5 val=2.676e-6 | dt=72.07s | t1=-3.305e-8 t2=-3.046e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.522, mech_raw=0.957]
+[2026-03-27 17:19:15]       mech/nn | ks=0.05645 (true=0.1, err=24.83%) | cs=6.998e-8 (true=2.4e-7, err=53.52%) | nnErr(train)=77.49%
+[2026-03-27 17:20:55]     arch epoch 2/10 -- layers=1 nodes=1 draw=5 | train_final=4.054e-5 val=2.67e-6 | dt=99.98s | t1=-3.738e-8 t2=-3.839e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.543, mech_raw=0.92]
+[2026-03-27 17:20:55]       mech/nn | ks=0.05595 (true=0.1, err=25.22%) | cs=7.018e-8 (true=2.4e-7, err=53.4%) | nnErr(train)=75.55%
+[2026-03-27 17:22:18]     arch epoch 3/10 -- layers=1 nodes=1 draw=5 | train_final=4.049e-5 val=2.662e-6 | dt=82.48s | t1=-4.276e-8 t2=-5.215e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.563, mech_raw=0.889]
+[2026-03-27 17:22:18]       mech/nn | ks=0.05545 (true=0.1, err=25.61%) | cs=7.037e-8 (true=2.4e-7, err=53.28%) | nnErr(train)=73.75%
+[2026-03-27 17:23:41]     arch epoch 4/10 -- layers=1 nodes=1 draw=5 | train_final=4.043e-5 val=2.653e-6 | dt=82.73s | t1=-4.965e-8 t2=-6.426e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.58, mech_raw=0.863]
+[2026-03-27 17:23:41]       mech/nn | ks=0.05496 (true=0.1, err=26.0%) | cs=7.057e-8 (true=2.4e-7, err=53.16%) | nnErr(train)=72.11%
+[2026-03-27 17:25:09]     arch epoch 5/10 -- layers=1 nodes=1 draw=5 | train_final=4.037e-5 val=2.64e-6 | dt=88.53s | t1=-5.877e-8 t2=-8.114e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.594, mech_raw=0.841]
+[2026-03-27 17:25:09]       mech/nn | ks=0.05446 (true=0.1, err=26.39%) | cs=7.077e-8 (true=2.4e-7, err=53.04%) | nnErr(train)=70.68%
+[2026-03-27 17:26:35]     arch epoch 6/10 -- layers=1 nodes=1 draw=5 | train_final=4.028e-5 val=2.624e-6 | dt=86.16s | t1=-7.14e-8 t2=-1.276e-8 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.606, mech_raw=0.824]
+[2026-03-27 17:26:35]       mech/nn | ks=0.05397 (true=0.1, err=26.78%) | cs=7.097e-8 (true=2.4e-7, err=52.91%) | nnErr(train)=69.46%
+[2026-03-27 17:27:50]     arch epoch 7/10 -- layers=1 nodes=1 draw=5 | train_final=4.017e-5 val=2.6e-6 | dt=74.46s | t1=-9.003e-8 t2=-2.007e-8 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.615, mech_raw=0.813]
+[2026-03-27 17:27:50]       mech/nn | ks=0.05349 (true=0.1, err=27.18%) | cs=7.118e-8 (true=2.4e-7, err=52.79%) | nnErr(train)=68.51%
+[2026-03-27 17:29:03]     arch epoch 8/10 -- layers=1 nodes=1 draw=5 | train_final=4.001e-5 val=2.564e-6 | dt=73.13s | t1=-1.202e-7 t2=-3.643e-8 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.619, mech_raw=0.807]
+[2026-03-27 17:29:03]       mech/nn | ks=0.053 (true=0.1, err=27.57%) | cs=7.139e-8 (true=2.4e-7, err=52.66%) | nnErr(train)=67.85%
+[2026-03-27 17:30:17]     arch epoch 9/10 -- layers=1 nodes=1 draw=5 | train_final=3.975e-5 val=2.511e-6 | dt=73.89s | t1=-1.773e-7 t2=-8.859e-8 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.618, mech_raw=0.809]
+[2026-03-27 17:30:17]       mech/nn | ks=0.05251 (true=0.1, err=27.97%) | cs=7.159e-8 (true=2.4e-7, err=52.53%) | nnErr(train)=67.49%
+[2026-03-27 17:31:32]     arch epoch 10/10 -- layers=1 nodes=1 draw=5 | train_final=3.883e-5 val=0.1451 | dt=75.47s | t1=-3.251e-7 t2=-5.953e-7 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.606, mech_raw=0.825]
+[2026-03-27 17:31:32]       mech/nn | ks=0.05203 (true=0.1, err=28.37%) | cs=7.175e-8 (true=2.4e-7, err=52.44%) | nnErr(train)=67.44%
+[2026-03-27 17:31:32]       trial raw objectives after 10 epochs -- layers=1 nodes=1 draw=5 ks0=0.057 cs0=6.98e-8
+[2026-03-27 17:31:32]          detail: raw_a=0.01451 ; raw_b=80.89 ; raw_c=0.0
+[2026-03-27 17:31:32]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.0005379 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.438 | reason=init_quantized
+[2026-03-27 17:32:29]     arch epoch 1/10 -- layers=1 nodes=1 draw=6 | train_final=3.955e-5 val=2.694e-6 | dt=57.07s | t1=-6.228e-8 t2=-1.337e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.547, mech_raw=0.914]
+[2026-03-27 17:32:29]       mech/nn | ks=0.05145 (true=0.1, err=28.86%) | cs=1.133e-7 (true=2.4e-7, err=32.6%) | nnErr(train)=87.22%
+[2026-03-27 17:33:35]     arch epoch 2/10 -- layers=1 nodes=1 draw=6 | train_final=3.948e-5 val=2.692e-6 | dt=65.69s | t1=-6.476e-8 t2=-1.129e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.593, mech_raw=0.843]
+[2026-03-27 17:33:35]       mech/nn | ks=0.05099 (true=0.1, err=29.25%) | cs=1.139e-7 (true=2.4e-7, err=32.36%) | nnErr(train)=85.8%
+[2026-03-27 17:34:56]     arch epoch 3/10 -- layers=1 nodes=1 draw=6 | train_final=3.942e-5 val=2.69e-6 | dt=81.35s | t1=-6.739e-8 t2=-1.514e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.638, mech_raw=0.784]
+[2026-03-27 17:34:56]       mech/nn | ks=0.05054 (true=0.1, err=29.63%) | cs=1.145e-7 (true=2.4e-7, err=32.13%) | nnErr(train)=84.39%
+[2026-03-27 17:36:33]     arch epoch 4/10 -- layers=1 nodes=1 draw=6 | train_final=3.934e-5 val=2.688e-6 | dt=97.16s | t1=-7.017e-8 t2=-1.577e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.68, mech_raw=0.735]
+[2026-03-27 17:36:33]       mech/nn | ks=0.0501 (true=0.1, err=30.02%) | cs=1.152e-7 (true=2.4e-7, err=31.89%) | nnErr(train)=82.99%
+[2026-03-27 17:37:59]     arch epoch 5/10 -- layers=1 nodes=1 draw=6 | train_final=3.927e-5 val=2.687e-6 | dt=85.3s | t1=-7.314e-8 t2=-1.773e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.72, mech_raw=0.694]
+[2026-03-27 17:37:59]       mech/nn | ks=0.04966 (true=0.1, err=30.4%) | cs=1.158e-7 (true=2.4e-7, err=31.65%) | nnErr(train)=81.6%
+[2026-03-27 17:39:25]     arch epoch 6/10 -- layers=1 nodes=1 draw=6 | train_final=3.919e-5 val=2.685e-6 | dt=85.77s | t1=-7.633e-8 t2=-1.923e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.758, mech_raw=0.66]
+[2026-03-27 17:39:25]       mech/nn | ks=0.04923 (true=0.1, err=30.78%) | cs=1.164e-7 (true=2.4e-7, err=31.41%) | nnErr(train)=80.22%
+[2026-03-27 17:40:54]     arch epoch 7/10 -- layers=1 nodes=1 draw=6 | train_final=3.911e-5 val=2.683e-6 | dt=89.31s | t1=-7.978e-8 t2=-2.098e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.792, mech_raw=0.631]
+[2026-03-27 17:40:54]       mech/nn | ks=0.0488 (true=0.1, err=31.16%) | cs=1.171e-7 (true=2.4e-7, err=31.17%) | nnErr(train)=78.87%
+[2026-03-27 17:42:24]     arch epoch 8/10 -- layers=1 nodes=1 draw=6 | train_final=3.902e-5 val=2.681e-6 | dt=89.91s | t1=-8.358e-8 t2=-2.317e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.823, mech_raw=0.607]
+[2026-03-27 17:42:24]       mech/nn | ks=0.04838 (true=0.1, err=31.54%) | cs=1.177e-7 (true=2.4e-7, err=30.93%) | nnErr(train)=77.53%
+[2026-03-27 17:43:54]     arch epoch 9/10 -- layers=1 nodes=1 draw=6 | train_final=3.893e-5 val=2.678e-6 | dt=89.79s | t1=-8.787e-8 t2=-2.601e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.851, mech_raw=0.588]
+[2026-03-27 17:43:54]       mech/nn | ks=0.04796 (true=0.1, err=31.91%) | cs=1.184e-7 (true=2.4e-7, err=30.69%) | nnErr(train)=76.21%
+[2026-03-27 17:45:18]     arch epoch 10/10 -- layers=1 nodes=1 draw=6 | train_final=3.884e-5 val=2.675e-6 | dt=84.29s | t1=-9.283e-8 t2=-3.013e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.875, mech_raw=0.571]
+[2026-03-27 17:45:18]       mech/nn | ks=0.04755 (true=0.1, err=32.29%) | cs=1.19e-7 (true=2.4e-7, err=30.45%) | nnErr(train)=74.91%
+[2026-03-27 17:45:18]       trial raw objectives after 10 epochs -- layers=1 nodes=1 draw=6 ks0=0.0519 cs0=1.13e-7
+[2026-03-27 17:45:18]          detail: raw_a=-1.977e-9 ; raw_b=82.56 ; raw_c=0.0
+[2026-03-27 17:45:18]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.001554 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.898 | reason=init_quantized
+[2026-03-27 17:45:51]     arch epoch 1/10 -- layers=1 nodes=1 draw=7 | train_final=3.013e-5 val=2.734e-6 | dt=33.06s | t1=-6.965e-9 t2=8.049e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.465, mech_raw=1.07]
+[2026-03-27 17:45:51]       mech/nn | ks=0.007718 (true=0.1, err=111.25%) | cs=4.215e-6 (true=2.4e-7, err=124.46%) | nnErr(train)=136.18%
+[2026-03-27 17:46:23]     arch epoch 2/10 -- layers=1 nodes=1 draw=7 | train_final=3.012e-5 val=2.731e-6 | dt=32.52s | t1=-6.729e-9 t2=7.504e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.436, mech_raw=1.15]
+[2026-03-27 17:46:23]       mech/nn | ks=0.007697 (true=0.1, err=111.37%) | cs=4.22e-6 (true=2.4e-7, err=124.51%) | nnErr(train)=134.05%
+[2026-03-27 17:46:55]     arch epoch 3/10 -- layers=1 nodes=1 draw=7 | train_final=3.011e-5 val=2.73e-6 | dt=31.13s | t1=-6.497e-9 t2=6.96e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.412, mech_raw=1.21]
+[2026-03-27 17:46:55]       mech/nn | ks=0.007676 (true=0.1, err=111.49%) | cs=4.224e-6 (true=2.4e-7, err=124.56%) | nnErr(train)=131.99%
+[2026-03-27 17:47:25]     arch epoch 4/10 -- layers=1 nodes=1 draw=7 | train_final=3.011e-5 val=2.729e-6 | dt=30.2s | t1=-6.27e-9 t2=6.445e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.391, mech_raw=1.28]
+[2026-03-27 17:47:25]       mech/nn | ks=0.007655 (true=0.1, err=111.61%) | cs=4.229e-6 (true=2.4e-7, err=124.61%) | nnErr(train)=130.02%
+[2026-03-27 17:47:55]     arch epoch 5/10 -- layers=1 nodes=1 draw=7 | train_final=3.01e-5 val=2.727e-6 | dt=29.75s | t1=-6.051e-9 t2=5.94e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.373, mech_raw=1.34]
+[2026-03-27 17:47:55]       mech/nn | ks=0.007634 (true=0.1, err=111.73%) | cs=4.234e-6 (true=2.4e-7, err=124.66%) | nnErr(train)=128.13%
+[2026-03-27 17:48:23]     arch epoch 6/10 -- layers=1 nodes=1 draw=7 | train_final=3.009e-5 val=2.725e-6 | dt=28.75s | t1=-1.048e-8 t2=1.901e-10 | gnn=1.0e-6 | lr=0.0179 | scale[p_net=0.358, mech_raw=1.4]
+[2026-03-27 17:48:23]       mech/nn | ks=0.007596 (true=0.1, err=111.94%) | cs=4.243e-6 (true=2.4e-7, err=124.74%) | nnErr(train)=124.89%
+[2026-03-27 17:48:51]     arch epoch 7/10 -- layers=1 nodes=1 draw=7 | train_final=3.007e-5 val=2.72e-6 | dt=27.35s | t1=-2.122e-8 t2=8.194e-10 | gnn=1.0e-6 | lr=0.0384 | scale[p_net=0.345, mech_raw=1.45]
+[2026-03-27 17:48:51]       mech/nn | ks=0.007517 (true=0.1, err=112.4%) | cs=4.261e-6 (true=2.4e-7, err=124.93%) | nnErr(train)=118.58%
+[2026-03-27 17:49:16]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=3.003e-5 -> gnn_new=1.0e-5 after_gnn=3.017e-5 | A_true=1.963e-9 A_pred=0.0002166 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-5.043 | val_before=2.709e-6 val_after=2.748e-6 | reason=updated_quantized
+[2026-03-27 17:49:16]     arch epoch 8/10 -- layers=1 nodes=1 draw=7 | train_final=3.017e-5 val=2.748e-6 | dt=25.08s | t1=-5.051e-8 t2=4.795e-9 | gnn=1.0e-5 | lr=0.101 | scale[p_net=0.333, mech_raw=1.5]
+[2026-03-27 17:49:16]       mech/nn | ks=0.007318 (true=0.1, err=113.56%) | cs=4.307e-6 (true=2.4e-7, err=125.4%) | nnErr(train)=154.78%
+[2026-03-27 17:49:53]     arch epoch 9/10 -- layers=1 nodes=1 draw=7 | train_final=2.985e-5 val=2.669e-6 | dt=37.21s | t1=-3.681e-7 t2=4.689e-8 | gnn=1.0e-5 | lr=0.101 | scale[p_net=0.315, mech_raw=1.5]
+[2026-03-27 17:49:53]       mech/nn | ks=0.007136 (true=0.1, err=114.66%) | cs=4.352e-6 (true=2.4e-7, err=125.85%) | nnErr(train)=67.95%
+[2026-03-27 17:50:40]       gnn-loss-flow | gnn_old=1.0e-5 theta_fixed=2.955e-5 -> gnn_new=1.0e-6 after_gnn=2.996e-5 | A_true=1.963e-9 A_pred=0.0006611 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.527 | val_before=2.616e-6 val_after=2.694e-6 | reason=updated_quantized
+[2026-03-27 17:50:40]     arch epoch 10/10 -- layers=1 nodes=1 draw=7 | train_final=2.996e-5 val=2.694e-6 | dt=46.95s | t1=-3.221e-7 t2=2.435e-8 | gnn=1.0e-6 | lr=0.101 | scale[p_net=0.295, mech_raw=1.5]
+[2026-03-27 17:50:40]       mech/nn | ks=0.006969 (true=0.1, err=115.68%) | cs=4.388e-6 (true=2.4e-7, err=126.21%) | nnErr(train)=86.3%
+[2026-03-27 17:50:40]       trial raw objectives after 10 epochs -- layers=1 nodes=1 draw=7 ks0=0.00774 cs0=4.21e-6
+[2026-03-27 17:50:40]          detail: raw_a=-4.143e-9 ; raw_b=32.2 ; raw_c=0.0
+[2026-03-27 17:50:40]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.002491 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-6.103 | reason=init_quantized
+[2026-03-27 17:52:07]     arch epoch 1/10 -- layers=1 nodes=1 draw=8 | train_final=4.096e-5 val=2.733e-6 | dt=86.92s | t1=-1.842e-9 t2=-5.39e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.437, mech_raw=1.14]
+[2026-03-27 17:52:07]       mech/nn | ks=1.331 (true=0.1, err=112.4%) | cs=1.419e-7 (true=2.4e-7, err=22.83%) | nnErr(train)=158.59%
+[2026-03-27 17:53:33]     arch epoch 2/10 -- layers=1 nodes=1 draw=8 | train_final=4.096e-5 val=2.731e-6 | dt=86.49s | t1=-1.799e-9 t2=8.937e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.387, mech_raw=1.29]
+[2026-03-27 17:53:33]       mech/nn | ks=1.333 (true=0.1, err=112.48%) | cs=1.416e-7 (true=2.4e-7, err=22.9%) | nnErr(train)=153.92%
+[2026-03-27 17:54:59]     arch epoch 3/10 -- layers=1 nodes=1 draw=8 | train_final=4.096e-5 val=2.729e-6 | dt=85.78s | t1=-1.757e-9 t2=2.092e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.346, mech_raw=1.44]
+[2026-03-27 17:54:59]       mech/nn | ks=1.335 (true=0.1, err=112.56%) | cs=1.414e-7 (true=2.4e-7, err=22.97%) | nnErr(train)=149.42%
+[2026-03-27 17:56:23]     arch epoch 4/10 -- layers=1 nodes=1 draw=8 | train_final=4.096e-5 val=2.727e-6 | dt=84.27s | t1=-1.713e-9 t2=1.932e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.313, mech_raw=1.5]
+[2026-03-27 17:56:23]       mech/nn | ks=1.338 (true=0.1, err=112.64%) | cs=1.412e-7 (true=2.4e-7, err=23.05%) | nnErr(train)=145.11%
+[2026-03-27 17:57:48]     arch epoch 5/10 -- layers=1 nodes=1 draw=8 | train_final=4.095e-5 val=2.723e-6 | dt=84.32s | t1=-3.13e-9 t2=3.267e-10 | gnn=1.0e-6 | lr=0.0188 | scale[p_net=0.285, mech_raw=1.5]
+[2026-03-27 17:57:48]       mech/nn | ks=1.342 (true=0.1, err=112.79%) | cs=1.407e-7 (true=2.4e-7, err=23.19%) | nnErr(train)=137.41%
+[2026-03-27 17:59:10]     arch epoch 6/10 -- layers=1 nodes=1 draw=8 | train_final=4.095e-5 val=2.716e-6 | dt=82.38s | t1=-7.27e-9 t2=6.276e-10 | gnn=1.0e-6 | lr=0.0448 | scale[p_net=0.26, mech_raw=1.5]
+[2026-03-27 17:59:10]       mech/nn | ks=1.353 (true=0.1, err=113.13%) | cs=1.397e-7 (true=2.4e-7, err=23.5%) | nnErr(train)=120.48%
+[2026-03-27 18:00:23]     arch epoch 7/10 -- layers=1 nodes=1 draw=8 | train_final=4.093e-5 val=2.693e-6 | dt=73.33s | t1=-2.189e-8 t2=8.219e-12 | gnn=1.0e-6 | lr=0.138 | scale[p_net=0.238, mech_raw=1.5]
+[2026-03-27 18:00:23]       mech/nn | ks=1.384 (true=0.1, err=114.1%) | cs=1.369e-7 (true=2.4e-7, err=24.38%) | nnErr(train)=80.38%
+[2026-03-27 18:01:41]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.081e-5 -> gnn_new=1.0e-7 after_gnn=4.093e-5 | A_true=1.963e-9 A_pred=0.006762 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.537 | val_before=2.558e-6 val_after=2.697e-6 | reason=updated_quantized
+[2026-03-27 18:01:41]     arch epoch 8/10 -- layers=1 nodes=1 draw=8 | train_final=4.093e-5 val=2.697e-6 | dt=78.1s | t1=-8.595e-8 t2=-3.456e-8 | gnn=1.0e-7 | lr=0.544 | scale[p_net=0.218, mech_raw=1.5]
+[2026-03-27 18:01:41]       mech/nn | ks=1.467 (true=0.1, err=116.66%) | cs=1.294e-7 (true=2.4e-7, err=26.83%) | nnErr(train)=85.97%
+[2026-03-27 18:02:54]       gnn-loss-flow | gnn_old=1.0e-7 theta_fixed=4.094e-5 -> gnn_new=1.0e-6 after_gnn=4.094e-5 | A_true=1.963e-9 A_pred=0.000575 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.467 | val_before=2.705e-6 val_after=2.706e-6 | reason=updated_quantized
+[2026-03-27 18:02:54]     arch epoch 9/10 -- layers=1 nodes=1 draw=8 | train_final=4.094e-5 val=2.706e-6 | dt=72.37s | t1=-4.0e-8 t2=4.826e-8 | gnn=1.0e-6 | lr=4.5 | scale[p_net=0.2, mech_raw=1.5]
+[2026-03-27 18:02:54]       mech/nn | ks=2.017 (true=0.1, err=130.48%) | cs=9.495e-8 (true=2.4e-7, err=40.27%) | nnErr(train)=110.5%
+[2026-03-27 18:03:43]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=1.96 | scale[p_net=0.183, mech_raw=1.5]
+[2026-03-27 18:03:43]       step-guard retry 2/6 -- reason=step_prev_epoch_loss_jump | lr=0.196 | scale[p_net=0.183, mech_raw=1.5]
+[2026-03-27 18:03:43]       step-guard: accepted after 2 retry/reduction(s) | lr=0.196 | train=4.091e-5
+[2026-03-27 18:03:43]     arch epoch 10/10 -- layers=1 nodes=1 draw=8 | train_final=4.091e-5 val=2.67e-6 | dt=48.94s | t1=-2.244e-8 t2=-6.093e-9 | gnn=1.0e-6 | lr=0.196 | scale[p_net=0.183, mech_raw=1.5]
+[2026-03-27 18:03:43]       mech/nn | ks=2.04 (true=0.1, err=130.97%) | cs=9.398e-8 (true=2.4e-7, err=40.72%) | nnErr(train)=68.11%
+[2026-03-27 18:03:43]       trial raw objectives after 10 epochs -- layers=1 nodes=1 draw=8 ks0=1.33 cs0=1.42e-7
+[2026-03-27 18:03:43]          detail: raw_a=-6.515e-9 ; raw_b=78.29 ; raw_c=2.0
+[2026-03-27 18:03:43]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.002288 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-6.066 | reason=init_quantized
+[2026-03-27 18:04:51]     arch epoch 1/10 -- layers=1 nodes=1 draw=9 | train_final=4.079e-5 val=0.08207 | dt=67.96s | t1=-1.461e-8 t2=-3.014e-8 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.453, mech_raw=1.1]
+[2026-03-27 18:04:51]       mech/nn | ks=0.2134 (true=0.1, err=32.92%) | cs=5.571e-8 (true=2.4e-7, err=63.43%) | nnErr(train)=67.44%
+[2026-03-27 18:06:24]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.001 | scale[p_net=0.415, mech_raw=1.2]
+[2026-03-27 18:06:24]       step-guard: accepted after 1 retry/reduction(s) | lr=0.001 | train=4.078e-5
+[2026-03-27 18:06:24]     arch epoch 2/10 -- layers=1 nodes=1 draw=9 | train_final=4.078e-5 val=0.0841 | dt=93.56s | t1=-3.372e-9 t2=-7.204e-9 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.415, mech_raw=1.2]
+[2026-03-27 18:06:24]       mech/nn | ks=0.2133 (true=0.1, err=32.89%) | cs=5.571e-8 (true=2.4e-7, err=63.43%) | nnErr(train)=67.44%
+[2026-03-27 18:07:58]     arch epoch 3/10 -- layers=1 nodes=1 draw=9 | train_final=4.077e-5 val=0.08623 | dt=93.49s | t1=-4.046e-9 t2=-6.259e-9 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.385, mech_raw=1.3]
+[2026-03-27 18:07:58]       mech/nn | ks=0.2131 (true=0.1, err=32.85%) | cs=5.57e-8 (true=2.4e-7, err=63.43%) | nnErr(train)=67.44%
+[2026-03-27 18:09:23]     arch epoch 4/10 -- layers=1 nodes=1 draw=9 | train_final=4.076e-5 val=0.08842 | dt=85.12s | t1=-5.013e-9 t2=-7.683e-9 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.36, mech_raw=1.39]
+[2026-03-27 18:09:23]       mech/nn | ks=0.2129 (true=0.1, err=32.82%) | cs=5.57e-8 (true=2.4e-7, err=63.44%) | nnErr(train)=67.45%
+[2026-03-27 18:10:40]     arch epoch 5/10 -- layers=1 nodes=1 draw=9 | train_final=4.073e-5 val=0.09068 | dt=77.19s | t1=-6.578e-9 t2=-1.615e-8 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.339, mech_raw=1.47]
+[2026-03-27 18:10:40]       mech/nn | ks=0.2127 (true=0.1, err=32.78%) | cs=5.569e-8 (true=2.4e-7, err=63.44%) | nnErr(train)=67.46%
+[2026-03-27 18:11:55]     arch epoch 6/10 -- layers=1 nodes=1 draw=9 | train_final=4.07e-5 val=0.1095 | dt=75.22s | t1=-9.482e-9 t2=-2.42e-8 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.323, mech_raw=1.5]
+[2026-03-27 18:11:55]       mech/nn | ks=0.2125 (true=0.1, err=32.74%) | cs=5.569e-8 (true=2.4e-7, err=63.44%) | nnErr(train)=67.48%
+[2026-03-27 18:13:11]     arch epoch 7/10 -- layers=1 nodes=1 draw=9 | train_final=4.061e-5 val=0.1155 | dt=75.83s | t1=-1.683e-8 t2=-7.477e-8 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.308, mech_raw=1.5]
+[2026-03-27 18:13:11]       mech/nn | ks=0.2124 (true=0.1, err=32.71%) | cs=5.569e-8 (true=2.4e-7, err=63.45%) | nnErr(train)=67.5%
+[2026-03-27 18:14:30]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.0001 | scale[p_net=0.297, mech_raw=1.5]
+[2026-03-27 18:14:30]       step-guard: accepted after 1 retry/reduction(s) | lr=0.0001 | train=4.059e-5
+[2026-03-27 18:14:30]     arch epoch 8/10 -- layers=1 nodes=1 draw=9 | train_final=4.059e-5 val=0.1158 | dt=79.35s | t1=-6.836e-9 t2=-1.433e-8 | gnn=1.0e-6 | lr=0.0001 | scale[p_net=0.297, mech_raw=1.5]
+[2026-03-27 18:14:30]       mech/nn | ks=0.2123 (true=0.1, err=32.7%) | cs=5.569e-8 (true=2.4e-7, err=63.45%) | nnErr(train)=67.5%
+[2026-03-27 18:15:48]     arch epoch 9/10 -- layers=1 nodes=1 draw=9 | train_final=4.056e-5 val=0.116 | dt=77.86s | t1=-1.12e-8 t2=-1.489e-8 | gnn=1.0e-6 | lr=0.0001 | scale[p_net=0.286, mech_raw=1.5]
+[2026-03-27 18:15:48]       mech/nn | ks=0.2123 (true=0.1, err=32.7%) | cs=5.568e-8 (true=2.4e-7, err=63.45%) | nnErr(train)=67.5%
+[2026-03-27 18:17:09]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=1.0e-5 | scale[p_net=0.277, mech_raw=1.5]
+[2026-03-27 18:17:09]       step-guard: accepted after 1 retry/reduction(s) | lr=1.0e-5 | train=4.056e-5
+[2026-03-27 18:17:09]     arch epoch 10/10 -- layers=1 nodes=1 draw=9 | train_final=4.056e-5 val=0.116 | dt=80.53s | t1=-2.479e-9 t2=-1.175e-9 | gnn=1.0e-6 | lr=1.0e-5 | scale[p_net=0.277, mech_raw=1.5]
+[2026-03-27 18:17:09]       mech/nn | ks=0.2123 (true=0.1, err=32.7%) | cs=5.568e-8 (true=2.4e-7, err=63.45%) | nnErr(train)=67.5%
+[2026-03-27 18:17:09]       trial raw objectives after 10 epochs -- layers=1 nodes=1 draw=9 ks0=0.215 cs0=5.57e-8
+[2026-03-27 18:17:09]          detail: raw_a=0.0116 ; raw_b=80.61 ; raw_c=3.0
+[2026-03-27 18:17:09]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.0004975 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.404 | reason=init_quantized
+[2026-03-27 18:17:46]     arch epoch 1/10 -- layers=1 nodes=1 draw=10 | train_final=4.095e-5 val=2.711e-6 | dt=37.18s | t1=-2.019e-9 t2=2.014e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.424, mech_raw=1.18]
+[2026-03-27 18:17:46]       mech/nn | ks=0.1317 (true=0.1, err=11.97%) | cs=5.294e-8 (true=2.4e-7, err=65.64%) | nnErr(train)=109.02%
+[2026-03-27 18:18:23]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.094e-5 -> gnn_new=1.0e-5 after_gnn=4.097e-5 | A_true=1.963e-9 A_pred=0.0002854 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-5.163 | val_before=2.709e-6 val_after=2.742e-6 | reason=updated_quantized
+[2026-03-27 18:18:23]     arch epoch 2/10 -- layers=1 nodes=1 draw=10 | train_final=4.097e-5 val=2.742e-6 | dt=36.75s | t1=-2.029e-9 t2=1.675e-10 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.364, mech_raw=1.37]
+[2026-03-27 18:18:23]       mech/nn | ks=0.132 (true=0.1, err=12.07%) | cs=5.294e-8 (true=2.4e-7, err=65.64%) | nnErr(train)=173.89%
+[2026-03-27 18:19:21]     arch epoch 3/10 -- layers=1 nodes=1 draw=10 | train_final=4.097e-5 val=2.73e-6 | dt=57.91s | t1=-1.121e-8 t2=2.239e-9 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.318, mech_raw=1.5]
+[2026-03-27 18:19:21]       mech/nn | ks=0.1326 (true=0.1, err=12.26%) | cs=5.294e-8 (true=2.4e-7, err=65.64%) | nnErr(train)=146.6%
+[2026-03-27 18:20:11]     arch epoch 4/10 -- layers=1 nodes=1 draw=10 | train_final=4.095e-5 val=2.717e-6 | dt=50.59s | t1=-1.468e-8 t2=1.744e-9 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.278, mech_raw=1.5]
+[2026-03-27 18:20:11]       mech/nn | ks=0.1332 (true=0.1, err=12.47%) | cs=5.294e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=118.61%
+[2026-03-27 18:20:53]     arch epoch 5/10 -- layers=1 nodes=1 draw=10 | train_final=4.093e-5 val=2.7e-6 | dt=41.59s | t1=-1.947e-8 t2=-1.94e-9 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.241, mech_raw=1.5]
+[2026-03-27 18:20:53]       mech/nn | ks=0.1339 (true=0.1, err=12.66%) | cs=5.293e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=92.6%
+[2026-03-27 18:21:27]     arch epoch 6/10 -- layers=1 nodes=1 draw=10 | train_final=4.088e-5 val=2.656e-6 | dt=34.31s | t1=-2.823e-8 t2=-1.912e-8 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.207, mech_raw=1.5]
+[2026-03-27 18:21:27]       mech/nn | ks=0.1343 (true=0.1, err=12.81%) | cs=5.293e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=73.09%
+[2026-03-27 18:22:22]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.001 | scale[p_net=0.177, mech_raw=1.5]
+[2026-03-27 18:22:22]       step-guard: accepted after 1 retry/reduction(s) | lr=0.001 | train=4.087e-5
+[2026-03-27 18:22:22]     arch epoch 7/10 -- layers=1 nodes=1 draw=10 | train_final=4.087e-5 val=2.643e-6 | dt=54.49s | t1=-5.725e-9 t2=-3.319e-9 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.177, mech_raw=1.5]
+[2026-03-27 18:22:22]       mech/nn | ks=0.1343 (true=0.1, err=12.81%) | cs=5.293e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=71.79%
+[2026-03-27 18:23:17]     arch epoch 8/10 -- layers=1 nodes=1 draw=10 | train_final=4.086e-5 val=2.623e-6 | dt=55.26s | t1=-6.8e-9 t2=-4.771e-9 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.152, mech_raw=1.5]
+[2026-03-27 18:23:17]       mech/nn | ks=0.1343 (true=0.1, err=12.8%) | cs=5.293e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=70.62%
+[2026-03-27 18:24:15]     arch epoch 9/10 -- layers=1 nodes=1 draw=10 | train_final=4.085e-5 val=2.592e-6 | dt=58.51s | t1=-8.428e-9 t2=-7.473e-9 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.13, mech_raw=1.5]
+[2026-03-27 18:24:15]       mech/nn | ks=0.1342 (true=0.1, err=12.79%) | cs=5.293e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=69.59%
+[2026-03-27 18:25:14]     arch epoch 10/10 -- layers=1 nodes=1 draw=10 | train_final=4.082e-5 val=2.538e-6 | dt=58.76s | t1=-1.136e-8 t2=-1.547e-8 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.113, mech_raw=1.5]
+[2026-03-27 18:25:14]       mech/nn | ks=0.1342 (true=0.1, err=12.77%) | cs=5.293e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=68.73%
+[2026-03-27 18:25:14]       trial raw objectives after 10 epochs -- layers=1 nodes=1 draw=10 ks0=0.131 cs0=5.29e-8
+[2026-03-27 18:25:14]          detail: raw_a=-1.745e-8 ; raw_b=48.54 ; raw_c=1.0
+[2026-03-27 18:25:14]   screening arch: layers=1 nodes=2 hidden=4
+[2026-03-27 18:25:16]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.002324 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-6.073 | reason=init_quantized
+[2026-03-27 18:26:34]     arch epoch 1/10 -- layers=1 nodes=2 draw=1 | train_final=4.098e-5 val=2.74e-6 | dt=77.27s | t1=-3.008e-9 t2=3.368e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.487, mech_raw=1.03]
+[2026-03-27 18:26:34]       mech/nn | ks=0.4415 (true=0.1, err=64.49%) | cs=2.903e-7 (true=2.4e-7, err=8.27%) | nnErr(train)=156.05%
+[2026-03-27 18:27:16]     arch epoch 2/10 -- layers=1 nodes=2 draw=1 | train_final=4.098e-5 val=2.739e-6 | dt=42.59s | t1=-3.013e-9 t2=3.14e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.475, mech_raw=1.05]
+[2026-03-27 18:27:16]       mech/nn | ks=0.4385 (true=0.1, err=64.2%) | cs=2.92e-7 (true=2.4e-7, err=8.52%) | nnErr(train)=152.74%
+[2026-03-27 18:27:59]     arch epoch 3/10 -- layers=1 nodes=2 draw=1 | train_final=4.097e-5 val=2.737e-6 | dt=43.07s | t1=-3.025e-9 t2=2.888e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.466, mech_raw=1.07]
+[2026-03-27 18:27:59]       mech/nn | ks=0.4355 (true=0.1, err=63.9%) | cs=2.938e-7 (true=2.4e-7, err=8.78%) | nnErr(train)=149.55%
+[2026-03-27 18:28:40]     arch epoch 4/10 -- layers=1 nodes=2 draw=1 | train_final=4.097e-5 val=2.735e-6 | dt=40.63s | t1=-3.048e-9 t2=2.677e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.459, mech_raw=1.09]
+[2026-03-27 18:28:40]       mech/nn | ks=0.4324 (true=0.1, err=63.59%) | cs=2.956e-7 (true=2.4e-7, err=9.04%) | nnErr(train)=146.46%
+[2026-03-27 18:29:20]     arch epoch 5/10 -- layers=1 nodes=2 draw=1 | train_final=4.097e-5 val=2.733e-6 | dt=39.72s | t1=-3.082e-9 t2=2.464e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.453, mech_raw=1.1]
+[2026-03-27 18:29:20]       mech/nn | ks=0.4293 (true=0.1, err=63.28%) | cs=2.974e-7 (true=2.4e-7, err=9.31%) | nnErr(train)=143.47%
+[2026-03-27 18:30:00]     arch epoch 6/10 -- layers=1 nodes=2 draw=1 | train_final=4.096e-5 val=2.732e-6 | dt=40.03s | t1=-3.128e-9 t2=-5.454e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.45, mech_raw=1.11]
+[2026-03-27 18:30:00]       mech/nn | ks=0.4262 (true=0.1, err=62.96%) | cs=2.993e-7 (true=2.4e-7, err=9.59%) | nnErr(train)=140.58%
+[2026-03-27 18:30:38]     arch epoch 7/10 -- layers=1 nodes=2 draw=1 | train_final=4.096e-5 val=2.73e-6 | dt=38.57s | t1=-3.188e-9 t2=8.849e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.448, mech_raw=1.12]
+[2026-03-27 18:30:38]       mech/nn | ks=0.423 (true=0.1, err=62.63%) | cs=3.012e-7 (true=2.4e-7, err=9.87%) | nnErr(train)=137.76%
+[2026-03-27 18:31:18]     arch epoch 8/10 -- layers=1 nodes=2 draw=1 | train_final=4.096e-5 val=2.728e-6 | dt=39.99s | t1=-3.264e-9 t2=1.959e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.448, mech_raw=1.12]
+[2026-03-27 18:31:18]       mech/nn | ks=0.4197 (true=0.1, err=62.3%) | cs=3.032e-7 (true=2.4e-7, err=10.15%) | nnErr(train)=135.03%
+[2026-03-27 18:32:01]     arch epoch 9/10 -- layers=1 nodes=2 draw=1 | train_final=4.095e-5 val=2.727e-6 | dt=42.25s | t1=-3.357e-9 t2=1.759e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.45, mech_raw=1.11]
+[2026-03-27 18:32:01]       mech/nn | ks=0.4165 (true=0.1, err=61.96%) | cs=3.053e-7 (true=2.4e-7, err=10.45%) | nnErr(train)=132.37%
+[2026-03-27 18:32:47]     arch epoch 10/10 -- layers=1 nodes=2 draw=1 | train_final=4.095e-5 val=2.725e-6 | dt=46.17s | t1=-3.47e-9 t2=1.558e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.453, mech_raw=1.1]
+[2026-03-27 18:32:47]       mech/nn | ks=0.4132 (true=0.1, err=61.61%) | cs=3.074e-7 (true=2.4e-7, err=10.74%) | nnErr(train)=129.78%
+[2026-03-27 18:32:47]       trial raw objectives after 10 epochs -- layers=1 nodes=2 draw=1 ks0=0.444 cs0=2.89e-7
+[2026-03-27 18:32:47]          detail: raw_a=-1.739e-9 ; raw_b=45.03 ; raw_c=0.0
+[2026-03-27 18:32:47]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.0006034 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.488 | reason=init_quantized
+[2026-03-27 18:34:00]     arch epoch 1/10 -- layers=1 nodes=2 draw=2 | train_final=4.093e-5 val=2.699e-6 | dt=73.45s | t1=-5.083e-10 t2=2.812e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.421, mech_raw=1.19]
+[2026-03-27 18:34:00]       mech/nn | ks=4.455 (true=0.1, err=164.88%) | cs=2.054e-7 (true=2.4e-7, err=6.76%) | nnErr(train)=85.99%
+[2026-03-27 18:35:14]     arch epoch 2/10 -- layers=1 nodes=2 draw=2 | train_final=4.093e-5 val=2.698e-6 | dt=74.32s | t1=-4.897e-10 t2=-3.521e-12 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.361, mech_raw=1.38]
+[2026-03-27 18:35:14]       mech/nn | ks=4.455 (true=0.1, err=164.88%) | cs=2.055e-7 (true=2.4e-7, err=6.74%) | nnErr(train)=84.7%
+[2026-03-27 18:36:30]     arch epoch 3/10 -- layers=1 nodes=2 draw=2 | train_final=4.093e-5 val=2.697e-6 | dt=75.53s | t1=-4.72e-10 t2=3.693e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.315, mech_raw=1.5]
+[2026-03-27 18:36:30]       mech/nn | ks=4.454 (true=0.1, err=164.88%) | cs=2.057e-7 (true=2.4e-7, err=6.7%) | nnErr(train)=83.51%
+[2026-03-27 18:37:47]     arch epoch 4/10 -- layers=1 nodes=2 draw=2 | train_final=4.093e-5 val=2.696e-6 | dt=76.68s | t1=-7.384e-10 t2=-5.545e-11 | gnn=1.0e-6 | lr=0.0162 | scale[p_net=0.278, mech_raw=1.5]
+[2026-03-27 18:37:47]       mech/nn | ks=4.454 (true=0.1, err=164.88%) | cs=2.059e-7 (true=2.4e-7, err=6.65%) | nnErr(train)=81.69%
+[2026-03-27 18:39:06]     arch epoch 5/10 -- layers=1 nodes=2 draw=2 | train_final=4.093e-5 val=2.694e-6 | dt=79.66s | t1=-1.487e-9 t2=-1.829e-10 | gnn=1.0e-6 | lr=0.0336 | scale[p_net=0.247, mech_raw=1.5]
+[2026-03-27 18:39:06]       mech/nn | ks=4.454 (true=0.1, err=164.87%) | cs=2.065e-7 (true=2.4e-7, err=6.52%) | nnErr(train)=78.3%
+[2026-03-27 18:40:28]     arch epoch 6/10 -- layers=1 nodes=2 draw=2 | train_final=4.093e-5 val=2.688e-6 | dt=81.59s | t1=-3.95e-9 t2=-5.232e-10 | gnn=1.0e-6 | lr=0.0903 | scale[p_net=0.222, mech_raw=1.5]
+[2026-03-27 18:40:28]       mech/nn | ks=4.453 (true=0.1, err=164.87%) | cs=2.083e-7 (true=2.4e-7, err=6.15%) | nnErr(train)=71.19%
+[2026-03-27 18:41:56]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.091e-5 -> gnn_new=1.0e-7 after_gnn=4.094e-5 | A_true=1.963e-9 A_pred=0.003743 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.28 | val_before=2.666e-6 val_after=2.702e-6 | reason=updated_quantized
+[2026-03-27 18:41:56]     arch epoch 7/10 -- layers=1 nodes=2 draw=2 | train_final=4.094e-5 val=2.702e-6 | dt=88.41s | t1=-1.399e-8 t2=-2.568e-9 | gnn=1.0e-7 | lr=0.303 | scale[p_net=0.201, mech_raw=1.5]
+[2026-03-27 18:41:56]       mech/nn | ks=4.449 (true=0.1, err=164.83%) | cs=2.155e-7 (true=2.4e-7, err=4.69%) | nnErr(train)=91.95%
+[2026-03-27 18:43:02]     arch epoch 8/10 -- layers=1 nodes=2 draw=2 | train_final=4.092e-5 val=2.678e-6 | dt=66.08s | t1=-9.995e-9 t2=-9.128e-9 | gnn=1.0e-7 | lr=2.12 | scale[p_net=0.184, mech_raw=1.5]
+[2026-03-27 18:43:02]       mech/nn | ks=4.423 (true=0.1, err=164.58%) | cs=2.681e-7 (true=2.4e-7, err=4.82%) | nnErr(train)=67.4%
+[2026-03-27 18:44:32]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=2.12 | scale[p_net=0.171, mech_raw=1.5]
+[2026-03-27 18:44:32]       step-guard: accepted after 1 retry/reduction(s) | lr=2.12 | train=4.087e-5
+[2026-03-27 18:44:32]       gnn-loss-flow | gnn_old=1.0e-7 theta_fixed=4.087e-5 -> gnn_new=1.0e-8 after_gnn=4.093e-5 | A_true=1.963e-9 A_pred=0.0588 | dec_true=-9 dec_pred=-1 delta_dec=-8 | candidate=1.0e-8 log10diff=-7.476 | val_before=2.633e-6 val_after=2.699e-6 | reason=updated_quantized
+[2026-03-27 18:44:32]     arch epoch 9/10 -- layers=1 nodes=2 draw=2 | train_final=4.093e-5 val=2.699e-6 | dt=89.9s | t1=-2.534e-8 t2=-1.842e-8 | gnn=1.0e-8 | lr=2.12 | scale[p_net=0.171, mech_raw=1.5]
+[2026-03-27 18:44:32]       mech/nn | ks=4.386 (true=0.1, err=164.21%) | cs=3.61e-7 (true=2.4e-7, err=17.73%) | nnErr(train)=87.64%
+[2026-03-27 18:45:43]       gnn-loss-flow | gnn_old=1.0e-8 theta_fixed=4.063e-5 -> gnn_new=1.0e-9 after_gnn=4.086e-5 | A_true=1.963e-9 A_pred=1.343 | dec_true=-9 dec_pred=0 delta_dec=-9 | candidate=1.0e-9 log10diff=-8.835 | val_before=2.467e-6 val_after=2.681e-6 | reason=updated_quantized
+[2026-03-27 18:45:43]     arch epoch 10/10 -- layers=1 nodes=2 draw=2 | train_final=4.086e-5 val=2.681e-6 | dt=70.18s | t1=-4.365e-8 t2=-2.62e-7 | gnn=1.0e-9 | lr=21.2 | scale[p_net=0.161, mech_raw=1.5]
+[2026-03-27 18:45:43]       mech/nn | ks=3.927 (true=0.1, err=159.4%) | cs=3.53e-6 (true=2.4e-7, err=116.75%) | nnErr(train)=74.45%
+[2026-03-27 18:45:43]       trial raw objectives after 10 epochs -- layers=1 nodes=2 draw=2 ks0=4.45 cs0=2.05e-7
+[2026-03-27 18:45:43]          detail: raw_a=-1.828e-9 ; raw_b=77.58 ; raw_c=1.0
+[2026-03-27 18:45:43]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.002898 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-6.169 | reason=init_quantized
+[2026-03-27 18:46:18]     arch epoch 1/10 -- layers=1 nodes=2 draw=3 | train_final=3.981e-5 val=2.649e-6 | dt=34.99s | t1=-4.715e-8 t2=-7.431e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.58, mech_raw=0.862]
+[2026-03-27 18:46:18]       mech/nn | ks=0.6668 (true=0.1, err=82.4%) | cs=1.35e-6 (true=2.4e-7, err=75.01%) | nnErr(train)=70.45%
+[2026-03-27 18:46:54]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=3.977e-5 -> gnn_new=1.0e-7 after_gnn=3.988e-5 | A_true=1.963e-9 A_pred=0.003348 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.232 | val_before=2.645e-6 val_after=2.7e-6 | reason=updated_quantized
+[2026-03-27 18:46:54]     arch epoch 2/10 -- layers=1 nodes=2 draw=3 | train_final=3.988e-5 val=2.7e-6 | dt=36.07s | t1=-4.849e-8 t2=-6.85e-10 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.663, mech_raw=0.754]
+[2026-03-27 18:46:54]       mech/nn | ks=0.6612 (true=0.1, err=82.03%) | cs=1.359e-6 (true=2.4e-7, err=75.31%) | nnErr(train)=92.78%
+[2026-03-27 18:47:07]     arch epoch 3/10 -- layers=1 nodes=2 draw=3 | train_final=3.984e-5 val=2.699e-6 | dt=13.71s | t1=-3.966e-8 t2=-4.288e-10 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.752, mech_raw=0.665]
+[2026-03-27 18:47:07]       mech/nn | ks=0.6556 (true=0.1, err=81.66%) | cs=1.369e-6 (true=2.4e-7, err=75.61%) | nnErr(train)=92.39%
+[2026-03-27 18:47:21]     arch epoch 4/10 -- layers=1 nodes=2 draw=3 | train_final=3.98e-5 val=2.699e-6 | dt=13.87s | t1=-4.0e-8 t2=-1.078e-9 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.845, mech_raw=0.591]
+[2026-03-27 18:47:21]       mech/nn | ks=0.6501 (true=0.1, err=81.3%) | cs=1.378e-6 (true=2.4e-7, err=75.91%) | nnErr(train)=92.05%
+[2026-03-27 18:47:35]     arch epoch 5/10 -- layers=1 nodes=2 draw=3 | train_final=3.972e-5 val=2.699e-6 | dt=14.28s | t1=-7.776e-8 t2=-1.483e-9 | gnn=1.0e-7 | lr=0.0193 | scale[p_net=0.944, mech_raw=0.53]
+[2026-03-27 18:47:35]       mech/nn | ks=0.6398 (true=0.1, err=80.6%) | cs=1.396e-6 (true=2.4e-7, err=76.47%) | nnErr(train)=91.44%
+[2026-03-27 18:47:50]     arch epoch 6/10 -- layers=1 nodes=2 draw=3 | train_final=3.952e-5 val=2.697e-6 | dt=14.84s | t1=-1.907e-7 t2=-8.01e-9 | gnn=1.0e-7 | lr=0.046 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 18:47:50]       mech/nn | ks=0.6159 (true=0.1, err=78.95%) | cs=1.439e-6 (true=2.4e-7, err=77.8%) | nnErr(train)=90.03%
+[2026-03-27 18:48:06]     arch epoch 7/10 -- layers=1 nodes=2 draw=3 | train_final=3.89e-5 val=2.693e-6 | dt=16.22s | t1=-5.655e-7 t2=-5.317e-8 | gnn=1.0e-7 | lr=0.126 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 18:48:06]       mech/nn | ks=0.5544 (true=0.1, err=74.38%) | cs=1.562e-6 (true=2.4e-7, err=81.35%) | nnErr(train)=85.94%
+[2026-03-27 18:48:27]     arch epoch 8/10 -- layers=1 nodes=2 draw=3 | train_final=3.683e-5 val=2.678e-6 | dt=20.07s | t1=-1.858e-6 t2=-2.196e-7 | gnn=1.0e-7 | lr=0.348 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 18:48:27]       mech/nn | ks=0.4109 (true=0.1, err=61.37%) | cs=1.932e-6 (true=2.4e-7, err=90.58%) | nnErr(train)=73.19%
+[2026-03-27 18:49:01]       gnn-loss-flow | gnn_old=1.0e-7 theta_fixed=3.232e-5 -> gnn_new=1.0e-8 after_gnn=3.274e-5 | A_true=1.963e-9 A_pred=0.06232 | dec_true=-9 dec_pred=-1 delta_dec=-8 | candidate=1.0e-8 log10diff=-7.502 | val_before=2.603e-6 val_after=2.694e-6 | reason=updated_quantized
+[2026-03-27 18:49:01]     arch epoch 9/10 -- layers=1 nodes=2 draw=3 | train_final=3.274e-5 val=2.694e-6 | dt=34.01s | t1=-5.406e-6 t2=9.003e-7 | gnn=1.0e-8 | lr=0.848 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 18:49:01]       mech/nn | ks=0.1903 (true=0.1, err=27.94%) | cs=2.93e-6 (true=2.4e-7, err=108.67%) | nnErr(train)=87.05%
+[2026-03-27 18:49:26]       gnn-loss-flow | gnn_old=1.0e-8 theta_fixed=2.971e-5 -> gnn_new=1.0e-9 after_gnn=3.008e-5 | A_true=1.963e-9 A_pred=0.6444 | dec_true=-9 dec_pred=0 delta_dec=-9 | candidate=1.0e-9 log10diff=-8.516 | val_before=2.614e-6 val_after=2.694e-6 | reason=updated_quantized
+[2026-03-27 18:49:26]     arch epoch 10/10 -- layers=1 nodes=2 draw=3 | train_final=3.008e-5 val=2.694e-6 | dt=24.97s | t1=-8.943e-6 t2=5.909e-6 | gnn=1.0e-9 | lr=2.75 | scale[p_net=1.0, mech_raw=0.5]
+[2026-03-27 18:49:26]       mech/nn | ks=0.01847 (true=0.1, err=73.34%) | cs=4.732e-6 (true=2.4e-7, err=129.48%) | nnErr(train)=86.81%
+[2026-03-27 18:49:26]       trial raw objectives after 10 epochs -- layers=1 nodes=2 draw=3 ks0=0.673 cs0=1.34e-6
+[2026-03-27 18:49:26]          detail: raw_a=4.149e-9 ; raw_b=22.3 ; raw_c=0.0
+[2026-03-27 18:49:26]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.003064 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-6.193 | reason=init_quantized
+[2026-03-27 18:51:44]     arch epoch 1/10 -- layers=1 nodes=2 draw=4 | train_final=0.3429 val=0.3535 | dt=138.43s | t1=-0.2414 t2=0.06496 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.335, mech_raw=1.49]
+[2026-03-27 18:51:44]       mech/nn | ks=0.01095 (true=0.1, err=96.07%) | cs=5.766e-8 (true=2.4e-7, err=61.94%) | nnErr(train)=68.07%
+[2026-03-27 18:53:58]     arch epoch 2/10 -- layers=1 nodes=2 draw=4 | train_final=0.2214 val=0.2153 | dt=134.13s | t1=-0.1742 t2=0.0527 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.234, mech_raw=1.5]
+[2026-03-27 18:53:58]       mech/nn | ks=0.01101 (true=0.1, err=95.83%) | cs=5.773e-8 (true=2.4e-7, err=61.88%) | nnErr(train)=67.4%
+[2026-03-27 18:56:16]     arch epoch 3/10 -- layers=1 nodes=2 draw=4 | train_final=2.561e-5 val=2.538e-6 | dt=137.4s | t1=-0.3035 t2=0.08211 | gnn=1.0e-6 | lr=0.0247 | scale[p_net=0.167, mech_raw=1.5]
+[2026-03-27 18:56:16]       mech/nn | ks=0.01116 (true=0.1, err=95.24%) | cs=5.793e-8 (true=2.4e-7, err=61.73%) | nnErr(train)=69.75%
+[2026-03-27 18:58:10]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.0138 | scale[p_net=0.121, mech_raw=1.5]
+[2026-03-27 18:58:10]       step-guard retry 2/6 -- reason=step_prev_epoch_loss_jump | lr=0.00138 | scale[p_net=0.121, mech_raw=1.5]
+[2026-03-27 18:58:10]       step-guard retry 3/6 -- reason=step_prev_epoch_loss_jump | lr=0.000138 | scale[p_net=0.121, mech_raw=1.5]
+[2026-03-27 18:58:10]       step-guard: accepted after 3 retry/reduction(s) | lr=0.000138 | train=2.576e-5
+[2026-03-27 18:58:10]     arch epoch 4/10 -- layers=1 nodes=2 draw=4 | train_final=2.576e-5 val=2.54e-6 | dt=114.02s | t1=1.53e-7 t2=-3.818e-9 | gnn=1.0e-6 | lr=0.000138 | scale[p_net=0.121, mech_raw=1.5]
+[2026-03-27 18:58:10]       mech/nn | ks=0.01116 (true=0.1, err=95.24%) | cs=5.793e-8 (true=2.4e-7, err=61.73%) | nnErr(train)=69.77%
+[2026-03-27 19:00:00]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:00:00]       step-guard: accepted after 1 retry/reduction(s) | lr=0.000138 | train=2.588e-5
+[2026-03-27 19:00:00]     arch epoch 5/10 -- layers=1 nodes=2 draw=4 | train_final=2.588e-5 val=2.542e-6 | dt=110.24s | t1=1.234e-7 t2=-2.489e-9 | gnn=1.0e-6 | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:00:00]       mech/nn | ks=0.01116 (true=0.1, err=95.24%) | cs=5.793e-8 (true=2.4e-7, err=61.73%) | nnErr(train)=69.79%
+[2026-03-27 19:01:53]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:01:53]       step-guard: accepted after 1 retry/reduction(s) | lr=0.000138 | train=2.598e-5
+[2026-03-27 19:01:53]     arch epoch 6/10 -- layers=1 nodes=2 draw=4 | train_final=2.598e-5 val=2.543e-6 | dt=113.16s | t1=1.024e-7 t2=-1.71e-9 | gnn=1.0e-6 | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:01:53]       mech/nn | ks=0.01116 (true=0.1, err=95.24%) | cs=5.793e-8 (true=2.4e-7, err=61.73%) | nnErr(train)=69.81%
+[2026-03-27 19:03:46]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:03:46]       step-guard: accepted after 1 retry/reduction(s) | lr=0.000138 | train=2.607e-5
+[2026-03-27 19:03:46]     arch epoch 7/10 -- layers=1 nodes=2 draw=4 | train_final=2.607e-5 val=2.544e-6 | dt=112.6s | t1=8.66e-8 t2=-1.22e-9 | gnn=1.0e-6 | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:03:46]       mech/nn | ks=0.01116 (true=0.1, err=95.23%) | cs=5.793e-8 (true=2.4e-7, err=61.73%) | nnErr(train)=69.82%
+[2026-03-27 19:05:35]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:05:35]       step-guard: accepted after 1 retry/reduction(s) | lr=0.000138 | train=2.614e-5
+[2026-03-27 19:05:35]     arch epoch 8/10 -- layers=1 nodes=2 draw=4 | train_final=2.614e-5 val=2.545e-6 | dt=109.85s | t1=7.431e-8 t2=-8.95e-10 | gnn=1.0e-6 | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:05:35]       mech/nn | ks=0.01116 (true=0.1, err=95.23%) | cs=5.793e-8 (true=2.4e-7, err=61.73%) | nnErr(train)=69.83%
+[2026-03-27 19:07:26]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:07:26]       step-guard: accepted after 1 retry/reduction(s) | lr=0.000138 | train=2.62e-5
+[2026-03-27 19:07:26]     arch epoch 9/10 -- layers=1 nodes=2 draw=4 | train_final=2.62e-5 val=2.546e-6 | dt=110.78s | t1=6.444e-8 t2=-6.872e-10 | gnn=1.0e-6 | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:07:26]       mech/nn | ks=0.01116 (true=0.1, err=95.23%) | cs=5.793e-8 (true=2.4e-7, err=61.73%) | nnErr(train)=69.84%
+[2026-03-27 19:09:16]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:09:16]       step-guard: accepted after 1 retry/reduction(s) | lr=0.000138 | train=2.625e-5
+[2026-03-27 19:09:16]     arch epoch 10/10 -- layers=1 nodes=2 draw=4 | train_final=2.625e-5 val=2.547e-6 | dt=109.36s | t1=5.635e-8 t2=-4.66e-9 | gnn=1.0e-6 | lr=0.000138 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 19:09:16]       mech/nn | ks=0.01116 (true=0.1, err=95.23%) | cs=5.793e-8 (true=2.4e-7, err=61.73%) | nnErr(train)=69.85%
+[2026-03-27 19:09:16]       trial raw objectives after 10 epochs -- layers=1 nodes=2 draw=4 ks0=0.0109 cs0=5.76e-8
+[2026-03-27 19:09:16]          detail: raw_a=-0.05165 ; raw_b=119.0 ; raw_c=0.0
+[2026-03-27 19:09:16]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.001349 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.837 | reason=init_quantized
+[2026-03-27 19:10:01]     arch epoch 1/10 -- layers=1 nodes=2 draw=5 | train_final=4.081e-5 val=2.721e-6 | dt=44.95s | t1=-2.464e-8 t2=-3.2e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.518, mech_raw=0.966]
+[2026-03-27 19:10:01]       mech/nn | ks=0.05646 (true=0.1, err=24.83%) | cs=6.998e-8 (true=2.4e-7, err=53.52%) | nnErr(train)=125.17%
+[2026-03-27 19:10:42]     arch epoch 2/10 -- layers=1 nodes=2 draw=5 | train_final=4.078e-5 val=2.718e-6 | dt=41.06s | t1=-2.759e-8 t2=-5.917e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.534, mech_raw=0.936]
+[2026-03-27 19:10:42]       mech/nn | ks=0.05596 (true=0.1, err=25.21%) | cs=7.017e-8 (true=2.4e-7, err=53.41%) | nnErr(train)=117.54%
+[2026-03-27 19:11:17]     arch epoch 3/10 -- layers=1 nodes=2 draw=5 | train_final=4.075e-5 val=2.712e-6 | dt=35.91s | t1=-3.116e-8 t2=-1.126e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.549, mech_raw=0.91]
+[2026-03-27 19:11:17]       mech/nn | ks=0.05546 (true=0.1, err=25.6%) | cs=7.036e-8 (true=2.4e-7, err=53.29%) | nnErr(train)=110.05%
+[2026-03-27 19:11:47]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.071e-5 -> gnn_new=1.0e-5 after_gnn=4.08e-5 | A_true=1.963e-9 A_pred=0.0001296 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-4.82 | val_before=2.706e-6 val_after=2.721e-6 | reason=updated_quantized
+[2026-03-27 19:11:47]     arch epoch 4/10 -- layers=1 nodes=2 draw=5 | train_final=4.08e-5 val=2.721e-6 | dt=29.31s | t1=-3.554e-8 t2=-1.864e-9 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.563, mech_raw=0.888]
+[2026-03-27 19:11:47]       mech/nn | ks=0.05497 (true=0.1, err=25.99%) | cs=7.056e-8 (true=2.4e-7, err=53.17%) | nnErr(train)=129.7%
+[2026-03-27 19:12:27]     arch epoch 5/10 -- layers=1 nodes=2 draw=5 | train_final=4.05e-5 val=2.668e-6 | dt=40.58s | t1=-1.787e-7 t2=-1.231e-7 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.557, mech_raw=0.898]
+[2026-03-27 19:12:27]       mech/nn | ks=0.05449 (true=0.1, err=26.37%) | cs=7.075e-8 (true=2.4e-7, err=53.05%) | nnErr(train)=76.97%
+[2026-03-27 19:13:52]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.001 | scale[p_net=0.528, mech_raw=0.947]
+[2026-03-27 19:13:52]       step-guard: accepted after 1 retry/reduction(s) | lr=0.001 | train=4.043e-5
+[2026-03-27 19:13:52]     arch epoch 6/10 -- layers=1 nodes=2 draw=5 | train_final=4.043e-5 val=2.652e-6 | dt=84.58s | t1=-5.641e-8 t2=-1.136e-8 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.528, mech_raw=0.947]
+[2026-03-27 19:13:52]       mech/nn | ks=0.05444 (true=0.1, err=26.41%) | cs=7.077e-8 (true=2.4e-7, err=53.03%) | nnErr(train)=73.64%
+[2026-03-27 19:15:28]     arch epoch 7/10 -- layers=1 nodes=2 draw=5 | train_final=4.033e-5 val=2.623e-6 | dt=95.64s | t1=-8.216e-8 t2=-2.4e-8 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.493, mech_raw=1.01]
+[2026-03-27 19:15:28]       mech/nn | ks=0.05439 (true=0.1, err=26.45%) | cs=7.079e-8 (true=2.4e-7, err=53.02%) | nnErr(train)=70.62%
+[2026-03-27 19:16:46]     arch epoch 8/10 -- layers=1 nodes=2 draw=5 | train_final=4.012e-5 val=2.561e-6 | dt=78.62s | t1=-1.314e-7 t2=-7.232e-8 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.455, mech_raw=1.1]
+[2026-03-27 19:16:46]       mech/nn | ks=0.05435 (true=0.1, err=26.48%) | cs=7.081e-8 (true=2.4e-7, err=53.01%) | nnErr(train)=68.38%
+[2026-03-27 19:18:03]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.0001 | scale[p_net=0.414, mech_raw=1.21]
+[2026-03-27 19:18:03]       step-guard: accepted after 1 retry/reduction(s) | lr=0.0001 | train=4.009e-5
+[2026-03-27 19:18:03]     arch epoch 9/10 -- layers=1 nodes=2 draw=5 | train_final=4.009e-5 val=2.552e-6 | dt=76.73s | t1=-2.765e-8 t2=-4.723e-9 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.414, mech_raw=1.21]
+[2026-03-27 19:18:03]       mech/nn | ks=0.05434 (true=0.1, err=26.49%) | cs=7.082e-8 (true=2.4e-7, err=53.01%) | nnErr(train)=68.21%
+[2026-03-27 19:19:20]     arch epoch 10/10 -- layers=1 nodes=2 draw=5 | train_final=4.005e-5 val=2.541e-6 | dt=76.63s | t1=-3.293e-8 t2=-7.078e-9 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.375, mech_raw=1.33]
+[2026-03-27 19:19:20]       mech/nn | ks=0.05434 (true=0.1, err=26.49%) | cs=7.082e-8 (true=2.4e-7, err=53.01%) | nnErr(train)=68.05%
+[2026-03-27 19:19:20]       trial raw objectives after 10 epochs -- layers=1 nodes=2 draw=5 ks0=0.057 cs0=6.98e-8
+[2026-03-27 19:19:20]          detail: raw_a=-1.834e-8 ; raw_b=60.4 ; raw_c=2.0
+[2026-03-27 19:19:20]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.0008453 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.634 | reason=init_quantized
+[2026-03-27 19:20:05]     arch epoch 1/10 -- layers=1 nodes=2 draw=6 | train_final=3.983e-5 val=2.715e-6 | dt=45.19s | t1=-9.56e-8 t2=-3.426e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.526, mech_raw=0.951]
+[2026-03-27 19:20:05]       mech/nn | ks=0.05145 (true=0.1, err=28.86%) | cs=1.133e-7 (true=2.4e-7, err=32.6%) | nnErr(train)=112.2%
+[2026-03-27 19:20:43]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=3.972e-5 -> gnn_new=1.0e-5 after_gnn=4.007e-5 | A_true=1.963e-9 A_pred=0.000206 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-5.021 | val_before=2.708e-6 val_after=2.736e-6 | reason=updated_quantized
+[2026-03-27 19:20:43]     arch epoch 2/10 -- layers=1 nodes=2 draw=6 | train_final=4.007e-5 val=2.736e-6 | dt=38.05s | t1=-1.045e-7 t2=-4.255e-9 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.55, mech_raw=0.909]
+[2026-03-27 19:20:43]       mech/nn | ks=0.05099 (true=0.1, err=29.25%) | cs=1.139e-7 (true=2.4e-7, err=32.36%) | nnErr(train)=151.0%
+[2026-03-27 19:21:41]     arch epoch 3/10 -- layers=1 nodes=2 draw=6 | train_final=3.948e-5 val=2.694e-6 | dt=57.87s | t1=-4.386e-7 t2=-1.45e-7 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.557, mech_raw=0.897]
+[2026-03-27 19:21:41]       mech/nn | ks=0.05055 (true=0.1, err=29.63%) | cs=1.145e-7 (true=2.4e-7, err=32.13%) | nnErr(train)=88.8%
+[2026-03-27 19:22:48]       gnn-loss-flow | gnn_old=1.0e-5 theta_fixed=3.75e-5 -> gnn_new=1.0e-6 after_gnn=3.95e-5 | A_true=1.963e-9 A_pred=0.0003218 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.215 | val_before=2.517e-6 val_after=2.699e-6 | reason=updated_quantized
+[2026-03-27 19:22:48]     arch epoch 4/10 -- layers=1 nodes=2 draw=6 | train_final=3.95e-5 val=2.699e-6 | dt=67.15s | t1=-8.626e-7 t2=-1.119e-6 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.548, mech_raw=0.912]
+[2026-03-27 19:22:48]       mech/nn | ks=0.0501 (true=0.1, err=30.01%) | cs=1.152e-7 (true=2.4e-7, err=31.89%) | nnErr(train)=92.95%
+[2026-03-27 19:23:30]     arch epoch 5/10 -- layers=1 nodes=2 draw=6 | train_final=3.938e-5 val=2.694e-6 | dt=41.74s | t1=-1.132e-7 t2=-5.542e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.543, mech_raw=0.921]
+[2026-03-27 19:23:30]       mech/nn | ks=0.04966 (true=0.1, err=30.4%) | cs=1.158e-7 (true=2.4e-7, err=31.64%) | nnErr(train)=88.02%
+[2026-03-27 19:24:35]     arch epoch 6/10 -- layers=1 nodes=2 draw=6 | train_final=3.926e-5 val=2.689e-6 | dt=65.23s | t1=-1.169e-7 t2=-4.665e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.54, mech_raw=0.927]
+[2026-03-27 19:24:35]       mech/nn | ks=0.04922 (true=0.1, err=30.79%) | cs=1.165e-7 (true=2.4e-7, err=31.4%) | nnErr(train)=83.79%
+[2026-03-27 19:26:04]     arch epoch 7/10 -- layers=1 nodes=2 draw=6 | train_final=3.913e-5 val=2.685e-6 | dt=88.71s | t1=-1.222e-7 t2=-5.41e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.539, mech_raw=0.928]
+[2026-03-27 19:26:04]       mech/nn | ks=0.04877 (true=0.1, err=31.18%) | cs=1.171e-7 (true=2.4e-7, err=31.15%) | nnErr(train)=80.12%
+[2026-03-27 19:27:33]     arch epoch 8/10 -- layers=1 nodes=2 draw=6 | train_final=3.9e-5 val=2.679e-6 | dt=89.5s | t1=-1.292e-7 t2=-5.952e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.539, mech_raw=0.927]
+[2026-03-27 19:27:33]       mech/nn | ks=0.04834 (true=0.1, err=31.57%) | cs=1.178e-7 (true=2.4e-7, err=30.9%) | nnErr(train)=76.94%
+[2026-03-27 19:29:01]     arch epoch 9/10 -- layers=1 nodes=2 draw=6 | train_final=3.885e-5 val=2.674e-6 | dt=87.69s | t1=-1.382e-7 t2=-6.762e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.541, mech_raw=0.924]
+[2026-03-27 19:29:01]       mech/nn | ks=0.0479 (true=0.1, err=31.97%) | cs=1.185e-7 (true=2.4e-7, err=30.65%) | nnErr(train)=74.18%
+[2026-03-27 19:30:16]     arch epoch 10/10 -- layers=1 nodes=2 draw=6 | train_final=3.87e-5 val=2.667e-6 | dt=75.57s | t1=-1.497e-7 t2=-7.809e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.544, mech_raw=0.918]
+[2026-03-27 19:30:16]       mech/nn | ks=0.04746 (true=0.1, err=32.37%) | cs=1.192e-7 (true=2.4e-7, err=30.4%) | nnErr(train)=71.85%
+[2026-03-27 19:30:16]       trial raw objectives after 10 epochs -- layers=1 nodes=2 draw=6 ks0=0.0519 cs0=1.13e-7
+[2026-03-27 19:30:16]          detail: raw_a=-5.279e-9 ; raw_b=65.67 ; raw_c=0.0
+[2026-03-27 19:30:16]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.003007 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-6.185 | reason=init_quantized
+[2026-03-27 19:31:16]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=2.978e-5 -> gnn_new=1.0e-7 after_gnn=2.999e-5 | A_true=1.963e-9 A_pred=0.003243 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.218 | val_before=2.654e-6 val_after=2.7e-6 | reason=updated_quantized
+[2026-03-27 19:31:16]     arch epoch 1/10 -- layers=1 nodes=2 draw=7 | train_final=2.999e-5 val=2.7e-6 | dt=59.6s | t1=-1.679e-8 t2=-3.509e-10 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.449, mech_raw=1.11]
+[2026-03-27 19:31:16]       mech/nn | ks=0.007718 (true=0.1, err=111.25%) | cs=4.207e-6 (true=2.4e-7, err=124.37%) | nnErr(train)=93.01%
+[2026-03-27 19:31:34]     arch epoch 2/10 -- layers=1 nodes=2 draw=7 | train_final=2.999e-5 val=2.699e-6 | dt=18.51s | t1=-2.877e-9 t2=-7.032e-10 | gnn=1.0e-7 | lr=0.0192 | scale[p_net=0.409, mech_raw=1.22]
+[2026-03-27 19:31:34]       mech/nn | ks=0.007677 (true=0.1, err=111.48%) | cs=4.208e-6 (true=2.4e-7, err=124.39%) | nnErr(train)=92.34%
+[2026-03-27 19:31:53]     arch epoch 3/10 -- layers=1 nodes=2 draw=7 | train_final=2.998e-5 val=2.698e-6 | dt=18.86s | t1=-8.993e-9 t2=-1.932e-10 | gnn=1.0e-7 | lr=0.0686 | scale[p_net=0.378, mech_raw=1.32]
+[2026-03-27 19:31:53]       mech/nn | ks=0.007534 (true=0.1, err=112.3%) | cs=4.224e-6 (true=2.4e-7, err=124.55%) | nnErr(train)=90.37%
+[2026-03-27 19:32:15]     arch epoch 4/10 -- layers=1 nodes=2 draw=7 | train_final=2.992e-5 val=2.687e-6 | dt=21.57s | t1=-5.437e-8 t2=-3.945e-9 | gnn=1.0e-7 | lr=0.447 | scale[p_net=0.354, mech_raw=1.41]
+[2026-03-27 19:32:15]       mech/nn | ks=0.006769 (true=0.1, err=116.95%) | cs=4.337e-6 (true=2.4e-7, err=125.7%) | nnErr(train)=78.52%
+[2026-03-27 19:32:47]       gnn-loss-flow | gnn_old=1.0e-7 theta_fixed=2.868e-5 -> gnn_new=1.0e-8 after_gnn=2.98e-5 | A_true=1.963e-9 A_pred=0.2663 | dec_true=-9 dec_pred=-1 delta_dec=-8 | candidate=1.0e-8 log10diff=-8.132 | val_before=2.708e-6 val_after=2.661e-6 | reason=updated_quantized
+[2026-03-27 19:32:47]     arch epoch 5/10 -- layers=1 nodes=2 draw=7 | train_final=2.98e-5 val=2.661e-6 | dt=32.49s | t1=-6.11e-7 t2=-6.315e-7 | gnn=1.0e-8 | lr=4.47 | scale[p_net=0.334, mech_raw=1.5]
+[2026-03-27 19:32:47]       mech/nn | ks=0.005053 (true=0.1, err=129.64%) | cs=4.867e-6 (true=2.4e-7, err=130.71%) | nnErr(train)=67.8%
+[2026-03-27 19:33:36]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=4.47 | scale[p_net=0.317, mech_raw=1.5]
+[2026-03-27 19:33:36]       step-guard: accepted after 1 retry/reduction(s) | lr=4.47 | train=2.926e-5
+[2026-03-27 19:33:36]       gnn-loss-flow | gnn_old=1.0e-8 theta_fixed=2.926e-5 -> gnn_new=1.0e-9 after_gnn=2.99e-5 | A_true=1.963e-9 A_pred=1.222 | dec_true=-9 dec_pred=0 delta_dec=-9 | candidate=1.0e-9 log10diff=-8.794 | val_before=2.573e-6 val_after=2.685e-6 | reason=updated_quantized
+[2026-03-27 19:33:36]     arch epoch 6/10 -- layers=1 nodes=2 draw=7 | train_final=2.99e-5 val=2.685e-6 | dt=49.17s | t1=-3.299e-7 t2=-2.101e-7 | gnn=1.0e-9 | lr=4.47 | scale[p_net=0.317, mech_raw=1.5]
+[2026-03-27 19:33:36]       mech/nn | ks=0.005003 (true=0.1, err=130.08%) | cs=4.964e-6 (true=2.4e-7, err=131.56%) | nnErr(train)=77.3%
+[2026-03-27 19:34:08]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=4.47 | scale[p_net=0.301, mech_raw=1.5]
+[2026-03-27 19:34:08]       step-guard: accepted after 1 retry/reduction(s) | lr=4.47 | train=2.978e-5
+[2026-03-27 19:34:08]       gnn-loss-flow | gnn_old=1.0e-9 theta_fixed=2.978e-5 -> gnn_new=1.0e-10 after_gnn=2.995e-5 | A_true=1.963e-9 A_pred=3.172 | dec_true=-9 dec_pred=1 delta_dec=-10 | candidate=1.0e-10 log10diff=-9.208 | val_before=2.654e-6 val_after=2.7e-6 | reason=updated_quantized
+[2026-03-27 19:34:08]     arch epoch 7/10 -- layers=1 nodes=2 draw=7 | train_final=2.995e-5 val=2.7e-6 | dt=31.28s | t1=-8.517e-8 t2=-3.482e-8 | gnn=1.0e-10 | lr=4.47 | scale[p_net=0.301, mech_raw=1.5]
+[2026-03-27 19:34:08]       mech/nn | ks=0.005 (true=0.1, err=130.1%) | cs=4.988e-6 (true=2.4e-7, err=131.77%) | nnErr(train)=93.36%
+[2026-03-27 19:34:25]       gnn-loss-flow | gnn_old=1.0e-10 theta_fixed=2.899e-5 -> gnn_new=1.0e-11 after_gnn=2.987e-5 | A_true=1.963e-9 A_pred=152.3 | dec_true=-9 dec_pred=2 delta_dec=-11 | candidate=1.0e-11 log10diff=-10.89 | val_before=2.469e-6 val_after=2.677e-6 | reason=updated_quantized
+[2026-03-27 19:34:25]     arch epoch 8/10 -- layers=1 nodes=2 draw=7 | train_final=2.987e-5 val=2.677e-6 | dt=17.13s | t1=-1.457e-7 t2=-8.201e-7 | gnn=1.0e-11 | lr=44.7 | scale[p_net=0.287, mech_raw=1.5]
+[2026-03-27 19:34:25]       mech/nn | ks=0.005 (true=0.1, err=130.1%) | cs=5.0e-6 (true=2.4e-7, err=131.88%) | nnErr(train)=73.83%
+[2026-03-27 19:34:56]       gnn-loss-flow | gnn_old=1.0e-11 theta_fixed=2.935e-5 -> gnn_new=1.0e-12 after_gnn=2.991e-5 | A_true=1.963e-9 A_pred=850.4 | dec_true=-9 dec_pred=3 delta_dec=-12 | candidate=1.0e-12 log10diff=-11.637 | val_before=2.538e-6 val_after=2.688e-6 | reason=updated_quantized
+[2026-03-27 19:34:56]     arch epoch 9/10 -- layers=1 nodes=2 draw=7 | train_final=2.991e-5 val=2.688e-6 | dt=31.05s | t1=-2.566e-7 t2=-2.664e-7 | gnn=1.0e-12 | lr=50.0 | scale[p_net=0.274, mech_raw=1.5]
+[2026-03-27 19:34:56]       mech/nn | ks=0.005 (true=0.1, err=130.1%) | cs=5.0e-6 (true=2.4e-7, err=131.88%) | nnErr(train)=83.7%
+[2026-03-27 19:35:18]     arch epoch 10/10 -- layers=1 nodes=2 draw=7 | train_final=2.98e-5 val=2.656e-6 | dt=22.53s | t1=-7.813e-8 t2=-3.573e-8 | gnn=1.0e-12 | lr=50.0 | scale[p_net=0.263, mech_raw=1.5]
+[2026-03-27 19:35:18]       mech/nn | ks=0.005 (true=0.1, err=130.1%) | cs=5.0e-6 (true=2.4e-7, err=131.88%) | nnErr(train)=67.51%
+[2026-03-27 19:35:18]       trial raw objectives after 10 epochs -- layers=1 nodes=2 draw=7 ks0=0.00774 cs0=4.21e-6
+[2026-03-27 19:35:18]          detail: raw_a=-7.241e-11 ; raw_b=30.22 ; raw_c=2.0
+[2026-03-27 19:35:18]       g_nn init=1.0e-7 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.003555 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.258 | reason=init_quantized
+[2026-03-27 19:36:20]     arch epoch 1/10 -- layers=1 nodes=2 draw=8 | train_final=4.093e-5 val=2.701e-6 | dt=61.55s | t1=-4.104e-11 t2=-1.851e-12 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.453, mech_raw=1.1]
+[2026-03-27 19:36:20]       mech/nn | ks=1.328 (true=0.1, err=112.31%) | cs=1.422e-7 (true=2.4e-7, err=22.74%) | nnErr(train)=92.27%
+[2026-03-27 19:37:22]     arch epoch 2/10 -- layers=1 nodes=2 draw=8 | train_final=4.093e-5 val=2.701e-6 | dt=62.28s | t1=-3.971e-11 t2=-1.855e-12 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.415, mech_raw=1.21]
+[2026-03-27 19:37:22]       mech/nn | ks=1.327 (true=0.1, err=112.29%) | cs=1.422e-7 (true=2.4e-7, err=22.73%) | nnErr(train)=92.2%
+[2026-03-27 19:38:25]     arch epoch 3/10 -- layers=1 nodes=2 draw=8 | train_final=4.093e-5 val=2.701e-6 | dt=62.39s | t1=-3.848e-11 t2=-1.907e-12 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.383, mech_raw=1.31]
+[2026-03-27 19:38:25]       mech/nn | ks=1.326 (true=0.1, err=112.27%) | cs=1.423e-7 (true=2.4e-7, err=22.71%) | nnErr(train)=92.14%
+[2026-03-27 19:39:28]     arch epoch 4/10 -- layers=1 nodes=2 draw=8 | train_final=4.093e-5 val=2.701e-6 | dt=62.88s | t1=-3.734e-11 t2=-2.074e-12 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.356, mech_raw=1.4]
+[2026-03-27 19:39:28]       mech/nn | ks=1.326 (true=0.1, err=112.25%) | cs=1.423e-7 (true=2.4e-7, err=22.7%) | nnErr(train)=92.08%
+[2026-03-27 19:40:31]     arch epoch 5/10 -- layers=1 nodes=2 draw=8 | train_final=4.093e-5 val=2.701e-6 | dt=63.33s | t1=-3.629e-11 t2=-2.028e-12 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.334, mech_raw=1.5]
+[2026-03-27 19:40:31]       mech/nn | ks=1.325 (true=0.1, err=112.23%) | cs=1.424e-7 (true=2.4e-7, err=22.68%) | nnErr(train)=92.02%
+[2026-03-27 19:41:32]     arch epoch 6/10 -- layers=1 nodes=2 draw=8 | train_final=4.093e-5 val=2.701e-6 | dt=61.07s | t1=-6.17e-11 t2=-3.79e-12 | gnn=1.0e-7 | lr=0.0175 | scale[p_net=0.315, mech_raw=1.5]
+[2026-03-27 19:41:32]       mech/nn | ks=1.324 (true=0.1, err=112.19%) | cs=1.425e-7 (true=2.4e-7, err=22.65%) | nnErr(train)=91.92%
+[2026-03-27 19:42:37]     arch epoch 7/10 -- layers=1 nodes=2 draw=8 | train_final=4.093e-5 val=2.701e-6 | dt=64.97s | t1=-1.231e-10 t2=-8.399e-12 | gnn=1.0e-7 | lr=0.0357 | scale[p_net=0.299, mech_raw=1.5]
+[2026-03-27 19:42:37]       mech/nn | ks=1.322 (true=0.1, err=112.11%) | cs=1.427e-7 (true=2.4e-7, err=22.59%) | nnErr(train)=91.73%
+[2026-03-27 19:43:40]     arch epoch 8/10 -- layers=1 nodes=2 draw=8 | train_final=4.093e-5 val=2.701e-6 | dt=62.89s | t1=-2.897e-10 t2=-2.384e-11 | gnn=1.0e-7 | lr=0.0851 | scale[p_net=0.284, mech_raw=1.5]
+[2026-03-27 19:43:40]       mech/nn | ks=1.315 (true=0.1, err=111.91%) | cs=1.431e-7 (true=2.4e-7, err=22.45%) | nnErr(train)=91.26%
+[2026-03-27 19:44:43]     arch epoch 9/10 -- layers=1 nodes=2 draw=8 | train_final=4.093e-5 val=2.7e-6 | dt=63.48s | t1=-8.018e-10 t2=-7.623e-10 | gnn=1.0e-7 | lr=0.234 | scale[p_net=0.27, mech_raw=1.5]
+[2026-03-27 19:44:43]       mech/nn | ks=1.298 (true=0.1, err=111.34%) | cs=1.445e-7 (true=2.4e-7, err=22.04%) | nnErr(train)=89.97%
+[2026-03-27 19:45:51]     arch epoch 10/10 -- layers=1 nodes=2 draw=8 | train_final=4.093e-5 val=2.697e-6 | dt=67.49s | t1=-2.571e-9 t2=-3.289e-10 | gnn=1.0e-7 | lr=0.696 | scale[p_net=0.258, mech_raw=1.5]
+[2026-03-27 19:45:51]       mech/nn | ks=1.246 (true=0.1, err=109.56%) | cs=1.489e-7 (true=2.4e-7, err=20.74%) | nnErr(train)=85.84%
+[2026-03-27 19:45:51]       trial raw objectives after 10 epochs -- layers=1 nodes=2 draw=8 ks0=1.33 cs0=1.42e-7
+[2026-03-27 19:45:51]          detail: raw_a=-4.498e-10 ; raw_b=63.23 ; raw_c=0.0
+[2026-03-27 19:45:51]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.002533 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-6.111 | reason=init_quantized
+[2026-03-27 19:47:48]     arch epoch 1/10 -- layers=1 nodes=2 draw=9 | train_final=4.086e-5 val=2.614e-6 | dt=117.02s | t1=-0.1785 t2=0.08424 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.432, mech_raw=1.16]
+[2026-03-27 19:47:48]       mech/nn | ks=0.2171 (true=0.1, err=33.67%) | cs=5.579e-8 (true=2.4e-7, err=63.36%) | nnErr(train)=68.42%
+[2026-03-27 19:48:51]     arch epoch 2/10 -- layers=1 nodes=2 draw=9 | train_final=4.09e-5 val=2.677e-6 | dt=62.96s | t1=4.316e-8 t2=-8.452e-10 | gnn=1.0e-6 | lr=0.0225 | scale[p_net=0.379, mech_raw=1.32]
+[2026-03-27 19:48:51]       mech/nn | ks=0.2202 (true=0.1, err=34.28%) | cs=5.588e-8 (true=2.4e-7, err=63.29%) | nnErr(train)=75.27%
+[2026-03-27 19:49:45]     arch epoch 3/10 -- layers=1 nodes=2 draw=9 | train_final=4.096e-5 val=2.722e-6 | dt=54.57s | t1=8.483e-8 t2=-3.358e-8 | gnn=1.0e-6 | lr=0.114 | scale[p_net=0.337, mech_raw=1.48]
+[2026-03-27 19:49:45]       mech/nn | ks=0.2328 (true=0.1, err=36.69%) | cs=5.624e-8 (true=2.4e-7, err=63.02%) | nnErr(train)=132.54%
+[2026-03-27 19:50:40]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.092e-5 -> gnn_new=1.0e-7 after_gnn=4.095e-5 | A_true=1.963e-9 A_pred=0.01392 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.851 | val_before=3.278e-6 val_after=2.722e-6 | reason=updated_quantized
+[2026-03-27 19:50:40]     arch epoch 4/10 -- layers=1 nodes=2 draw=9 | train_final=4.095e-5 val=2.722e-6 | dt=54.3s | t1=2.61e-7 t2=-2.98e-7 | gnn=1.0e-7 | lr=1.14 | scale[p_net=0.303, mech_raw=1.5]
+[2026-03-27 19:50:40]       mech/nn | ks=0.3649 (true=0.1, err=56.22%) | cs=6.013e-8 (true=2.4e-7, err=60.11%) | nnErr(train)=133.96%
+[2026-03-27 19:51:57]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=1.14 | scale[p_net=0.274, mech_raw=1.5]
+[2026-03-27 19:51:57]       step-guard: accepted after 1 retry/reduction(s) | lr=1.14 | train=4.095e-5
+[2026-03-27 19:51:57]     arch epoch 5/10 -- layers=1 nodes=2 draw=9 | train_final=4.095e-5 val=2.719e-6 | dt=77.77s | t1=3.384e-9 t2=-7.021e-9 | gnn=1.0e-7 | lr=1.14 | scale[p_net=0.274, mech_raw=1.5]
+[2026-03-27 19:51:57]       mech/nn | ks=0.5285 (true=0.1, err=72.3%) | cs=6.526e-8 (true=2.4e-7, err=56.56%) | nnErr(train)=127.64%
+[2026-03-27 19:53:14]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=1.14 | scale[p_net=0.249, mech_raw=1.5]
+[2026-03-27 19:53:14]       step-guard: accepted after 1 retry/reduction(s) | lr=1.14 | train=4.094e-5
+[2026-03-27 19:53:14]       gnn-loss-flow | gnn_old=1.0e-7 theta_fixed=4.094e-5 -> gnn_new=1.0e-6 after_gnn=4.093e-5 | A_true=1.963e-9 A_pred=0.0003988 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.308 | val_before=2.705e-6 val_after=2.695e-6 | reason=updated_quantized
+[2026-03-27 19:53:14]     arch epoch 6/10 -- layers=1 nodes=2 draw=9 | train_final=4.093e-5 val=2.695e-6 | dt=76.56s | t1=-8.331e-9 t2=-4.503e-9 | gnn=1.0e-6 | lr=1.14 | scale[p_net=0.249, mech_raw=1.5]
+[2026-03-27 19:53:14]       mech/nn | ks=0.7189 (true=0.1, err=85.67%) | cs=7.171e-8 (true=2.4e-7, err=52.46%) | nnErr(train)=89.62%
+[2026-03-27 19:54:31]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=1.14 | scale[p_net=0.228, mech_raw=1.5]
+[2026-03-27 19:54:31]       step-guard retry 2/6 -- reason=step_prev_epoch_loss_jump | lr=0.114 | scale[p_net=0.228, mech_raw=1.5]
+[2026-03-27 19:54:31]       step-guard: accepted after 2 retry/reduction(s) | lr=0.114 | train=4.09e-5
+[2026-03-27 19:54:31]     arch epoch 7/10 -- layers=1 nodes=2 draw=9 | train_final=4.09e-5 val=2.669e-6 | dt=77.06s | t1=-1.993e-8 t2=-7.004e-9 | gnn=1.0e-6 | lr=0.114 | scale[p_net=0.228, mech_raw=1.5]
+[2026-03-27 19:54:31]       mech/nn | ks=0.738 (true=0.1, err=86.81%) | cs=7.239e-8 (true=2.4e-7, err=52.05%) | nnErr(train)=68.59%
+[2026-03-27 19:56:00]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.114 | scale[p_net=0.209, mech_raw=1.5]
+[2026-03-27 19:56:01]       step-guard: accepted after 1 retry/reduction(s) | lr=0.114 | train=4.086e-5
+[2026-03-27 19:56:01]     arch epoch 8/10 -- layers=1 nodes=2 draw=9 | train_final=4.086e-5 val=2.613e-6 | dt=89.48s | t1=-2.501e-8 t2=-1.854e-8 | gnn=1.0e-6 | lr=0.114 | scale[p_net=0.209, mech_raw=1.5]
+[2026-03-27 19:56:01]       mech/nn | ks=0.7552 (true=0.1, err=87.81%) | cs=7.301e-8 (true=2.4e-7, err=51.69%) | nnErr(train)=71.95%
+[2026-03-27 19:57:38]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.114 | scale[p_net=0.193, mech_raw=1.5]
+[2026-03-27 19:57:38]       step-guard: accepted after 1 retry/reduction(s) | lr=0.114 | train=4.074e-5
+[2026-03-27 19:57:38]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.074e-5 -> gnn_new=1.0e-7 after_gnn=4.093e-5 | A_true=1.963e-9 A_pred=0.004387 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.349 | val_before=0.05242 val_after=2.7e-6 | reason=updated_quantized
+[2026-03-27 19:57:38]     arch epoch 9/10 -- layers=1 nodes=2 draw=9 | train_final=4.093e-5 val=2.7e-6 | dt=97.48s | t1=-3.65e-8 t2=-7.821e-8 | gnn=1.0e-7 | lr=0.114 | scale[p_net=0.193, mech_raw=1.5]
+[2026-03-27 19:57:38]       mech/nn | ks=0.7708 (true=0.1, err=88.69%) | cs=7.357e-8 (true=2.4e-7, err=51.35%) | nnErr(train)=90.22%
+[2026-03-27 19:58:47]     arch epoch 10/10 -- layers=1 nodes=2 draw=9 | train_final=4.091e-5 val=2.682e-6 | dt=68.5s | t1=-1.394e-8 t2=-3.734e-9 | gnn=1.0e-7 | lr=1.14 | scale[p_net=0.178, mech_raw=1.5]
+[2026-03-27 19:58:47]       mech/nn | ks=0.9214 (true=0.1, err=96.44%) | cs=7.921e-8 (true=2.4e-7, err=48.14%) | nnErr(train)=70.36%
+[2026-03-27 19:58:47]       trial raw objectives after 10 epochs -- layers=1 nodes=2 draw=9 ks0=0.215 cs0=5.57e-8
+[2026-03-27 19:58:47]          detail: raw_a=-0.008871 ; raw_b=77.57 ; raw_c=5.0
+[2026-03-27 19:58:47]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.0005969 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.483 | reason=init_quantized
+[2026-03-27 19:59:26]     arch epoch 1/10 -- layers=1 nodes=2 draw=10 | train_final=4.095e-5 val=2.713e-6 | dt=39.65s | t1=-1.993e-9 t2=2.327e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.437, mech_raw=1.14]
+[2026-03-27 19:59:26]       mech/nn | ks=0.1318 (true=0.1, err=11.98%) | cs=5.294e-8 (true=2.4e-7, err=65.64%) | nnErr(train)=111.47%
+[2026-03-27 20:00:04]     arch epoch 2/10 -- layers=1 nodes=2 draw=10 | train_final=4.095e-5 val=2.711e-6 | dt=37.37s | t1=-1.988e-9 t2=1.992e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.386, mech_raw=1.29]
+[2026-03-27 20:00:04]       mech/nn | ks=0.1321 (true=0.1, err=12.09%) | cs=5.294e-8 (true=2.4e-7, err=65.64%) | nnErr(train)=108.94%
+[2026-03-27 20:00:39]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.094e-5 -> gnn_new=1.0e-5 after_gnn=4.097e-5 | A_true=1.963e-9 A_pred=0.000282 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-5.157 | val_before=2.709e-6 val_after=2.743e-6 | reason=updated_quantized
+[2026-03-27 20:00:39]     arch epoch 3/10 -- layers=1 nodes=2 draw=10 | train_final=4.097e-5 val=2.743e-6 | dt=35.46s | t1=-1.984e-9 t2=1.654e-10 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.345, mech_raw=1.45]
+[2026-03-27 20:00:39]       mech/nn | ks=0.1324 (true=0.1, err=12.2%) | cs=5.294e-8 (true=2.4e-7, err=65.64%) | nnErr(train)=173.62%
+[2026-03-27 20:01:36]     arch epoch 4/10 -- layers=1 nodes=2 draw=10 | train_final=4.096e-5 val=2.727e-6 | dt=56.89s | t1=-1.316e-8 t2=3.279e-9 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.31, mech_raw=1.5]
+[2026-03-27 20:01:36]       mech/nn | ks=0.133 (true=0.1, err=12.37%) | cs=5.294e-8 (true=2.4e-7, err=65.64%) | nnErr(train)=141.27%
+[2026-03-27 20:02:27]       gnn-loss-flow | gnn_old=1.0e-5 theta_fixed=4.095e-5 -> gnn_new=0.0001 after_gnn=4.097e-5 | A_true=1.963e-9 A_pred=3.037e-5 | dec_true=-9 dec_pred=-5 delta_dec=-4 | candidate=0.0001 log10diff=-4.189 | val_before=2.711e-6 val_after=2.753e-6 | reason=updated_quantized
+[2026-03-27 20:02:27]     arch epoch 5/10 -- layers=1 nodes=2 draw=10 | train_final=4.097e-5 val=2.753e-6 | dt=50.9s | t1=-1.884e-8 t2=7.128e-10 | gnn=0.0001 | lr=0.01 | scale[p_net=0.278, mech_raw=1.5]
+[2026-03-27 20:02:27]       mech/nn | ks=0.1335 (true=0.1, err=12.56%) | cs=5.294e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=182.97%
+[2026-03-27 20:03:27]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.001 | scale[p_net=0.236, mech_raw=1.5]
+[2026-03-27 20:03:27]       step-guard: accepted after 1 retry/reduction(s) | lr=0.001 | train=4.097e-5
+[2026-03-27 20:03:27]     arch epoch 6/10 -- layers=1 nodes=2 draw=10 | train_final=4.097e-5 val=2.734e-6 | dt=60.02s | t1=-1.257e-8 t2=3.97e-9 | gnn=0.0001 | lr=0.001 | scale[p_net=0.236, mech_raw=1.5]
+[2026-03-27 20:03:27]       mech/nn | ks=0.1336 (true=0.1, err=12.58%) | cs=5.294e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=147.45%
+[2026-03-27 20:04:21]       gnn-loss-flow | gnn_old=0.0001 theta_fixed=4.095e-5 -> gnn_new=0.001 after_gnn=4.093e-5 | A_true=1.963e-9 A_pred=3.099e-6 | dec_true=-9 dec_pred=-6 delta_dec=-3 | candidate=0.001 log10diff=-3.198 | val_before=2.715e-6 val_after=2.911e-6 | reason=updated_quantized
+[2026-03-27 20:04:21]     arch epoch 7/10 -- layers=1 nodes=2 draw=10 | train_final=4.093e-5 val=2.911e-6 | dt=53.72s | t1=-1.894e-8 t2=1.631e-9 | gnn=0.001 | lr=0.001 | scale[p_net=0.196, mech_raw=1.5]
+[2026-03-27 20:04:21]       mech/nn | ks=0.1337 (true=0.1, err=12.6%) | cs=5.294e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=204.94%
+[2026-03-27 20:05:52]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.0001 | scale[p_net=0.163, mech_raw=1.5]
+[2026-03-27 20:05:52]       step-guard: accepted after 1 retry/reduction(s) | lr=0.0001 | train=4.094e-5
+[2026-03-27 20:05:52]     arch epoch 8/10 -- layers=1 nodes=2 draw=10 | train_final=4.094e-5 val=2.817e-6 | dt=91.21s | t1=-6.401e-9 t2=1.383e-8 | gnn=0.001 | lr=0.0001 | scale[p_net=0.163, mech_raw=1.5]
+[2026-03-27 20:05:52]       mech/nn | ks=0.1337 (true=0.1, err=12.6%) | cs=5.294e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=164.3%
+[2026-03-27 20:07:10]     arch epoch 9/10 -- layers=1 nodes=2 draw=10 | train_final=4.094e-5 val=2.763e-6 | dt=78.47s | t1=-9.474e-9 t2=1.041e-8 | gnn=0.001 | lr=0.0001 | scale[p_net=0.135, mech_raw=1.5]
+[2026-03-27 20:07:10]       mech/nn | ks=0.1337 (true=0.1, err=12.6%) | cs=5.294e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=123.71%
+[2026-03-27 20:08:16]     arch epoch 10/10 -- layers=1 nodes=2 draw=10 | train_final=4.093e-5 val=2.728e-6 | dt=66.2s | t1=-1.571e-8 t2=5.457e-9 | gnn=0.001 | lr=0.0001 | scale[p_net=0.112, mech_raw=1.5]
+[2026-03-27 20:08:16]       mech/nn | ks=0.1336 (true=0.1, err=12.6%) | cs=5.294e-8 (true=2.4e-7, err=65.65%) | nnErr(train)=91.66%
+[2026-03-27 20:08:16]       trial raw objectives after 10 epochs -- layers=1 nodes=2 draw=10 ks0=0.131 cs0=5.29e-8
+[2026-03-27 20:08:16]          detail: raw_a=1.372e-9 ; raw_b=56.99 ; raw_c=3.0
+[2026-03-27 20:08:16]   screening arch: layers=1 nodes=3 hidden=8
+[2026-03-27 20:08:17]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.001214 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.791 | reason=init_quantized
+[2026-03-27 20:09:26]     arch epoch 1/10 -- layers=1 nodes=3 draw=1 | train_final=4.095e-5 val=2.717e-6 | dt=69.16s | t1=-1.27e-8 t2=7.127e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.469, mech_raw=1.07]
+[2026-03-27 20:09:26]       mech/nn | ks=0.4413 (true=0.1, err=64.48%) | cs=2.904e-7 (true=2.4e-7, err=8.28%) | nnErr(train)=115.64%
+[2026-03-27 20:10:07]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.093e-5 -> gnn_new=1.0e-5 after_gnn=4.096e-5 | A_true=1.963e-9 A_pred=9.929e-5 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-4.704 | val_before=2.706e-6 val_after=2.726e-6 | reason=updated_quantized
+[2026-03-27 20:10:07]     arch epoch 2/10 -- layers=1 nodes=3 draw=1 | train_final=4.096e-5 val=2.726e-6 | dt=40.14s | t1=-1.296e-8 t2=4.522e-10 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.444, mech_raw=1.13]
+[2026-03-27 20:10:07]       mech/nn | ks=0.4382 (true=0.1, err=64.17%) | cs=2.922e-7 (true=2.4e-7, err=8.55%) | nnErr(train)=126.59%
+[2026-03-27 20:10:44]       gnn-loss-flow | gnn_old=1.0e-5 theta_fixed=4.079e-5 -> gnn_new=1.0e-6 after_gnn=4.092e-5 | A_true=1.963e-9 A_pred=0.0005104 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.415 | val_before=2.6e-6 val_after=2.698e-6 | reason=updated_quantized
+[2026-03-27 20:10:44]     arch epoch 3/10 -- layers=1 nodes=3 draw=1 | train_final=4.092e-5 val=2.698e-6 | dt=37.72s | t1=-1.337e-7 t2=-3.082e-8 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.409, mech_raw=1.22]
+[2026-03-27 20:10:44]       mech/nn | ks=0.435 (true=0.1, err=63.85%) | cs=2.941e-7 (true=2.4e-7, err=8.82%) | nnErr(train)=89.42%
+[2026-03-27 20:11:04]     arch epoch 4/10 -- layers=1 nodes=3 draw=1 | train_final=4.091e-5 val=2.689e-6 | dt=20.05s | t1=-1.342e-8 t2=-3.522e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.382, mech_raw=1.31]
+[2026-03-27 20:11:04]       mech/nn | ks=0.4317 (true=0.1, err=63.52%) | cs=2.96e-7 (true=2.4e-7, err=9.1%) | nnErr(train)=79.78%
+[2026-03-27 20:11:30]     arch epoch 5/10 -- layers=1 nodes=3 draw=1 | train_final=4.089e-5 val=2.68e-6 | dt=25.99s | t1=-1.269e-8 t2=-6.719e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.361, mech_raw=1.38]
+[2026-03-27 20:11:30]       mech/nn | ks=0.4284 (true=0.1, err=63.18%) | cs=2.979e-7 (true=2.4e-7, err=9.39%) | nnErr(train)=73.05%
+[2026-03-27 20:12:00]     arch epoch 6/10 -- layers=1 nodes=3 draw=1 | train_final=4.088e-5 val=2.671e-6 | dt=29.27s | t1=-1.227e-8 t2=1.122e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.345, mech_raw=1.45]
+[2026-03-27 20:12:00]       mech/nn | ks=0.425 (true=0.1, err=62.84%) | cs=2.999e-7 (true=2.4e-7, err=9.68%) | nnErr(train)=69.01%
+[2026-03-27 20:12:32]     arch epoch 7/10 -- layers=1 nodes=3 draw=1 | train_final=4.087e-5 val=2.661e-6 | dt=32.11s | t1=-1.208e-8 t2=-2.017e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.334, mech_raw=1.5]
+[2026-03-27 20:12:32]       mech/nn | ks=0.4216 (true=0.1, err=62.49%) | cs=3.02e-7 (true=2.4e-7, err=9.98%) | nnErr(train)=67.48%
+[2026-03-27 20:13:07]     arch epoch 8/10 -- layers=1 nodes=3 draw=1 | train_final=4.085e-5 val=2.653e-6 | dt=34.81s | t1=-1.205e-8 t2=-1.208e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.325, mech_raw=1.5]
+[2026-03-27 20:13:07]       mech/nn | ks=0.4182 (true=0.1, err=62.13%) | cs=3.042e-7 (true=2.4e-7, err=10.29%) | nnErr(train)=68.22%
+[2026-03-27 20:13:43]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.084e-5 -> gnn_new=1.0e-7 after_gnn=4.092e-5 | A_true=1.963e-9 A_pred=0.00317 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.208 | val_before=2.645e-6 val_after=2.7e-6 | reason=updated_quantized
+[2026-03-27 20:13:43]     arch epoch 9/10 -- layers=1 nodes=3 draw=1 | train_final=4.092e-5 val=2.7e-6 | dt=36.59s | t1=-1.218e-8 t2=-4.619e-10 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.319, mech_raw=1.5]
+[2026-03-27 20:13:43]       mech/nn | ks=0.4147 (true=0.1, err=61.77%) | cs=3.064e-7 (true=2.4e-7, err=10.6%) | nnErr(train)=93.16%
+[2026-03-27 20:14:00]     arch epoch 10/10 -- layers=1 nodes=3 draw=1 | train_final=4.092e-5 val=2.7e-6 | dt=16.53s | t1=-2.356e-9 t2=-8.419e-11 | gnn=1.0e-7 | lr=0.01 | scale[p_net=0.316, mech_raw=1.5]
+[2026-03-27 20:14:00]       mech/nn | ks=0.4112 (true=0.1, err=61.4%) | cs=3.086e-7 (true=2.4e-7, err=10.92%) | nnErr(train)=92.44%
+[2026-03-27 20:14:00]       trial raw objectives after 10 epochs -- layers=1 nodes=3 draw=1 ks0=0.444 cs0=2.89e-7
+[2026-03-27 20:14:00]          detail: raw_a=-2.488e-9 ; raw_b=34.24 ; raw_c=0.0
+[2026-03-27 20:14:00]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.001471 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.875 | reason=init_quantized
+[2026-03-27 20:15:27]     arch epoch 1/10 -- layers=1 nodes=3 draw=2 | train_final=4.093e-5 val=2.689e-6 | dt=87.68s | t1=-1.098e-9 t2=-7.201e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.433, mech_raw=1.15]
+[2026-03-27 20:15:27]       mech/nn | ks=4.454 (true=0.1, err=164.88%) | cs=2.055e-7 (true=2.4e-7, err=6.74%) | nnErr(train)=71.83%
+[2026-03-27 20:16:56]     arch epoch 2/10 -- layers=1 nodes=3 draw=2 | train_final=4.093e-5 val=2.687e-6 | dt=88.35s | t1=-1.068e-9 t2=1.861e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.381, mech_raw=1.31]
+[2026-03-27 20:16:56]       mech/nn | ks=4.454 (true=0.1, err=164.88%) | cs=2.058e-7 (true=2.4e-7, err=6.68%) | nnErr(train)=70.42%
+[2026-03-27 20:18:27]     arch epoch 3/10 -- layers=1 nodes=3 draw=2 | train_final=4.092e-5 val=2.686e-6 | dt=91.15s | t1=-1.041e-9 t2=-1.533e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.339, mech_raw=1.47]
+[2026-03-27 20:18:27]       mech/nn | ks=4.454 (true=0.1, err=164.88%) | cs=2.061e-7 (true=2.4e-7, err=6.61%) | nnErr(train)=69.31%
+[2026-03-27 20:19:59]     arch epoch 4/10 -- layers=1 nodes=3 draw=2 | train_final=4.092e-5 val=2.684e-6 | dt=91.88s | t1=-1.015e-9 t2=2.203e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.306, mech_raw=1.5]
+[2026-03-27 20:19:59]       mech/nn | ks=4.454 (true=0.1, err=164.87%) | cs=2.064e-7 (true=2.4e-7, err=6.54%) | nnErr(train)=68.47%
+[2026-03-27 20:21:32]     arch epoch 5/10 -- layers=1 nodes=3 draw=2 | train_final=4.092e-5 val=2.682e-6 | dt=93.28s | t1=-1.772e-9 t2=-1.302e-10 | gnn=1.0e-6 | lr=0.0179 | scale[p_net=0.278, mech_raw=1.5]
+[2026-03-27 20:21:32]       mech/nn | ks=4.454 (true=0.1, err=164.87%) | cs=2.071e-7 (true=2.4e-7, err=6.41%) | nnErr(train)=67.59%
+[2026-03-27 20:23:07]     arch epoch 6/10 -- layers=1 nodes=3 draw=2 | train_final=4.092e-5 val=2.675e-6 | dt=95.03s | t1=-3.848e-9 t2=1.264e-10 | gnn=1.0e-6 | lr=0.0393 | scale[p_net=0.255, mech_raw=1.5]
+[2026-03-27 20:23:07]       mech/nn | ks=4.453 (true=0.1, err=164.86%) | cs=2.086e-7 (true=2.4e-7, err=6.1%) | nnErr(train)=68.32%
+[2026-03-27 20:24:45]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.09e-5 -> gnn_new=1.0e-7 after_gnn=4.094e-5 | A_true=1.963e-9 A_pred=0.004214 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.332 | val_before=2.661e-6 val_after=2.701e-6 | reason=updated_quantized
+[2026-03-27 20:24:45]     arch epoch 7/10 -- layers=1 nodes=3 draw=2 | train_final=4.094e-5 val=2.701e-6 | dt=97.85s | t1=-1.045e-8 t2=-3.044e-9 | gnn=1.0e-7 | lr=0.104 | scale[p_net=0.235, mech_raw=1.5]
+[2026-03-27 20:24:45]       mech/nn | ks=4.45 (true=0.1, err=164.83%) | cs=2.129e-7 (true=2.4e-7, err=5.2%) | nnErr(train)=91.0%
+[2026-03-27 20:25:54]     arch epoch 8/10 -- layers=1 nodes=3 draw=2 | train_final=4.093e-5 val=2.693e-6 | dt=68.95s | t1=-5.119e-9 t2=-1.588e-9 | gnn=1.0e-7 | lr=0.584 | scale[p_net=0.218, mech_raw=1.5]
+[2026-03-27 20:25:54]       mech/nn | ks=4.436 (true=0.1, err=164.7%) | cs=2.359e-7 (true=2.4e-7, err=0.75%) | nnErr(train)=76.53%
+[2026-03-27 20:27:19]       gnn-loss-flow | gnn_old=1.0e-7 theta_fixed=4.055e-5 -> gnn_new=1.0e-8 after_gnn=4.09e-5 | A_true=1.963e-9 A_pred=0.2445 | dec_true=-9 dec_pred=-1 delta_dec=-8 | candidate=1.0e-8 log10diff=-8.095 | val_before=2.234e-6 val_after=2.674e-6 | reason=updated_quantized
+[2026-03-27 20:27:19]     arch epoch 9/10 -- layers=1 nodes=3 draw=2 | train_final=4.09e-5 val=2.674e-6 | dt=84.66s | t1=-6.935e-8 t2=-3.089e-7 | gnn=1.0e-8 | lr=5.84 | scale[p_net=0.203, mech_raw=1.5]
+[2026-03-27 20:27:19]       mech/nn | ks=4.285 (true=0.1, err=163.2%) | cs=6.857e-7 (true=2.4e-7, err=45.59%) | nnErr(train)=67.5%
+[2026-03-27 20:28:46]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=5.0 | scale[p_net=0.191, mech_raw=1.5]
+[2026-03-27 20:28:46]       step-guard: accepted after 1 retry/reduction(s) | lr=5.0 | train=4.08e-5
+[2026-03-27 20:28:46]       gnn-loss-flow | gnn_old=1.0e-8 theta_fixed=4.08e-5 -> gnn_new=1.0e-9 after_gnn=4.092e-5 | A_true=1.963e-9 A_pred=0.7649 | dec_true=-9 dec_pred=0 delta_dec=-9 | candidate=1.0e-9 log10diff=-8.591 | val_before=2.59e-6 val_after=2.694e-6 | reason=updated_quantized
+[2026-03-27 20:28:46]     arch epoch 10/10 -- layers=1 nodes=3 draw=2 | train_final=4.092e-5 val=2.694e-6 | dt=87.57s | t1=-5.314e-8 t2=-4.787e-8 | gnn=1.0e-9 | lr=5.0 | scale[p_net=0.191, mech_raw=1.5]
+[2026-03-27 20:28:46]       mech/nn | ks=4.104 (true=0.1, err=161.32%) | cs=1.722e-6 (true=2.4e-7, err=85.59%) | nnErr(train)=84.59%
+[2026-03-27 20:28:46]       trial raw objectives after 10 epochs -- layers=1 nodes=3 draw=2 ks0=4.45 cs0=2.05e-7
+[2026-03-27 20:28:46]          detail: raw_a=3.653e-10 ; raw_b=88.64 ; raw_c=2.0
+[2026-03-27 20:28:46]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.002948 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-6.177 | reason=init_quantized
+[2026-03-27 20:29:17]     arch epoch 1/10 -- layers=1 nodes=3 draw=3 | train_final=4.001e-5 val=2.745e-6 | dt=30.75s | t1=-6.44e-8 t2=3.492e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.561, mech_raw=0.891]
+[2026-03-27 20:29:17]       mech/nn | ks=0.6668 (true=0.1, err=82.4%) | cs=1.35e-6 (true=2.4e-7, err=75.01%) | nnErr(train)=155.85%
+[2026-03-27 20:29:45]     arch epoch 2/10 -- layers=1 nodes=3 draw=3 | train_final=3.995e-5 val=2.731e-6 | dt=27.95s | t1=-6.585e-8 t2=1.243e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.623, mech_raw=0.803]
+[2026-03-27 20:29:45]       mech/nn | ks=0.6612 (true=0.1, err=82.03%) | cs=1.359e-6 (true=2.4e-7, err=75.31%) | nnErr(train)=136.0%
+[2026-03-27 20:30:09]     arch epoch 3/10 -- layers=1 nodes=3 draw=3 | train_final=3.988e-5 val=2.719e-6 | dt=24.35s | t1=-6.73e-8 t2=1.052e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.684, mech_raw=0.731]
+[2026-03-27 20:30:09]       mech/nn | ks=0.6556 (true=0.1, err=81.66%) | cs=1.369e-6 (true=2.4e-7, err=75.61%) | nnErr(train)=117.01%
+[2026-03-27 20:30:27]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=3.981e-5 -> gnn_new=0.0001 after_gnn=3.968e-5 | A_true=1.963e-9 A_pred=2.239e-5 | dec_true=-9 dec_pred=-5 delta_dec=-4 | candidate=0.0001 log10diff=-4.057 | val_before=2.705e-6 val_after=2.636e-6 | reason=updated_quantized
+[2026-03-27 20:30:27]     arch epoch 4/10 -- layers=1 nodes=3 draw=3 | train_final=3.968e-5 val=2.636e-6 | dt=18.01s | t1=-6.878e-8 t2=-4.618e-11 | gnn=0.0001 | lr=0.01 | scale[p_net=0.745, mech_raw=0.671]
+[2026-03-27 20:30:27]       mech/nn | ks=0.65 (true=0.1, err=81.29%) | cs=1.378e-6 (true=2.4e-7, err=75.91%) | nnErr(train)=68.82%
+[2026-03-27 20:31:12]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.001 | scale[p_net=0.714, mech_raw=0.701]
+[2026-03-27 20:31:12]       step-guard: accepted after 1 retry/reduction(s) | lr=0.001 | train=3.946e-5
+[2026-03-27 20:31:12]       gnn-loss-flow | gnn_old=0.0001 theta_fixed=3.946e-5 -> gnn_new=1.0e-5 after_gnn=3.978e-5 | A_true=1.963e-9 A_pred=7.397e-5 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-4.576 | val_before=2.536e-6 val_after=2.69e-6 | reason=updated_quantized
+[2026-03-27 20:31:12]     arch epoch 5/10 -- layers=1 nodes=3 draw=3 | train_final=3.978e-5 val=2.69e-6 | dt=44.55s | t1=-2.148e-7 t2=-5.402e-9 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.714, mech_raw=0.701]
+[2026-03-27 20:31:12]       mech/nn | ks=0.6495 (true=0.1, err=81.25%) | cs=1.379e-6 (true=2.4e-7, err=75.94%) | nnErr(train)=83.59%
+[2026-03-27 20:31:33]     arch epoch 6/10 -- layers=1 nodes=3 draw=3 | train_final=3.975e-5 val=2.68e-6 | dt=21.33s | t1=-2.41e-8 t2=-9.752e-11 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.687, mech_raw=0.728]
+[2026-03-27 20:31:33]       mech/nn | ks=0.6489 (true=0.1, err=81.22%) | cs=1.38e-6 (true=2.4e-7, err=75.97%) | nnErr(train)=75.55%
+[2026-03-27 20:31:59]     arch epoch 7/10 -- layers=1 nodes=3 draw=3 | train_final=3.973e-5 val=2.671e-6 | dt=25.82s | t1=-2.335e-8 t2=7.369e-10 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.665, mech_raw=0.752]
+[2026-03-27 20:31:59]       mech/nn | ks=0.6483 (true=0.1, err=81.18%) | cs=1.381e-6 (true=2.4e-7, err=76.01%) | nnErr(train)=70.11%
+[2026-03-27 20:32:28]     arch epoch 8/10 -- layers=1 nodes=3 draw=3 | train_final=3.971e-5 val=2.664e-6 | dt=29.22s | t1=-2.278e-8 t2=-9.484e-11 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.646, mech_raw=0.774]
+[2026-03-27 20:32:28]       mech/nn | ks=0.6478 (true=0.1, err=81.14%) | cs=1.382e-6 (true=2.4e-7, err=76.04%) | nnErr(train)=67.47%
+[2026-03-27 20:33:01]     arch epoch 9/10 -- layers=1 nodes=3 draw=3 | train_final=3.968e-5 val=2.654e-6 | dt=32.61s | t1=-2.234e-8 t2=7.083e-10 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.629, mech_raw=0.794]
+[2026-03-27 20:33:01]       mech/nn | ks=0.6472 (true=0.1, err=81.1%) | cs=1.383e-6 (true=2.4e-7, err=76.07%) | nnErr(train)=67.67%
+[2026-03-27 20:33:36]     arch epoch 10/10 -- layers=1 nodes=3 draw=3 | train_final=3.966e-5 val=2.646e-6 | dt=35.7s | t1=-2.2e-8 t2=-7.052e-11 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.616, mech_raw=0.812]
+[2026-03-27 20:33:36]       mech/nn | ks=0.6467 (true=0.1, err=81.07%) | cs=1.384e-6 (true=2.4e-7, err=76.1%) | nnErr(train)=70.47%
+[2026-03-27 20:33:36]       trial raw objectives after 10 epochs -- layers=1 nodes=3 draw=3 ks0=0.673 cs0=1.34e-6
+[2026-03-27 20:33:36]          detail: raw_a=-1.137e-8 ; raw_b=29.03 ; raw_c=1.0
+[2026-03-27 20:33:36]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.001651 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.925 | reason=init_quantized
+[2026-03-27 20:35:19]       step-guard retry 1/6 -- reason=step_trial_loss_jump | lr=0.001 | scale[p_net=0.449, mech_raw=1.11]
+[2026-03-27 20:35:19]       step-guard: accepted after 1 retry/reduction(s) | lr=0.001 | train=2.954e-5
+[2026-03-27 20:35:19]     arch epoch 1/10 -- layers=1 nodes=3 draw=4 | train_final=2.954e-5 val=2.603e-6 | dt=102.27s | t1=-5.37e-7 t2=-5.471e-8 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.449, mech_raw=1.11]
+[2026-03-27 20:35:19]       mech/nn | ks=0.01088 (true=0.1, err=96.33%) | cs=5.757e-8 (true=2.4e-7, err=62.0%) | nnErr(train)=71.12%
+[2026-03-27 20:37:01]     arch epoch 2/10 -- layers=1 nodes=3 draw=4 | train_final=2.882e-5 val=2.591e-6 | dt=102.51s | t1=-6.477e-7 t2=-8.055e-8 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.407, mech_raw=1.23]
+[2026-03-27 20:37:01]       mech/nn | ks=0.01088 (true=0.1, err=96.35%) | cs=5.757e-8 (true=2.4e-7, err=62.01%) | nnErr(train)=70.73%
+[2026-03-27 20:38:46]     arch epoch 3/10 -- layers=1 nodes=3 draw=4 | train_final=2.787e-5 val=2.577e-6 | dt=104.98s | t1=-8.137e-7 t2=-1.274e-7 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.373, mech_raw=1.34]
+[2026-03-27 20:38:46]       mech/nn | ks=0.01087 (true=0.1, err=96.38%) | cs=5.756e-8 (true=2.4e-7, err=62.01%) | nnErr(train)=70.36%
+[2026-03-27 20:40:34]     arch epoch 4/10 -- layers=1 nodes=3 draw=4 | train_final=2.655e-5 val=2.556e-6 | dt=108.13s | t1=-1.088e-6 t2=-2.369e-7 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.343, mech_raw=1.46]
+[2026-03-27 20:40:34]       mech/nn | ks=0.01086 (true=0.1, err=96.4%) | cs=5.755e-8 (true=2.4e-7, err=62.02%) | nnErr(train)=70.0%
+[2026-03-27 20:42:27]     arch epoch 5/10 -- layers=1 nodes=3 draw=4 | train_final=2.433e-5 val=2.523e-6 | dt=113.02s | t1=-1.618e-6 t2=-6.031e-7 | gnn=1.0e-6 | lr=0.001 | scale[p_net=0.318, mech_raw=1.5]
+[2026-03-27 20:42:27]       mech/nn | ks=0.01086 (true=0.1, err=96.42%) | cs=5.754e-8 (true=2.4e-7, err=62.02%) | nnErr(train)=69.67%
+[2026-03-27 20:44:23]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.0001 | scale[p_net=0.294, mech_raw=1.5]
+[2026-03-27 20:44:23]       step-guard: accepted after 1 retry/reduction(s) | lr=0.0001 | train=2.401e-5
+[2026-03-27 20:44:23]     arch epoch 6/10 -- layers=1 nodes=3 draw=4 | train_final=2.401e-5 val=2.519e-6 | dt=115.21s | t1=-3.039e-7 t2=-1.609e-8 | gnn=1.0e-6 | lr=0.0001 | scale[p_net=0.294, mech_raw=1.5]
+[2026-03-27 20:44:23]       mech/nn | ks=0.01086 (true=0.1, err=96.42%) | cs=5.754e-8 (true=2.4e-7, err=62.02%) | nnErr(train)=69.64%
+[2026-03-27 20:46:19]     arch epoch 7/10 -- layers=1 nodes=3 draw=4 | train_final=2.365e-5 val=2.512e-6 | dt=116.88s | t1=-3.404e-7 t2=-1.607e-8 | gnn=1.0e-6 | lr=0.0001 | scale[p_net=0.272, mech_raw=1.5]
+[2026-03-27 20:46:19]       mech/nn | ks=0.01086 (true=0.1, err=96.43%) | cs=5.754e-8 (true=2.4e-7, err=62.02%) | nnErr(train)=69.61%
+[2026-03-27 20:48:15]     arch epoch 8/10 -- layers=1 nodes=3 draw=4 | train_final=2.325e-5 val=2.505e-6 | dt=115.98s | t1=-3.875e-7 t2=-1.786e-8 | gnn=1.0e-6 | lr=0.0001 | scale[p_net=0.252, mech_raw=1.5]
+[2026-03-27 20:48:15]       mech/nn | ks=0.01086 (true=0.1, err=96.43%) | cs=5.754e-8 (true=2.4e-7, err=62.02%) | nnErr(train)=69.58%
+[2026-03-27 20:50:14]     arch epoch 9/10 -- layers=1 nodes=3 draw=4 | train_final=2.277e-5 val=2.499e-6 | dt=118.18s | t1=-4.478e-7 t2=-2.53e-8 | gnn=1.0e-6 | lr=0.0001 | scale[p_net=0.233, mech_raw=1.5]
+[2026-03-27 20:50:14]       mech/nn | ks=0.01086 (true=0.1, err=96.43%) | cs=5.754e-8 (true=2.4e-7, err=62.02%) | nnErr(train)=69.55%
+[2026-03-27 20:52:11]     arch epoch 10/10 -- layers=1 nodes=3 draw=4 | train_final=2.221e-5 val=2.488e-6 | dt=117.27s | t1=-5.285e-7 t2=-4.003e-8 | gnn=1.0e-6 | lr=0.0001 | scale[p_net=0.217, mech_raw=1.5]
+[2026-03-27 20:52:11]       mech/nn | ks=0.01086 (true=0.1, err=96.43%) | cs=5.754e-8 (true=2.4e-7, err=62.02%) | nnErr(train)=69.52%
+[2026-03-27 20:52:11]       trial raw objectives after 10 epochs -- layers=1 nodes=3 draw=4 ks0=0.0109 cs0=5.76e-8
+[2026-03-27 20:52:11]          detail: raw_a=-1.248e-8 ; raw_b=111.4 ; raw_c=2.0
+[2026-03-27 20:52:11]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.001571 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.903 | reason=init_quantized
+[2026-03-27 20:52:58]     arch epoch 1/10 -- layers=1 nodes=3 draw=5 | train_final=4.081e-5 val=2.723e-6 | dt=47.47s | t1=-2.909e-8 t2=-9.139e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.521, mech_raw=0.959]
+[2026-03-27 20:52:58]       mech/nn | ks=0.05646 (true=0.1, err=24.83%) | cs=6.998e-8 (true=2.4e-7, err=53.52%) | nnErr(train)=128.5%
+[2026-03-27 20:53:42]     arch epoch 2/10 -- layers=1 nodes=3 draw=5 | train_final=4.078e-5 val=2.718e-6 | dt=43.45s | t1=-3.309e-8 t2=-7.41e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.541, mech_raw=0.924]
+[2026-03-27 20:53:42]       mech/nn | ks=0.05596 (true=0.1, err=25.21%) | cs=7.017e-8 (true=2.4e-7, err=53.41%) | nnErr(train)=118.3%
+[2026-03-27 20:54:20]     arch epoch 3/10 -- layers=1 nodes=3 draw=5 | train_final=4.074e-5 val=2.712e-6 | dt=38.68s | t1=-3.818e-8 t2=-1.706e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.56, mech_raw=0.893]
+[2026-03-27 20:54:20]       mech/nn | ks=0.05547 (true=0.1, err=25.6%) | cs=7.036e-8 (true=2.4e-7, err=53.29%) | nnErr(train)=108.42%
+[2026-03-27 20:54:50]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.069e-5 -> gnn_new=1.0e-5 after_gnn=4.064e-5 | A_true=1.963e-9 A_pred=4.619e-5 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-4.372 | val_before=2.705e-6 val_after=2.697e-6 | reason=updated_quantized
+[2026-03-27 20:54:50]     arch epoch 4/10 -- layers=1 nodes=3 draw=5 | train_final=4.064e-5 val=2.697e-6 | dt=29.09s | t1=-4.485e-8 t2=-3.159e-9 | gnn=1.0e-5 | lr=0.01 | scale[p_net=0.577, mech_raw=0.866]
+[2026-03-27 20:54:50]       mech/nn | ks=0.05497 (true=0.1, err=25.98%) | cs=7.056e-8 (true=2.4e-7, err=53.17%) | nnErr(train)=90.15%
+[2026-03-27 20:55:29]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.001 | scale[p_net=0.566, mech_raw=0.884]
+[2026-03-27 20:55:29]       step-guard: accepted after 1 retry/reduction(s) | lr=0.001 | train=4.06e-5
+[2026-03-27 20:55:29]     arch epoch 5/10 -- layers=1 nodes=3 draw=5 | train_final=4.06e-5 val=2.689e-6 | dt=39.4s | t1=-4.118e-8 t2=-4.677e-9 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.566, mech_raw=0.884]
+[2026-03-27 20:55:29]       mech/nn | ks=0.05492 (true=0.1, err=26.02%) | cs=7.058e-8 (true=2.4e-7, err=53.16%) | nnErr(train)=83.89%
+[2026-03-27 20:56:26]     arch epoch 6/10 -- layers=1 nodes=3 draw=5 | train_final=4.053e-5 val=2.676e-6 | dt=56.93s | t1=-5.84e-8 t2=-1.019e-8 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.543, mech_raw=0.921]
+[2026-03-27 20:56:26]       mech/nn | ks=0.05488 (true=0.1, err=26.06%) | cs=7.059e-8 (true=2.4e-7, err=53.14%) | nnErr(train)=77.42%
+[2026-03-27 20:57:53]     arch epoch 7/10 -- layers=1 nodes=3 draw=5 | train_final=4.042e-5 val=2.651e-6 | dt=87.38s | t1=-8.369e-8 t2=-2.461e-8 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.515, mech_raw=0.971]
+[2026-03-27 20:57:53]       mech/nn | ks=0.05483 (true=0.1, err=26.1%) | cs=7.062e-8 (true=2.4e-7, err=53.13%) | nnErr(train)=71.9%
+[2026-03-27 20:59:27]     arch epoch 8/10 -- layers=1 nodes=3 draw=5 | train_final=4.021e-5 val=2.589e-6 | dt=93.26s | t1=-1.337e-7 t2=-7.596e-8 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.483, mech_raw=1.04]
+[2026-03-27 20:59:27]       mech/nn | ks=0.05478 (true=0.1, err=26.14%) | cs=7.064e-8 (true=2.4e-7, err=53.12%) | nnErr(train)=68.33%
+[2026-03-27 21:00:42]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.0001 | scale[p_net=0.446, mech_raw=1.12]
+[2026-03-27 21:00:42]       step-guard: accepted after 1 retry/reduction(s) | lr=0.0001 | train=4.018e-5
+[2026-03-27 21:00:42]     arch epoch 9/10 -- layers=1 nodes=3 draw=5 | train_final=4.018e-5 val=2.578e-6 | dt=75.46s | t1=-2.914e-8 t2=-4.942e-9 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.446, mech_raw=1.12]
+[2026-03-27 21:00:42]       mech/nn | ks=0.05477 (true=0.1, err=26.14%) | cs=7.064e-8 (true=2.4e-7, err=53.12%) | nnErr(train)=68.12%
+[2026-03-27 21:01:59]     arch epoch 10/10 -- layers=1 nodes=3 draw=5 | train_final=4.014e-5 val=2.566e-6 | dt=77.01s | t1=-3.492e-8 t2=-6.642e-9 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.41, mech_raw=1.22]
+[2026-03-27 21:01:59]       mech/nn | ks=0.05477 (true=0.1, err=26.15%) | cs=7.064e-8 (true=2.4e-7, err=53.12%) | nnErr(train)=67.93%
+[2026-03-27 21:01:59]       trial raw objectives after 10 epochs -- layers=1 nodes=3 draw=5 ks0=0.057 cs0=6.98e-8
+[2026-03-27 21:01:59]          detail: raw_a=-1.62e-8 ; raw_b=58.81 ; raw_c=2.0
+[2026-03-27 21:01:59]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.001121 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.756 | reason=init_quantized
+[2026-03-27 21:02:50]     arch epoch 1/10 -- layers=1 nodes=3 draw=6 | train_final=3.984e-5 val=2.715e-6 | dt=51.19s | t1=-1.364e-7 t2=-7.126e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.524, mech_raw=0.954]
+[2026-03-27 21:02:50]       mech/nn | ks=0.05145 (true=0.1, err=28.86%) | cs=1.133e-7 (true=2.4e-7, err=32.6%) | nnErr(train)=112.94%
+[2026-03-27 21:03:31]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=3.967e-5 -> gnn_new=0.0001 after_gnn=3.945e-5 | A_true=1.963e-9 A_pred=1.07e-5 | dec_true=-9 dec_pred=-5 delta_dec=-4 | candidate=0.0001 log10diff=-3.736 | val_before=2.704e-6 val_after=2.695e-6 | reason=updated_quantized
+[2026-03-27 21:03:31]     arch epoch 2/10 -- layers=1 nodes=3 draw=6 | train_final=3.945e-5 val=2.695e-6 | dt=40.75s | t1=-1.552e-7 t2=-1.015e-8 | gnn=0.0001 | lr=0.01 | scale[p_net=0.547, mech_raw=0.914]
+[2026-03-27 21:03:31]       mech/nn | ks=0.05099 (true=0.1, err=29.25%) | cs=1.139e-7 (true=2.4e-7, err=32.36%) | nnErr(train)=82.96%
+[2026-03-27 21:04:24]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.001 | scale[p_net=0.494, mech_raw=1.01]
+[2026-03-27 21:04:24]       step-guard retry 2/6 -- reason=step_prev_epoch_loss_jump | lr=0.0001 | scale[p_net=0.494, mech_raw=1.01]
+[2026-03-27 21:04:24]       step-guard: accepted after 2 retry/reduction(s) | lr=0.0001 | train=3.933e-5
+[2026-03-27 21:04:24]     arch epoch 3/10 -- layers=1 nodes=3 draw=6 | train_final=3.933e-5 val=2.686e-6 | dt=53.24s | t1=-1.158e-7 t2=-9.429e-9 | gnn=0.0001 | lr=0.0001 | scale[p_net=0.494, mech_raw=1.01]
+[2026-03-27 21:04:24]       mech/nn | ks=0.05099 (true=0.1, err=29.25%) | cs=1.139e-7 (true=2.4e-7, err=32.36%) | nnErr(train)=76.86%
+[2026-03-27 21:05:44]     arch epoch 4/10 -- layers=1 nodes=3 draw=6 | train_final=3.915e-5 val=2.673e-6 | dt=79.98s | t1=-1.606e-7 t2=-1.737e-8 | gnn=0.0001 | lr=0.0001 | scale[p_net=0.437, mech_raw=1.14]
+[2026-03-27 21:05:44]       mech/nn | ks=0.05098 (true=0.1, err=29.26%) | cs=1.139e-7 (true=2.4e-7, err=32.36%) | nnErr(train)=71.43%
+[2026-03-27 21:06:54]     arch epoch 5/10 -- layers=1 nodes=3 draw=6 | train_final=3.89e-5 val=2.654e-6 | dt=69.67s | t1=-2.119e-7 t2=-3.24e-8 | gnn=0.0001 | lr=0.0001 | scale[p_net=0.384, mech_raw=1.3]
+[2026-03-27 21:06:54]       mech/nn | ks=0.05098 (true=0.1, err=29.26%) | cs=1.139e-7 (true=2.4e-7, err=32.36%) | nnErr(train)=68.57%
+[2026-03-27 21:08:01]     arch epoch 6/10 -- layers=1 nodes=3 draw=6 | train_final=3.855e-5 val=2.624e-6 | dt=67.1s | t1=-2.884e-7 t2=-6.289e-8 | gnn=0.0001 | lr=0.0001 | scale[p_net=0.336, mech_raw=1.49]
+[2026-03-27 21:08:01]       mech/nn | ks=0.05097 (true=0.1, err=29.26%) | cs=1.139e-7 (true=2.4e-7, err=32.35%) | nnErr(train)=69.42%
+[2026-03-27 21:09:11]       gnn-loss-flow | gnn_old=0.0001 theta_fixed=3.798e-5 -> gnn_new=1.0e-5 after_gnn=3.958e-5 | A_true=1.963e-9 A_pred=3.574e-5 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-4.26 | val_before=2.565e-6 val_after=2.7e-6 | reason=updated_quantized
+[2026-03-27 21:09:11]     arch epoch 7/10 -- layers=1 nodes=3 draw=6 | train_final=3.958e-5 val=2.7e-6 | dt=69.91s | t1=-4.276e-7 t2=-1.501e-7 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.294, mech_raw=1.5]
+[2026-03-27 21:09:11]       mech/nn | ks=0.05097 (true=0.1, err=29.27%) | cs=1.139e-7 (true=2.4e-7, err=32.35%) | nnErr(train)=92.71%
+[2026-03-27 21:09:50]     arch epoch 8/10 -- layers=1 nodes=3 draw=6 | train_final=3.957e-5 val=2.699e-6 | dt=39.27s | t1=-1.411e-8 t2=-1.431e-10 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.26, mech_raw=1.5]
+[2026-03-27 21:09:50]       mech/nn | ks=0.05097 (true=0.1, err=29.27%) | cs=1.14e-7 (true=2.4e-7, err=32.35%) | nnErr(train)=91.66%
+[2026-03-27 21:10:34]     arch epoch 9/10 -- layers=1 nodes=3 draw=6 | train_final=3.956e-5 val=2.698e-6 | dt=44.18s | t1=-1.289e-8 t2=-1.286e-10 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.232, mech_raw=1.5]
+[2026-03-27 21:10:34]       mech/nn | ks=0.05096 (true=0.1, err=29.28%) | cs=1.14e-7 (true=2.4e-7, err=32.35%) | nnErr(train)=90.74%
+[2026-03-27 21:11:21]     arch epoch 10/10 -- layers=1 nodes=3 draw=6 | train_final=3.954e-5 val=2.697e-6 | dt=47.19s | t1=-1.184e-8 t2=-7.792e-10 | gnn=1.0e-5 | lr=0.0001 | scale[p_net=0.209, mech_raw=1.5]
+[2026-03-27 21:11:21]       mech/nn | ks=0.05096 (true=0.1, err=29.28%) | cs=1.14e-7 (true=2.4e-7, err=32.34%) | nnErr(train)=89.91%
+[2026-03-27 21:11:21]       trial raw objectives after 10 epochs -- layers=1 nodes=3 draw=6 ks0=0.0519 cs0=1.13e-7
+[2026-03-27 21:11:21]          detail: raw_a=-2.633e-9 ; raw_b=56.25 ; raw_c=1.0
+[2026-03-27 21:11:21]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.000945 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.682 | reason=init_quantized
+[2026-03-27 21:11:48]     arch epoch 1/10 -- layers=1 nodes=3 draw=7 | train_final=3.005e-5 val=2.715e-6 | dt=26.99s | t1=-3.587e-8 t2=3.723e-11 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.447, mech_raw=1.12]
+[2026-03-27 21:11:48]       mech/nn | ks=0.007718 (true=0.1, err=111.25%) | cs=4.214e-6 (true=2.4e-7, err=124.45%) | nnErr(train)=111.09%
+[2026-03-27 21:12:09]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=3.002e-5 -> gnn_new=0.0001 after_gnn=3.012e-5 | A_true=1.963e-9 A_pred=1.3e-5 | dec_true=-9 dec_pred=-5 delta_dec=-4 | candidate=0.0001 log10diff=-3.821 | val_before=2.705e-6 val_after=2.73e-6 | reason=updated_quantized
+[2026-03-27 21:12:09]     arch epoch 2/10 -- layers=1 nodes=3 draw=7 | train_final=3.012e-5 val=2.73e-6 | dt=21.01s | t1=-3.513e-8 t2=-4.083e-11 | gnn=0.0001 | lr=0.01 | scale[p_net=0.404, mech_raw=1.24]
+[2026-03-27 21:12:09]       mech/nn | ks=0.007697 (true=0.1, err=111.37%) | cs=4.219e-6 (true=2.4e-7, err=124.5%) | nnErr(train)=131.89%
+[2026-03-27 21:12:41]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.001 | scale[p_net=0.327, mech_raw=1.5]
+[2026-03-27 21:12:41]       step-guard: accepted after 1 retry/reduction(s) | lr=0.001 | train=2.983e-5
+[2026-03-27 21:12:41]     arch epoch 3/10 -- layers=1 nodes=3 draw=7 | train_final=2.983e-5 val=2.662e-6 | dt=31.96s | t1=-2.971e-7 t2=7.536e-9 | gnn=0.0001 | lr=0.001 | scale[p_net=0.327, mech_raw=1.5]
+[2026-03-27 21:12:41]       mech/nn | ks=0.007695 (true=0.1, err=111.38%) | cs=4.22e-6 (true=2.4e-7, err=124.51%) | nnErr(train)=67.6%
+[2026-03-27 21:13:37]       gnn-loss-flow | gnn_old=0.0001 theta_fixed=2.951e-5 -> gnn_new=1.0e-5 after_gnn=2.996e-5 | A_true=1.963e-9 A_pred=7.247e-5 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-4.567 | val_before=2.61e-6 val_after=2.693e-6 | reason=updated_quantized
+[2026-03-27 21:13:37]     arch epoch 4/10 -- layers=1 nodes=3 draw=7 | train_final=2.996e-5 val=2.693e-6 | dt=55.38s | t1=-3.295e-7 t2=1.119e-8 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.262, mech_raw=1.5]
+[2026-03-27 21:13:37]       mech/nn | ks=0.007692 (true=0.1, err=111.39%) | cs=4.22e-6 (true=2.4e-7, err=124.51%) | nnErr(train)=85.09%
+[2026-03-27 21:14:04]     arch epoch 5/10 -- layers=1 nodes=3 draw=7 | train_final=2.993e-5 val=2.686e-6 | dt=27.25s | t1=-3.005e-8 t2=-3.631e-10 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.213, mech_raw=1.5]
+[2026-03-27 21:14:04]       mech/nn | ks=0.00769 (true=0.1, err=111.41%) | cs=4.22e-6 (true=2.4e-7, err=124.51%) | nnErr(train)=78.15%
+[2026-03-27 21:14:38]     arch epoch 6/10 -- layers=1 nodes=3 draw=7 | train_final=2.99e-5 val=2.68e-6 | dt=34.04s | t1=-2.664e-8 t2=-3.246e-10 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.175, mech_raw=1.5]
+[2026-03-27 21:14:38]       mech/nn | ks=0.007688 (true=0.1, err=111.42%) | cs=4.221e-6 (true=2.4e-7, err=124.52%) | nnErr(train)=73.18%
+[2026-03-27 21:15:18]     arch epoch 7/10 -- layers=1 nodes=3 draw=7 | train_final=2.988e-5 val=2.674e-6 | dt=39.44s | t1=-2.385e-8 t2=2.519e-10 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.146, mech_raw=1.5]
+[2026-03-27 21:15:18]       mech/nn | ks=0.007686 (true=0.1, err=111.43%) | cs=4.221e-6 (true=2.4e-7, err=124.52%) | nnErr(train)=69.9%
+[2026-03-27 21:16:01]     arch epoch 8/10 -- layers=1 nodes=3 draw=7 | train_final=2.986e-5 val=2.67e-6 | dt=43.95s | t1=-2.15e-8 t2=1.337e-10 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.123, mech_raw=1.5]
+[2026-03-27 21:16:01]       mech/nn | ks=0.007684 (true=0.1, err=111.44%) | cs=4.221e-6 (true=2.4e-7, err=124.52%) | nnErr(train)=68.07%
+[2026-03-27 21:16:48]     arch epoch 9/10 -- layers=1 nodes=3 draw=7 | train_final=2.984e-5 val=2.667e-6 | dt=46.7s | t1=-1.949e-8 t2=-3.085e-10 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.104, mech_raw=1.5]
+[2026-03-27 21:16:48]       mech/nn | ks=0.007681 (true=0.1, err=111.46%) | cs=4.221e-6 (true=2.4e-7, err=124.52%) | nnErr(train)=67.42%
+[2026-03-27 21:17:40]     arch epoch 10/10 -- layers=1 nodes=3 draw=7 | train_final=2.982e-5 val=2.661e-6 | dt=51.59s | t1=-1.778e-8 t2=-3.512e-10 | gnn=1.0e-5 | lr=0.001 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:17:40]       mech/nn | ks=0.007679 (true=0.1, err=111.47%) | cs=4.221e-6 (true=2.4e-7, err=124.52%) | nnErr(train)=67.71%
+[2026-03-27 21:17:40]       trial raw objectives after 10 epochs -- layers=1 nodes=3 draw=7 ks0=0.00774 cs0=4.21e-6
+[2026-03-27 21:17:40]          detail: raw_a=-6.243e-9 ; raw_b=37.83 ; raw_c=1.0
+[2026-03-27 21:17:40]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.001492 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.881 | reason=init_quantized
+[2026-03-27 21:19:04]     arch epoch 1/10 -- layers=1 nodes=3 draw=8 | train_final=4.091e-5 val=2.682e-6 | dt=84.24s | t1=-4.279e-9 t2=-5.023e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.427, mech_raw=1.17]
+[2026-03-27 21:19:04]       mech/nn | ks=1.326 (true=0.1, err=112.25%) | cs=1.423e-7 (true=2.4e-7, err=22.71%) | nnErr(train)=70.22%
+[2026-03-27 21:20:30]     arch epoch 2/10 -- layers=1 nodes=3 draw=8 | train_final=4.091e-5 val=2.678e-6 | dt=86.27s | t1=-4.312e-9 t2=1.45e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.371, mech_raw=1.35]
+[2026-03-27 21:20:30]       mech/nn | ks=1.323 (true=0.1, err=112.17%) | cs=1.425e-7 (true=2.4e-7, err=22.65%) | nnErr(train)=68.23%
+[2026-03-27 21:22:00]     arch epoch 3/10 -- layers=1 nodes=3 draw=8 | train_final=4.091e-5 val=2.673e-6 | dt=89.53s | t1=-4.359e-9 t2=-1.805e-9 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.328, mech_raw=1.5]
+[2026-03-27 21:22:00]       mech/nn | ks=1.32 (true=0.1, err=112.07%) | cs=1.427e-7 (true=2.4e-7, err=22.58%) | nnErr(train)=67.47%
+[2026-03-27 21:23:32]     arch epoch 4/10 -- layers=1 nodes=3 draw=8 | train_final=4.09e-5 val=2.668e-6 | dt=92.01s | t1=-4.414e-9 t2=-6.942e-10 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.293, mech_raw=1.5]
+[2026-03-27 21:23:32]       mech/nn | ks=1.317 (true=0.1, err=111.96%) | cs=1.429e-7 (true=2.4e-7, err=22.51%) | nnErr(train)=67.9%
+[2026-03-27 21:25:03]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.089e-5 -> gnn_new=1.0e-7 after_gnn=4.094e-5 | A_true=1.963e-9 A_pred=0.003182 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.21 | val_before=2.661e-6 val_after=2.702e-6 | reason=updated_quantized
+[2026-03-27 21:25:03]     arch epoch 5/10 -- layers=1 nodes=3 draw=8 | train_final=4.094e-5 val=2.702e-6 | dt=91.61s | t1=-7.356e-9 t2=-9.519e-10 | gnn=1.0e-7 | lr=0.0164 | scale[p_net=0.265, mech_raw=1.5]
+[2026-03-27 21:25:03]       mech/nn | ks=1.311 (true=0.1, err=111.76%) | cs=1.433e-7 (true=2.4e-7, err=22.39%) | nnErr(train)=93.13%
+[2026-03-27 21:26:07]     arch epoch 6/10 -- layers=1 nodes=3 draw=8 | train_final=4.093e-5 val=2.7e-6 | dt=63.18s | t1=-1.789e-9 t2=-7.922e-10 | gnn=1.0e-7 | lr=0.0575 | scale[p_net=0.241, mech_raw=1.5]
+[2026-03-27 21:26:07]       mech/nn | ks=1.293 (true=0.1, err=111.17%) | cs=1.445e-7 (true=2.4e-7, err=22.03%) | nnErr(train)=90.2%
+[2026-03-27 21:27:15]     arch epoch 7/10 -- layers=1 nodes=3 draw=8 | train_final=4.092e-5 val=2.685e-6 | dt=68.21s | t1=-1.204e-8 t2=-3.878e-9 | gnn=1.0e-7 | lr=0.425 | scale[p_net=0.22, mech_raw=1.5]
+[2026-03-27 21:27:15]       mech/nn | ks=1.184 (true=0.1, err=107.33%) | cs=1.528e-7 (true=2.4e-7, err=19.62%) | nnErr(train)=73.12%
+[2026-03-27 21:28:39]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.425 | scale[p_net=0.203, mech_raw=1.5]
+[2026-03-27 21:28:39]       step-guard: accepted after 1 retry/reduction(s) | lr=0.425 | train=4.089e-5
+[2026-03-27 21:28:39]     arch epoch 8/10 -- layers=1 nodes=3 draw=8 | train_final=4.089e-5 val=2.665e-6 | dt=84.28s | t1=-1.611e-8 t2=-6.094e-9 | gnn=1.0e-7 | lr=0.425 | scale[p_net=0.203, mech_raw=1.5]
+[2026-03-27 21:28:39]       mech/nn | ks=1.081 (true=0.1, err=103.38%) | cs=1.618e-7 (true=2.4e-7, err=17.12%) | nnErr(train)=67.77%
+[2026-03-27 21:30:08]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=0.425 | scale[p_net=0.189, mech_raw=1.5]
+[2026-03-27 21:30:08]       step-guard: accepted after 1 retry/reduction(s) | lr=0.425 | train=4.086e-5
+[2026-03-27 21:30:08]       gnn-loss-flow | gnn_old=1.0e-7 theta_fixed=4.086e-5 -> gnn_new=1.0e-8 after_gnn=4.093e-5 | A_true=1.963e-9 A_pred=0.03974 | dec_true=-9 dec_pred=-1 delta_dec=-8 | candidate=1.0e-8 log10diff=-7.306 | val_before=2.636e-6 val_after=2.7e-6 | reason=updated_quantized
+[2026-03-27 21:30:08]     arch epoch 9/10 -- layers=1 nodes=3 draw=8 | train_final=4.093e-5 val=2.7e-6 | dt=89.05s | t1=-2.21e-8 t2=-1.167e-8 | gnn=1.0e-8 | lr=0.425 | scale[p_net=0.189, mech_raw=1.5]
+[2026-03-27 21:30:08]       mech/nn | ks=0.9719 (true=0.1, err=98.76%) | cs=1.725e-7 (true=2.4e-7, err=14.34%) | nnErr(train)=91.51%
+[2026-03-27 21:31:05]     arch epoch 10/10 -- layers=1 nodes=3 draw=8 | train_final=4.079e-5 val=2.652e-6 | dt=56.54s | t1=-2.075e-8 t2=-1.199e-7 | gnn=1.0e-8 | lr=4.25 | scale[p_net=0.177, mech_raw=1.5]
+[2026-03-27 21:31:05]       mech/nn | ks=0.3431 (true=0.1, err=53.54%) | cs=3.244e-7 (true=2.4e-7, err=13.09%) | nnErr(train)=68.79%
+[2026-03-27 21:31:05]       trial raw objectives after 10 epochs -- layers=1 nodes=3 draw=8 ks0=1.33 cs0=1.42e-7
+[2026-03-27 21:31:05]          detail: raw_a=-3.528e-9 ; raw_b=80.49 ; raw_c=2.0
+[2026-03-27 21:31:05]       g_nn init=1.0e-6 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.003055 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-6.192 | reason=init_quantized
+[2026-03-27 21:32:53]     arch epoch 1/10 -- layers=1 nodes=3 draw=9 | train_final=4.084e-5 val=2.561e-6 | dt=108.63s | t1=-0.3325 t2=0.09148 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.359, mech_raw=1.39]
+[2026-03-27 21:32:53]       mech/nn | ks=0.2171 (true=0.1, err=33.67%) | cs=5.579e-8 (true=2.4e-7, err=63.36%) | nnErr(train)=67.71%
+[2026-03-27 21:34:03]     arch epoch 2/10 -- layers=1 nodes=3 draw=9 | train_final=4.092e-5 val=2.687e-6 | dt=69.3s | t1=1.075e-7 t2=-3.212e-8 | gnn=1.0e-6 | lr=0.0225 | scale[p_net=0.267, mech_raw=1.5]
+[2026-03-27 21:34:03]       mech/nn | ks=0.2202 (true=0.1, err=34.28%) | cs=5.588e-8 (true=2.4e-7, err=63.29%) | nnErr(train)=80.33%
+[2026-03-27 21:34:52]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.097e-5 -> gnn_new=1.0e-7 after_gnn=4.094e-5 | A_true=1.963e-9 A_pred=0.003307 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.226 | val_before=2.748e-6 val_after=2.709e-6 | reason=updated_quantized
+[2026-03-27 21:34:52]     arch epoch 3/10 -- layers=1 nodes=3 draw=9 | train_final=4.094e-5 val=2.709e-6 | dt=49.63s | t1=1.209e-7 t2=-6.675e-8 | gnn=1.0e-7 | lr=0.114 | scale[p_net=0.202, mech_raw=1.5]
+[2026-03-27 21:34:52]       mech/nn | ks=0.2328 (true=0.1, err=36.69%) | cs=5.624e-8 (true=2.4e-7, err=63.02%) | nnErr(train)=107.59%
+[2026-03-27 21:35:30]     arch epoch 4/10 -- layers=1 nodes=3 draw=9 | train_final=4.095e-5 val=2.721e-6 | dt=37.82s | t1=5.043e-8 t2=-4.102e-8 | gnn=1.0e-7 | lr=1.14 | scale[p_net=0.155, mech_raw=1.5]
+[2026-03-27 21:35:30]       mech/nn | ks=0.3649 (true=0.1, err=56.22%) | cs=6.013e-8 (true=2.4e-7, err=60.11%) | nnErr(train)=130.77%
+[2026-03-27 21:36:49]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=1.14 | scale[p_net=0.121, mech_raw=1.5]
+[2026-03-27 21:36:49]       step-guard: accepted after 1 retry/reduction(s) | lr=1.14 | train=4.093e-5
+[2026-03-27 21:36:49]     arch epoch 5/10 -- layers=1 nodes=3 draw=9 | train_final=4.093e-5 val=2.701e-6 | dt=78.61s | t1=-9.61e-9 t2=-9.829e-9 | gnn=1.0e-7 | lr=1.14 | scale[p_net=0.121, mech_raw=1.5]
+[2026-03-27 21:36:49]       mech/nn | ks=0.5284 (true=0.1, err=72.3%) | cs=6.526e-8 (true=2.4e-7, err=56.56%) | nnErr(train)=92.37%
+[2026-03-27 21:37:53]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=1.14 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:37:53]       step-guard: accepted after 1 retry/reduction(s) | lr=1.14 | train=4.09e-5
+[2026-03-27 21:37:53]     arch epoch 6/10 -- layers=1 nodes=3 draw=9 | train_final=4.09e-5 val=2.668e-6 | dt=64.19s | t1=-2.685e-8 t2=-8.744e-9 | gnn=1.0e-7 | lr=1.14 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:37:53]       mech/nn | ks=0.7189 (true=0.1, err=85.67%) | cs=7.171e-8 (true=2.4e-7, err=52.46%) | nnErr(train)=67.44%
+[2026-03-27 21:39:25]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=1.14 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:39:25]       step-guard: accepted after 1 retry/reduction(s) | lr=1.14 | train=4.087e-5
+[2026-03-27 21:39:25]       gnn-loss-flow | gnn_old=1.0e-7 theta_fixed=4.087e-5 -> gnn_new=1.0e-8 after_gnn=4.093e-5 | A_true=1.963e-9 A_pred=0.03834 | dec_true=-9 dec_pred=-1 delta_dec=-8 | candidate=1.0e-8 log10diff=-7.291 | val_before=2.633e-6 val_after=2.701e-6 | reason=updated_quantized
+[2026-03-27 21:39:25]     arch epoch 7/10 -- layers=1 nodes=3 draw=9 | train_final=4.093e-5 val=2.701e-6 | dt=91.98s | t1=-3.089e-8 t2=1.455e-9 | gnn=1.0e-8 | lr=1.14 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:39:25]       mech/nn | ks=0.9295 (true=0.1, err=96.83%) | cs=7.952e-8 (true=2.4e-7, err=47.97%) | nnErr(train)=91.75%
+[2026-03-27 21:40:31]       gnn-loss-flow | gnn_old=1.0e-8 theta_fixed=4.107e-5 -> gnn_new=1.0e-9 after_gnn=4.095e-5 | A_true=1.963e-9 A_pred=1.557 | dec_true=-9 dec_pred=0 delta_dec=-9 | candidate=1.0e-9 log10diff=-8.899 | val_before=2.84e-6 val_after=2.719e-6 | reason=updated_quantized
+[2026-03-27 21:40:31]     arch epoch 8/10 -- layers=1 nodes=3 draw=9 | train_final=4.095e-5 val=2.719e-6 | dt=66.58s | t1=-9.994e-9 t2=1.405e-7 | gnn=1.0e-9 | lr=11.4 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:40:31]       mech/nn | ks=3.88 (true=0.1, err=158.89%) | cs=4.647e-7 (true=2.4e-7, err=28.7%) | nnErr(train)=134.39%
+[2026-03-27 21:41:49]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=5.0 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:41:49]       step-guard: accepted after 1 retry/reduction(s) | lr=5.0 | train=4.099e-5
+[2026-03-27 21:41:49]       gnn-loss-flow | gnn_old=1.0e-9 theta_fixed=4.099e-5 -> gnn_new=1.0e-10 after_gnn=4.094e-5 | A_true=1.963e-9 A_pred=4.584 | dec_true=-9 dec_pred=1 delta_dec=-10 | candidate=1.0e-10 log10diff=-9.368 | val_before=2.749e-6 val_after=2.709e-6 | reason=updated_quantized
+[2026-03-27 21:41:49]     arch epoch 9/10 -- layers=1 nodes=3 draw=9 | train_final=4.094e-5 val=2.709e-6 | dt=77.8s | t1=1.898e-8 t2=1.834e-8 | gnn=1.0e-10 | lr=5.0 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:41:49]       mech/nn | ks=4.544 (true=0.1, err=165.74%) | cs=1.081e-6 (true=2.4e-7, err=65.34%) | nnErr(train)=109.39%
+[2026-03-27 21:42:24]       step-guard retry 1/6 -- reason=step_prev_epoch_loss_jump | lr=5.0 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:42:24]       step-guard: accepted after 1 retry/reduction(s) | lr=5.0 | train=4.095e-5
+[2026-03-27 21:42:24]     arch epoch 10/10 -- layers=1 nodes=3 draw=9 | train_final=4.095e-5 val=2.715e-6 | dt=34.86s | t1=4.54e-9 t2=2.396e-9 | gnn=1.0e-10 | lr=5.0 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:42:24]       mech/nn | ks=4.812 (true=0.1, err=168.23%) | cs=2.044e-6 (true=2.4e-7, err=93.04%) | nnErr(train)=120.23%
+[2026-03-27 21:42:24]       trial raw objectives after 10 epochs -- layers=1 nodes=3 draw=9 ks0=0.215 cs0=5.57e-8
+[2026-03-27 21:42:24]          detail: raw_a=-0.02332 ; raw_b=67.94 ; raw_c=6.0
+[2026-03-27 21:42:24]       g_nn init=1.0e-5 | mode=DYNAMIC | A_true=1.963e-9 A_pred=0.0002781 | dec_true=-9 dec_pred=-4 delta_dec=-5 | candidate=1.0e-5 log10diff=-5.151 | reason=init_quantized
+[2026-03-27 21:44:39]       gnn-loss-flow | gnn_old=1.0e-5 theta_fixed=4.098e-5 -> gnn_new=1.0e-6 after_gnn=4.095e-5 | A_true=1.963e-9 A_pred=0.0003235 | dec_true=-9 dec_pred=-3 delta_dec=-6 | candidate=1.0e-6 log10diff=-5.217 | val_before=2.751e-6 val_after=2.71e-6 | reason=updated_quantized
+[2026-03-27 21:44:39]     arch epoch 1/10 -- layers=1 nodes=3 draw=10 | train_final=4.095e-5 val=2.71e-6 | dt=135.25s | t1=-3.239 t2=2.944 | gnn=1.0e-6 | lr=0.01 | scale[p_net=0.315, mech_raw=1.5]
+[2026-03-27 21:44:39]       mech/nn | ks=0.1326 (true=0.1, err=12.26%) | cs=5.297e-8 (true=2.4e-7, err=65.62%) | nnErr(train)=107.57%
+[2026-03-27 21:45:14]     arch epoch 2/10 -- layers=1 nodes=3 draw=10 | train_final=4.096e-5 val=2.722e-6 | dt=34.87s | t1=1.776e-8 t2=-4.414e-9 | gnn=1.0e-6 | lr=0.0225 | scale[p_net=0.208, mech_raw=1.5]
+[2026-03-27 21:45:14]       mech/nn | ks=0.1345 (true=0.1, err=12.88%) | cs=5.302e-8 (true=2.4e-7, err=65.58%) | nnErr(train)=130.46%
+[2026-03-27 21:46:01]       gnn-loss-flow | gnn_old=1.0e-6 theta_fixed=4.098e-5 -> gnn_new=1.0e-7 after_gnn=4.095e-5 | A_true=1.963e-9 A_pred=0.00498 | dec_true=-9 dec_pred=-2 delta_dec=-7 | candidate=1.0e-7 log10diff=-6.404 | val_before=2.775e-6 val_after=2.713e-6 | reason=updated_quantized
+[2026-03-27 21:46:01]     arch epoch 3/10 -- layers=1 nodes=3 draw=10 | train_final=4.095e-5 val=2.713e-6 | dt=46.95s | t1=5.529e-8 t2=-3.349e-8 | gnn=1.0e-7 | lr=0.114 | scale[p_net=0.14, mech_raw=1.5]
+[2026-03-27 21:46:01]       mech/nn | ks=0.1422 (true=0.1, err=15.29%) | cs=5.32e-8 (true=2.4e-7, err=65.43%) | nnErr(train)=111.63%
+[2026-03-27 21:46:39]       gnn-loss-flow | gnn_old=1.0e-7 theta_fixed=4.097e-5 -> gnn_new=1.0e-8 after_gnn=4.095e-5 | A_true=1.963e-9 A_pred=0.04317 | dec_true=-9 dec_pred=-1 delta_dec=-8 | candidate=1.0e-8 log10diff=-7.342 | val_before=2.763e-6 val_after=2.712e-6 | reason=updated_quantized
+[2026-03-27 21:46:39]     arch epoch 4/10 -- layers=1 nodes=3 draw=10 | train_final=4.095e-5 val=2.712e-6 | dt=38.03s | t1=5.545e-8 t2=-3.033e-8 | gnn=1.0e-8 | lr=1.14 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:46:39]       mech/nn | ks=0.2243 (true=0.1, err=35.07%) | cs=5.52e-8 (true=2.4e-7, err=63.83%) | nnErr(train)=110.04%
+[2026-03-27 21:47:19]       gnn-loss-flow | gnn_old=1.0e-8 theta_fixed=4.102e-5 -> gnn_new=1.0e-9 after_gnn=4.095e-5 | A_true=1.963e-9 A_pred=0.7447 | dec_true=-9 dec_pred=0 delta_dec=-9 | candidate=1.0e-9 log10diff=-8.579 | val_before=2.815e-6 val_after=2.716e-6 | reason=updated_quantized
+[2026-03-27 21:47:19]     arch epoch 5/10 -- layers=1 nodes=3 draw=10 | train_final=4.095e-5 val=2.716e-6 | dt=39.46s | t1=5.601e-8 t2=1.874e-8 | gnn=1.0e-9 | lr=11.4 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:47:19]       mech/nn | ks=3.68 (true=0.1, err=156.59%) | cs=3.467e-7 (true=2.4e-7, err=15.97%) | nnErr(train)=118.93%
+[2026-03-27 21:48:36]       gnn-loss-flow | gnn_old=1.0e-9 theta_fixed=4.08e-5 -> gnn_new=1.0e-11 after_gnn=4.086e-5 | A_true=1.963e-9 A_pred=43.4 | dec_true=-9 dec_pred=2 delta_dec=-11 | candidate=1.0e-11 log10diff=-10.344 | val_before=2.706e-6 val_after=2.704e-6 | reason=updated_quantized
+[2026-03-27 21:48:36]     arch epoch 6/10 -- layers=1 nodes=3 draw=10 | train_final=4.086e-5 val=2.704e-6 | dt=76.96s | t1=6.582e-8 t2=-2.178e-7 | gnn=1.0e-11 | lr=50.0 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:48:36]       mech/nn | ks=5.0 (true=0.1, err=169.9%) | cs=5.0e-6 (true=2.4e-7, err=131.88%) | nnErr(train)=94.0%
+[2026-03-27 21:48:42]       gnn-loss-flow | gnn_old=1.0e-11 theta_fixed=4.084e-5 -> gnn_new=1.0e-12 after_gnn=4.086e-5 | A_true=1.963e-9 A_pred=322.0 | dec_true=-9 dec_pred=3 delta_dec=-12 | candidate=1.0e-12 log10diff=-11.215 | val_before=2.692e-6 val_after=2.703e-6 | reason=updated_quantized
+[2026-03-27 21:48:42]     arch epoch 7/10 -- layers=1 nodes=3 draw=10 | train_final=4.086e-5 val=2.703e-6 | dt=6.73s | t1=-6.434e-9 t2=-1.39e-8 | gnn=1.0e-12 | lr=50.0 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:48:42]       mech/nn | ks=5.0 (true=0.1, err=169.9%) | cs=5.0e-6 (true=2.4e-7, err=131.88%) | nnErr(train)=94.88%
+[2026-03-27 21:48:49]     arch epoch 8/10 -- layers=1 nodes=3 draw=10 | train_final=4.085e-5 val=2.701e-6 | dt=6.82s | t1=-3.668e-9 t2=-2.205e-9 | gnn=1.0e-12 | lr=50.0 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:48:49]       mech/nn | ks=5.0 (true=0.1, err=169.9%) | cs=5.0e-6 (true=2.4e-7, err=131.88%) | nnErr(train)=84.75%
+[2026-03-27 21:48:58]     arch epoch 9/10 -- layers=1 nodes=3 draw=10 | train_final=4.084e-5 val=2.694e-6 | dt=9.23s | t1=-8.007e-9 t2=-2.684e-9 | gnn=1.0e-12 | lr=50.0 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:48:58]       mech/nn | ks=5.0 (true=0.1, err=169.9%) | cs=5.0e-6 (true=2.4e-7, err=131.88%) | nnErr(train)=73.57%
+[2026-03-27 21:49:10]     arch epoch 10/10 -- layers=1 nodes=3 draw=10 | train_final=4.082e-5 val=2.683e-6 | dt=11.61s | t1=-1.309e-8 t2=-2.874e-9 | gnn=1.0e-12 | lr=50.0 | scale[p_net=0.1, mech_raw=1.5]
+[2026-03-27 21:49:10]       mech/nn | ks=5.0 (true=0.1, err=169.9%) | cs=5.0e-6 (true=2.4e-7, err=131.88%) | nnErr(train)=77.06%
+[2026-03-27 21:49:10]       trial raw objectives after 10 epochs -- layers=1 nodes=3 draw=10 ks0=0.131 cs0=5.29e-8
+[2026-03-27 21:49:10]          detail: raw_a=-0.02931 ; raw_b=40.59 ; raw_c=0.0
+[2026-03-27 21:49:10] Stage1pluslight architecture raw-result export: shard=2/3 | architectures=3 | trials=30

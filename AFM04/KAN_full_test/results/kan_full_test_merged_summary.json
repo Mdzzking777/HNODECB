@@ -1,0 +1,33 @@
+{
+  "total_shards": 3,
+  "best_val_loss": 4.765995825856565e-09,
+  "shards": [
+    {
+      "shard_index": 1,
+      "role": "first_contact",
+      "label": "first_contact_window",
+      "title": "window1: right after first contact",
+      "best_epoch": 998,
+      "best_val_loss": 9.37773998391096e-09,
+      "result_path": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM04\\KAN_full_test\\results\\kan_full_test_result_p1.pt"
+    },
+    {
+      "shard_index": 2,
+      "role": "max_x1_pp_change",
+      "label": "max_x1_pp_change_window",
+      "title": "window2: the most drastic region",
+      "best_epoch": 998,
+      "best_val_loss": 4.765995825856565e-09,
+      "result_path": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM04\\KAN_full_test\\results\\kan_full_test_result_p2.pt"
+    },
+    {
+      "shard_index": 3,
+      "role": "tail_stable",
+      "label": "tail_stable_window",
+      "title": "window3: stable region at the end",
+      "best_epoch": 996,
+      "best_val_loss": 1.2596475266108796e-08,
+      "result_path": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM04\\KAN_full_test\\results\\kan_full_test_result_p3.pt"
+    }
+  ]
+}

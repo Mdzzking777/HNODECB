@@ -1,0 +1,172 @@
+AFM03 当前进度与 non-identifiability / 耦合问题总结
+
+一、当前进度
+
+1. 我们已经完成了 stage2light_windowed 的多轮训练、日志分析和可视化检查，并围绕 W1 / W2 / W3 三个窗口反复比较了：
+   - train loss 的下降规律
+   - x1 / x2 / x3 / x2dot 的轨迹恢复
+   - NN 对 F_hertz 的恢复质量
+   - retry、loss rebound、以及中后期 plateau
+
+2. 我们随后又将 step2b_windowed_03 接到 stage2light_windowed 的结果之后，让每个窗口单独进入 L-BFGS 精修，并保证：
+   - 继承的不只是 ks / cs，也包括 p_net 和 NN architecture
+   - NN 的输入维度、pred 链路、g_nn、w_pred、以及上帝视角监控口径，与 stage2light_windowed 对齐
+   - 打印和逐 epoch 日志也尽量与 stage2light_windowed 对齐
+
+3. 目前的直接经验结论是：
+   - 从 stage2light_windowed 进入 step2b / L-BFGS 后，loss 几乎不再有实质下降
+   - 即使把 L-BFGS 切入点提前到较早阶段，改善仍然有限
+   - 这说明问题已经不再主要是 optimizer 选型本身，而是观测信息结构导致的 non-identifiability 与参数补偿
+
+二、当前最核心的事实
+
+1. x1、x2、x2dot 可以恢复得非常好，甚至几乎完美贴合。
+
+2. 但是，NN 对 F_hertz 的恢复却长期很差，常见现象包括：
+   - Hertz 波形边界尖峰
+   - 双峰
+   - 局部跳跃
+   - area ratio 和 overlap 也并不高
+
+3. 同时，x3 以及 x3dot 在某些窗口内又可以恢复得相当不错。
+
+这三件事放在一起说明：
+
+当前 loss 所约束住的，主要是观测层的轨迹；而 F_hertz 作为隐藏力项，并没有被唯一辨识出来。
+
+三、关于 non-identifiability 的当前判断
+
+1. 我们当前真正观测并进入 loss 的量，主要是：
+   - x1
+   - x2
+   - x2dot（接触区或加权接触区）
+
+2. 而以下量在当前设置里并不是直接观测：
+   - x3（大多数情况下没有直接 supervise）
+   - F_hertz
+   - NN raw
+
+3. 因此，对 AFM 来说，当前问题更接近于：
+
+   给定观测残差
+   r = y_true - y_pred(theta)
+
+   去研究
+   J = ∂r / ∂theta
+
+   所张成的信息是否足以唯一辨识 theta = [ks, cs, p_net]。
+
+4. 结合 step3 / step4 的思想，我们已经明确：
+   - 当前应关注的是观测残差对参数的 Jacobian，而不是仅仅内部状态对参数的 Jacobian
+   - 对离散采样系统，信息矩阵实质上是把每个采样时刻的局部信息贡献逐点累加
+   - AFM 当前没有显式噪声模型时，W 更合适地解释为观测归一化 / 观测加权，而不应过度解释成严格统计意义上的噪声协方差逆
+
+5. 因而，当前 AFM 的 non-identifiability 更准确地说是：
+
+   在现有观测集合 {x1, x2, x2dot} 下，
+   不同的 [ks, cs, p_net] 组合可以产生几乎相同的观测轨迹，
+   但对应的 F_hertz 却并不相同。
+
+四、W1 / W2 / W3 中 non-identifiability 的具体表现
+
+1. W1
+
+   - F_hertz 的真实幅值较小，量级远小于主导项
+   - x3dot 所见的主要残差项更接近由 Fad_eff 与其它机械项主导
+   - 因此，即便 F_hertz 恢复得很差，x3dot 与 x3 仍然可以看起来不错
+   - 这意味着：W1 中 F_hertz 的辨识度很弱
+
+   当前判断：
+   W1 的问题主要是 low-signal non-identifiability，即 Hertz 本身对观测层的可见度太低。
+
+2. W2
+
+   - 相比 W1，Hertz 影响更明显一些，但仍未形成足够强的直接辨识力
+   - step2b / L-BFGS 虽然还能稍微改动 loss，但 NN error 几乎不实质改善
+
+   当前判断：
+   W2 处于从“辨识度不足”向“补偿耦合”过渡的区域。
+
+3. W3
+
+   - F_hertz 幅值已明显变大，理论上辨识度应优于 W1
+   - 但实际却仍然恢复不好
+   - 同时 ks、cs、NN 之间存在更明显的补偿现象
+
+   当前判断：
+   W3 的问题不再只是 Hertz 太小，而是 NN、ks、cs 在 loss 下形成了更强的补偿耦合。
+
+五、关于耦合的当前结论
+
+1. 在当前动力学结构中，x3dot 由以下残差控制：
+
+   x3dot = (Fad_eff - F_hertz - ks*x3) / cs
+
+2. 这意味着：
+   - NN 通过 F_hertz 影响动力学
+   - ks 通过 ks*x3 影响动力学
+   - cs 通过分母缩放整体速度
+
+3. 因而，在只监督 x1、x2、x2dot 的情况下，完全可能出现：
+   - F_hertz 没学对
+   - 但 ks / cs 作出补偿
+   - 最终仍把观测轨迹拟合得很好
+
+4. 这正是我们当前所说的补偿 basin：
+
+   不是 optimizer 完全走不动，
+   而是 loss 允许模型停在一个“观测上看起来很好、物理上却不唯一”的局部盆地里。
+
+六、为什么 L-BFGS 没有帮我们“跳出去”
+
+1. L-BFGS 是局部法，擅长：
+   - 在当前 basin 内更快下降
+   - 做局部精修
+
+2. 但它并不擅长：
+   - 判断当前 basin 是否是“错误的补偿 basin”
+   - 主动跳出该 basin
+   - 通过额外物理信息纠正 F_hertz
+
+3. 当前 step2b 的结果说明：
+   - 梯度不一定消失
+   - 方向往往仍是 descent 方向
+   - 但下降量极小
+   - NN error 基本不动
+
+这说明：
+L-BFGS 并没有坏掉；
+它只是忠实地在当前补偿 basin 内做微调，而没有能力从根本上改变辨识结构。
+
+七、我们目前认为最重要的结论
+
+1. 当前 AFM 问题的核心，不是“optimizer 太差”，而是“观测设计下的 non-identifiability + 参数补偿”。
+
+2. x1、x2、x2dot 的完美恢复，并不能推出 F_hertz 已被正确恢复。
+
+3. W1 更偏向于低信号、低辨识度问题；
+   W3 更偏向于 NN-ks-cs 的强补偿耦合问题；
+   W2 介于两者之间。
+
+4. 因此，单纯换 optimizer，或者把一阶法换成二阶法，并不能根治当前问题。
+
+八、下一步更合理的方向
+
+1. 不再把主要希望寄托在“换优化器”上。
+
+2. 更值得做的是：
+   - 改变观测信息结构
+   - 增加更直接约束 F_hertz 的物理信息
+   - 或减少 ks / cs / NN 之间的补偿自由度
+
+3. 可能的方向包括：
+   - 引入针对 F_hertz 形状的物理先验
+   - 在更合适的训练阶段切换优化器
+   - 固定部分 mechanistic 参数做对照实验
+   - 将 identifiability / FIM 分析真正迁移到 AFM 当前观测设计上
+
+总结一句话：
+
+当前 AFM03 的主要结论，不是“网络还没学够”或“L-BFGS 还不够强”，
+而是：在现有观测下，F_hertz 与 ks / cs / NN 之间存在明显的 non-identifiability 与补偿耦合，
+因此观测轨迹可以很好，而隐藏力项仍然不唯一。

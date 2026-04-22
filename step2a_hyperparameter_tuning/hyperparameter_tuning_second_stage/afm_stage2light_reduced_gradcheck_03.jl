@@ -54,12 +54,6 @@ end
 if !haskey(ENV, "HNODECB_STAGE2_NN_WARM_INPUT_BASENAME")
   ENV["HNODECB_STAGE2_NN_WARM_INPUT_BASENAME"] = "afm_param_stage1pluslight_03.jld"
 end
-if !haskey(ENV, "HNODECB_STAGE2_USE_GNN")
-  ENV["HNODECB_STAGE2_USE_GNN"] = "1"
-end
-if !haskey(ENV, "HNODECB_STAGE2_GNN_DEFAULT")
-  ENV["HNODECB_STAGE2_GNN_DEFAULT"] = "1.0"
-end
 if !haskey(ENV, "HNODECB_STAGE2_X3R_WEIGHT")
   ENV["HNODECB_STAGE2_X3R_WEIGHT"] = "0.0"
 end
@@ -113,7 +107,6 @@ function build_diag_case(candidate_idx::Int, warm_rank::Int, npts::Int)
 
   warm_rank_used = 0
   warm_source = "random_template"
-  g_nn_current = stage2_use_gnn ? stage2_gnn_default : 1.0
   p_net_vec = copy(p_net_template_vec)
 
   if stage2_nn_warm_enabled && haskey(stage2_nn_warm_by_base_rank, candidate_idx)
@@ -124,9 +117,6 @@ function build_diag_case(candidate_idx::Int, warm_rank::Int, npts::Int)
       length(warm_pick.p_net_vec) == length(p_net_template_vec) ||
         error("Warm-start p_net_vec length mismatch: warm=$(length(warm_pick.p_net_vec)) template=$(length(p_net_template_vec))")
       p_net_vec .= warm_pick.p_net_vec
-      if stage2_use_gnn
-        g_nn_current = warm_pick.g_nn
-      end
       warm_source = "stage1pluslight_rank_" * string(warm_rank_used)
     end
   end
@@ -151,7 +141,6 @@ function build_diag_case(candidate_idx::Int, warm_rank::Int, npts::Int)
     st=st,
     re_pnet=re_pnet,
     pnet_len=length(p_net_template_vec),
-    g_nn=g_nn_current,
     warm_rank_used=warm_rank_used,
     warm_source=warm_source,
     ode_used=ode_used,
@@ -176,7 +165,7 @@ function branch_loss(case, θ, branch::AbstractString)
   p = ComponentVector(p_net=p_net_struct, mech=mech)
 
   u0 = [case.ode_used[1, 1], case.ode_used[2, 1], case.x3_t0_val]
-  prob = ODEProblem{false}(make_uode_func_oop(case.appr, case.st, known_pars; nn_gain=case.g_nn), u0, case.tspan, p)
+  prob = ODEProblem{false}(make_uode_func_oop(case.appr, case.st, known_pars), u0, case.tspan, p)
   sol = solve(prob, integrator; saveat=case.times_used, abstol=abstol, reltol=reltol, sensealg=sensealg, maxiters=ode_maxiters)
   string(sol.retcode) == "Success" || return Inf
   size(sol, 2) == length(case.times_used) || return Inf
@@ -188,7 +177,7 @@ function branch_loss(case, θ, branch::AbstractString)
   x2dot_loss = 0.0
   contact_idx = findall(case.contact_used)
   if !isempty(contact_idx)
-    x2dot_pred_contact = x2dot_rhs_batch(uhat, contact_idx, mech, p_net_struct, case.appr, case.st, known_pars, case.times_used; nn_gain=case.g_nn)
+    x2dot_pred_contact = x2dot_rhs_batch(uhat, contact_idx, mech, p_net_struct, case.appr, case.st, known_pars, case.times_used)
     any(x -> !isfinite(x), x2dot_pred_contact) && return Inf
     x2_err = abs2.((case.x2dot_used[contact_idx] .- x2dot_pred_contact) ./ x2dot_scale_full)
     x2_w = case.weights_used[contact_idx]
@@ -246,7 +235,6 @@ tprintln("route: rhs=out-of-place | sensealg=GaussAdjoint(ZygoteVJP())")
 case = build_diag_case(diag_candidate, diag_warm_rank, diag_npts)
 pnet_idx = sampled_pnet_indices(case.pnet_len, diag_pnet_samples)
 tprintln("diag init: p_net_len=", case.pnet_len,
-  " g_nn=", fmt_hp(case.g_nn),
   " warm_source=", case.warm_source,
   " used_npts=", case.npts, "/", case.full_npts,
   " p_net_samples=", join(pnet_idx, ","))

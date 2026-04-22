@@ -72,7 +72,8 @@ How to run (after setup):
   或者  sbatch DHPC/runners/run_stage2_03_delftblue.slurm
   或者  sbatch DHPC/runners/run_stage2light_03_delftblue.slurm
   或者  sbatch DHPC/runners/run_stage2light_windowed_03_delftblue.slurm
-  说明：stage1pluslight 默认 3 分片 × 333 trails（总计 999，candidate=6），可用 --export 覆盖。
+  说明：stage1pluslight 默认先做 architecture screening 3 分片（每片 3 个 architectures），
+        然后做 main weight search 4 分片 × 250 trials（总计 1000，candidate=6），可用 --export 覆盖。
   日志目录：
   - stage1 -> logs/stage1_step2a/
   - stage1pluslight -> logs/stage1pluslight_step2a/

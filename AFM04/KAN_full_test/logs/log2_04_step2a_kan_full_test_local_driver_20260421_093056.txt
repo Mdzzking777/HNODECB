@@ -1,0 +1,10 @@
+[2026-04-21 09:30:56] AFM04 KAN full test driver start | shard_count=3
+[2026-04-21 09:30:56] Logs -> C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\window_per_shard
+[2026-04-21 09:30:56] Results -> C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\results
+[2026-04-21 09:30:56] launched shard 1/3 | pid=20820 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\window_per_shard\log2_04_step2a_kan_full_test_local_p1.txt
+[2026-04-21 09:30:56] launched shard 2/3 | pid=29376 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\window_per_shard\log2_04_step2a_kan_full_test_local_p2.txt
+[2026-04-21 09:30:56] launched shard 3/3 | pid=26828 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\window_per_shard\log2_04_step2a_kan_full_test_local_p3.txt
+[2026-04-21 13:18:59] shard 1/3 exited | code=0 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\window_per_shard\log2_04_step2a_kan_full_test_local_p1.txt
+[2026-04-21 13:18:59] shard 2/3 exited | code=0 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\window_per_shard\log2_04_step2a_kan_full_test_local_p2.txt
+[2026-04-21 13:23:21] shard 3/3 exited | code=0 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\window_per_shard\log2_04_step2a_kan_full_test_local_p3.txt
+[2026-04-21 13:23:21] driver merge complete | best_val=4.765996e-09

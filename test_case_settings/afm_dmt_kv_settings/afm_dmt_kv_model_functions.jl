@@ -72,7 +72,7 @@ function ground_truth_function(du, u, p, t)
 
     # Tip kinematics
     du[1] = u[2]
-    du[2] = (Fd * cos(wd * t) - k * u[1] - c * u[2] + Fad_eff - F_hertz) / m
+    du[2] = (Fd * cos(wd * t) - k * u[1] - c * u[2] - Fad_eff + F_hertz) / m
     du[3] = (Fad_eff - F_hertz - ks * u[3]) / cs
 end
 
@@ -100,7 +100,7 @@ function get_uode_model_function(appr_neural_network, state, original_parameters
 
             # Tip kinematics
             @inbounds du[1] = u[2]
-            @inbounds du[2] = (Fd * cos(wd * t) - k * u[1] - c * u[2] + Fad_eff - F_hertz) / m
+            @inbounds du[2] = (Fd * cos(wd * t) - k * u[1] - c * u[2] - Fad_eff + F_hertz) / m
             @inbounds du[3] = (Fad_eff - F_hertz - ks * u[3]) / cs
 
             # NN residual on x2dot (assumes a scalar output)
@@ -112,10 +112,11 @@ end
 """
     get_uode_model_function_hertz_nn(appr_neural_network, state)
 
-Returns the model derivative function with the Hertz force term replaced by a neural network.
-The network input is [x1, x2] and the output is gated by a supplied true
-contact-weight lookup when available, otherwise by the model-predicted soft
-contact gate.
+Returns the model derivative function with the net contact-force term
+`F_hertz - Fad_eff` replaced by a neural network.
+The network input is `[x1, x2, x3]` and the output is gated by a supplied
+true contact-weight lookup when available, otherwise by the model-predicted
+soft contact gate.
 """
 function get_uode_model_function_hertz_nn(appr_neural_network, state, true_contact_weight_at_time=nothing)
     f(du, u, p, t) =
@@ -132,15 +133,16 @@ function get_uode_model_function_hertz_nn(appr_neural_network, state, true_conta
             delta = ifelse(delta > 0.0, delta, 0.0)
             w_pred = contact_weight(s, adhesion_transition)
 
-            # NN-based Hertz replacement (scalar output)
+            # NN-based net-contact replacement (scalar output)
             nn_in = collect(promote(u[1], u[2], u[3]))
             û = appr_neural_network(nn_in, p.p_net, st)[1]
-            F_hertz = û[1] * w_pred
+            w_gate = true_contact_weight_at_time === nothing ? w_pred : true_contact_weight_at_time(t)
             Fad_eff = Fad * w_pred
+            F_contact = û[1] * w_gate
 
             # Tip kinematics
             @inbounds du[1] = u[2]
-            @inbounds du[2] = (Fd * cos(wd * t) - k * u[1] - c * u[2] + Fad_eff - F_hertz) / m
-            @inbounds du[3] = (Fad_eff - F_hertz - ks * u[3]) / cs
+            @inbounds du[2] = (Fd * cos(wd * t) - k * u[1] - c * u[2] + F_contact) / m
+            @inbounds du[3] = (-F_contact - ks * u[3]) / cs
         end
 end

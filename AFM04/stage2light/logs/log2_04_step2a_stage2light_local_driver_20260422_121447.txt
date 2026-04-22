@@ -1,0 +1,6 @@
+[2026-04-22 12:14:47] AFM04 stage2light driver start | shard_count=1
+[2026-04-22 12:14:47] Logs -> C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage2light\logs\window_per_shard
+[2026-04-22 12:14:47] Results -> C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage2light\results
+[2026-04-22 12:14:47] launched shard 1/1 | pid=26040 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage2light\logs\window_per_shard\log2_04_step2a_stage2light_local_p1.txt
+[2026-04-22 15:20:56] shard 1/1 exited | code=0 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage2light\logs\window_per_shard\log2_04_step2a_stage2light_local_p1.txt
+[2026-04-22 15:20:56] driver merge complete | best_val=4.249115e-09

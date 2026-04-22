@@ -1,0 +1,180 @@
+AFM03：增大Fd(接触强度)带来的更强非线性/复杂性所引发的后果以及反思
+日期：2026-04-04
+
+一、这次对比在说什么
+
+本总结比较两次 Stage1pluslight (`st1pl`) 结果：
+
+1. 旧实验：small_Fd
+   来源：
+   logs/stage1_step2a/1pluslight/local/archived/small_Fd/logs/log2_03_step2a_stage1pluslight_local_p1.txt
+   ...
+   log2_03_step2a_stage1pluslight_local_p4.txt
+
+2. 新实验：large_Fd
+   来源：
+   step2a_hyperparameter_tuning/hyperparameter_tuning_first_stage/results_afm/afm_param_stage1pluslight_03.jld
+
+重点不是讨论 Stage2/Step2b，而是单看 Stage1pluslight 的无梯度 joint grid + NN seed search。
+
+
+二、目前已经被数据支持的前后差异
+
+1. 这次 large_Fd 的搜索已经完整跑满当前设定的 125000 个 trials。
+   因此，至少在“当前这套网格 + 当前这套 seed bank + 当前这套固定 MLP 结构”这个搜索空间里，不能再把问题简单归咎为“trial 数还不够多”。
+
+2. small_Fd 时，低 val 区域里确实存在很多整体接近 GT 的点；large_Fd 时，这种现象消失了。
+
+   已验证的对比统计如下：
+
+   small_Fd：按 val_loss 最低的前 20 个点
+   - ks_err 平均约 16.21%
+   - cs_err 平均约 12.71%
+   - x3_rec 平均约 12.48%
+   - F_contact / NN err 平均约 6.36%
+
+   large_Fd：按 val_loss 最低的前 20 个点
+   - ks_err 平均约 90.21%
+   - cs_err 平均约 78.84%
+   - x3_rec 平均约 321.72%
+   - F_contact / NN err 平均约 221.48%
+
+3. GT 附近的 mech 网格点在两次实验中都确实被搜到了，而且都配套搜索了 50 个 NN seeds。
+
+   small_Fd 时，GT 附近 50 个 seeds 的最好几个点：
+   - val 可低到约 2.10e-08
+   - ks_err = 3.47%
+   - cs_err = 2.94%
+   - x1_rec 约 0.00% ~ 0.05%
+   - x3_rec 约 2.45% ~ 11.87%
+   - NN err 约 5.89% ~ 14.72%
+
+   large_Fd 时，GT 附近同样 50 个 seeds 的最好几个点：
+   - best val 约 3.32e-06
+   - ks_err = 3.47%
+   - cs_err = 2.94%
+   - x1_rec 约 0.31% ~ 0.42%
+   - x3_rec 约 105.70% ~ 150.97%
+   - NN err 约 172.51% ~ 225.91%
+
+4. 这次 large_Fd 下，NN 的表现不是“只有少数点差”，而是“整体普遍差”。
+
+   在当前 merged `st1pl` 结果里：
+   - 全体 trial 的 NN err 中位数约 513.67%
+   - 全体 trial 的 x3_rec 中位数约 165.20%
+   - 满足
+       ks_err < 20%,
+       cs_err < 20%,
+       x1_rec < 2%,
+       x3_rec < 50%,
+       NN err < 100%
+     的点数为 0
+
+   对比 old small_Fd：
+   - 满足同样“整体较好”标准的点数为 286
+
+
+三、对你当前判断的核验
+
+1. “GT 附近，不再像之前 small_Fd 一样有明显 global minima，而是陷入一个 local minima，且 NN 表现尤其差劲”
+
+这个判断是被强烈支持的。
+
+更准确地说：
+   - GT 附近的 mech 网格点仍然存在；
+   - 但 large_Fd 下，围绕该点的 50 个 NN seeds 已不再导向一个“整体接近 GT”的优 basin；
+   - 相反，它们现在更像一个“mech 接近 GT、但 x3 和 NN/Fts 明显失真”的局部 basin。
+
+因此，这次 large_Fd 的问题已经不是“没搜到 GT 附近 mech”，而是：
+   “即使 mech 很接近 GT，NN 也没有把对应的 Fts/F_contact 学出来。”
+
+2. “这一次，NN 的表现普遍差劲”
+
+这个判断也是被明确支持的。
+
+不是只有 near-GT 那 50 个点差，而是整体统计已经显示：
+   - NN err 中位数很高；
+   - top-20 val 里的 NN err 仍然很高；
+   - 严格意义上的“整体好点”数量直接从 old small_Fd 的 286 降到 0。
+
+
+四、对三个结论的更严谨表述
+
+结论 1：不是因为 trial 数不够多，而是因为增大 Fd 后，非线性/复杂动力学占比显著提高，当前 MLP 表达能力明显不够。
+
+这个结论大体成立，但需要写得稍微严谨一点：
+
+可以确认的是：
+   - 在当前 `st1pl` 的完整搜索空间中（125000 trials，50x50x50，固定小型 MLP backend），问题已经不能再简单归咎为“trial 数量不够”。
+   - large_Fd 相比 small_Fd，确实把系统推入了更难的动力学/力学 regime。
+   - 当前这套 MLP + 当前搜索方式，在这个新 regime 下明显失效。
+
+但目前数据还不能逻辑上证明：
+   - “任何 MLP 都注定不行”
+
+目前能被严格支持的更稳妥说法是：
+   “当前使用的这套小型 MLP 及其对应搜索空间，在 large_Fd regime 下明显不足，无法再像 small_Fd 那样恢复出接近 GT 的 Fts/NN 表现。”
+
+结论 2：w_pred 只是其中很小的一个问题。
+
+这个结论目前是“合理且较被支持”，但还不是严格数学证明。
+
+支持它的原因是：
+   - 在 GT 附近 mech 已经正确的情况下，问题仍主要集中在 NN/Fts；
+   - 说明当前主要退化并不是“是否恰好选中 GT mech 点”；
+   - 也更不像只是 gate 本身导致的一点小偏差。
+
+因此，当前更合理的排序是：
+   - 主问题：large_Fd 后，当前 NN backend 对 Fts 的表达/逼近显著失效
+   - 次问题：w_pred 仍可能带来一定干扰，但不像主矛盾
+
+结论 3：无意义地继续加大普通 MLP 结构不可取，KAN 和 EQL 是目前最值得优先考虑的替换方式。
+
+这个结论作为策略判断是合理的，但“最好的替换方式”仍属于工程判断，不是这次 run 直接证明出来的定理。
+
+当前 run 能支持的是：
+   - 继续在同类小型 MLP 上 brute-force 扩 trial，并没有解决问题；
+   - simple brute-force 增大普通 MLP 结构，计算代价会显著增加；
+   - 而 large_Fd 下真正暴露出来的问题，已经更像“函数族不合适”，而不只是“trial 不够多”。
+
+因此，作为下一步尝试，KAN / EQL 的优先级确实明显上升。
+
+更稳妥的表述是：
+   “在当前证据下，继续简单扩大普通 MLP 的性价比很差；KAN 和 EQL 是目前最值得优先实验的两类替换方向。”
+
+
+五、这次对 AFM03 的核心反思
+
+small_Fd 与 large_Fd 的根本区别，不只是数值大小变了，而是：
+
+   系统被推进到了一个更强接触、更强非线性、更复杂的动力学 regime。
+
+在 old small_Fd 中：
+   - GT 附近确实存在一个明显的优 basin；
+   - 当前 MLP 还能在该 basin 附近把 x3 和 Fts 一并学好；
+   - 因此“mech 正确 + NN 也正确”的 joint recovery 是可以发生的。
+
+在 new large_Fd 中：
+   - GT 附近的 mech 点仍在；
+   - 但 NN 不再能把对应 Fts 学对；
+   - 优化反而更倾向掉到某些低 val 但物理上偏离 GT 的 basin；
+   - 也就是说，问题开始从“搜索是否充分”转向“当前 NN 函数族是否还能胜任”。
+
+因此，这次实验带来的最重要信息不是：
+
+   “我们还需要再多跑一些 trial”
+
+而是：
+
+   “增大 Fd 后，AFM03 当前使用的 MLP 替代方案已经明显触到表达能力与函数族匹配性的边界。”
+
+
+六、目前最简短的结论
+
+这次 large_Fd 的 `st1pl` 结果说明：
+
+1. GT 附近的 mech 网格点依然存在，但不再像 old small_Fd 那样伴随一个明显的“整体接近 GT”的优 basin。
+2. 问题的主矛盾已经转移到 NN/Fts 表达失败，而不是单纯的搜索次数不足。
+3. `w_pred` 可能有副作用，但当前证据更支持它是次要问题。
+4. 继续对普通 MLP 做 brute-force 扩大搜索的边际收益已经很差。
+5. KAN / EQL 之类更适合表达幂律与结构性函数的替代方案，已经从“可选想法”变成“值得优先验证的下一步方向”。

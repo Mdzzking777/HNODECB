@@ -1,0 +1,303 @@
+AFM03：KAN 替换现有 MLP 并接入 HNODE 的实施清单
+
+目标
+
+将当前 AFM03 中作为 HNODE 模块之一的 MLP，完整替换为 KAN，使其满足以下完整链路：
+
+1. 输入当前状态 `(x1, x2, x3)`；
+2. 输出当前时刻的标量接触力项（当前等价于 `NN raw` / `F_contact` 的网络部分）；
+3. 参与 RHS 计算；
+4. 参与 ODE 积分与 roll-out；
+5. 参与 `st1pl` 的全局搜索；
+6. 参与 `st2lw` 的梯度优化；
+7. 后续也能被 `step2b` 继续继承和优化。
+
+
+一、总体判断
+
+1. 如果最终目标是“真正替换 AFM03 主链路中的 MLP”，则不建议把 Python 版 `pykan` 直接通过 `PyCall` 塞进当前 HNODE 训练主链路。
+
+2. 更现实的路线是：
+   以 `pykan` 作为参考实现和概念来源，
+   在 Julia 中实现一个数值版 KAN backend，
+   然后在 AFM03 中把当前的 MLP backend 换成该 KAN backend。
+
+3. 主要原因不是前向计算，而是反向传播与 ODE sensitivity 链路：
+   当前 AFM03 依赖 Julia 侧的
+   `Lux.setup`
+   `Optimisers.destructure`
+   `Zygote`
+   `SciMLSensitivity`
+   以及参数向量 `p_net_vec` 的展平/重建流程。
+   如果直接使用 Python `pykan + torch`，则 AD 链路和 ODE adjoint 很难与现有 Julia 主链路稳定打通。
+
+
+二、建议的实现边界
+
+按当前新的设想，第一版 KAN 接入建议采用以下边界：
+
+1. 输入仍为 `(x1, x2, x3)`；
+2. 输出仍为一个标量；
+3. 删除外层 `w_pred`；
+4. 禁用外层 `nn_gain`；
+5. KAN 输出直接作为进入 RHS 的接触力项；
+6. loss 结构不改；
+7. 不引入 symbolic branch；
+8. 不在第一版中把 KAN 超参数大规模纳入 `st1pl` 搜索。
+
+也就是说，第一版的目标不是只替换“MLP 内核”，而是：
+
+“用 KAN 直接替代当前 MLP 及其外部 `w_pred / nn_gain` 组合，使 KAN 直接输出参与 RHS 的接触力项，同时保持其余 HNODE 框架尽量不变。”
+
+
+补充约束：当前所要求的不是“KAN-like 替代品”，而是“严格 KAN”
+
+还应明确一点：
+
+1. 当前目标不是做一个“受 KAN 启发的 spline 网络”；
+2. 当前目标是尽量在数学原理与数值设置上贴近 `pykan`；
+3. 也就是说，接下来在 Julia 中实现的应是：
+   严格 KAN（至少在第一版的数值前端中尽量与 `pykan` 保持一致），
+   而不是随意简化成普通 basis expansion。
+
+当前已经拍板的严格约束如下：
+
+1. 仅考虑一层 hidden layer；
+2. 当前结构固定为 `3-5-1`；
+3. `b(x)` 必须与 `pykan` 保持一致；
+4. 不只是 `c_i B_i(x)`，单边激活应尽量遵循 `pykan` 的数值形式：
+   `w_b * b(x) + w_s * spline(x)`；
+5. grid 的设置不能模糊处理，必须明确；
+6. 整体数值设置应尽量与 `pykan` 默认行为保持一致，除非后续明确另行拍板。
+
+
+三、严格 KAN（贴近 pykan）的当前默认定义
+
+如果没有新的拍板，第一版 Julia-native KAN 的“严格对齐 pykan”应理解为：
+
+1. hidden layer 只用一层，即 `3-5-1`；
+2. `base_fun` 与 `pykan` 保持一致，默认取 `silu`；
+3. `grid` 与 `k` 也优先对齐 `pykan` 的常用默认：
+   `grid = 3`
+   `k = 3`
+4. `noise_scale`、`grid_eps`、`grid_range`、`sp_trainable`、`sb_trainable` 等数值设定，也应优先按 `pykan` 默认值理解；
+5. 第一版即使暂不复刻 symbolic branch，数值前端的 `KANLayer / MultKAN` 结构也应尽量对齐 `pykan`。
+
+按目前查到的 `pykan` 默认设置，数值前端的关键默认值包括：
+
+1. `width=[3,5,1]`（由当前任务指定）；
+2. `grid=3`；
+3. `k=3`；
+4. `base_fun='silu'`；
+5. `noise_scale=0.3`（MultKAN 默认）；
+6. `grid_eps=0.02`；
+7. `grid_range=[-1,1]`；
+8. `sp_trainable=True`；
+9. `sb_trainable=True`。
+
+因此，如果后续没有新的明确指令，第一版实现时应优先把这些值视为默认基线。
+
+
+四、这里所说的“grid 自适应”到底是什么意思
+
+这里的“grid 自适应”，不是简单指“grid 可训练”，而是更具体地指：
+
+1. spline 的 knot/grid 不是永远固定在初始均匀网格上；
+2. 在训练过程中，`pykan` 会根据当前样本在各输入维度上的分布，重新更新网格位置；
+3. 更准确地说，它会根据输入样本的分位点来构造一个 `adaptive grid`；
+4. 同时又保留一个 `uniform grid`；
+5. 最终通过 `grid_eps` 在两者之间做插值：
+
+   `grid = grid_eps * grid_uniform + (1 - grid_eps) * grid_adaptive`
+
+这意味着：
+
+1. 当 `grid_eps = 1` 时，grid 完全均匀；
+2. 当 `grid_eps = 0` 时，grid 完全按样本分位点分布；
+3. 当 `0 < grid_eps < 1` 时，grid 是“均匀网格”和“样本分位点网格”的折中。
+
+就 `pykan` 默认值而言：
+
+1. `grid_eps = 0.02`
+2. 这意味着它几乎是以样本分位点驱动的 adaptive grid，
+   但仍保留极少量 uniform grid 成分。
+
+因此，这里的“grid 自适应”应理解为：
+
+“训练过程中根据样本分布重新放置 spline 的 knot/grid，而不是一直固定死在初始均匀位置。”
+
+这件事很重要，因为如果 Julia 第一版完全忽略这一点，只做固定均匀 grid，
+那么它在数学结构与数值行为上就已经与 `pykan` 拉开了明显距离。
+
+
+五、实施清单
+
+1. 先抽象当前 NN backend 接口。
+   需要把当前 MLP 所依赖的最小能力抽出来，形成统一接口：
+   初始化参数；
+   前向 `f(x1, x2, x3) -> F_contact_scalar`；
+   参数展平；
+   参数重建；
+   参数长度查询；
+   元数据导出。
+
+2. 在 Julia 中实现一个数值版 KAN layer / KAN model。
+   第一版要求：
+   输入 3 维；
+   输出 1 维；
+   Float64；
+   CPU；
+   可被 `Zygote` 求导；
+   可被 `Optimisers.destructure` 展平；
+   不包含 symbolic branch；
+   不追求和 `pykan` 在代码结构上一模一样。
+
+3. 在 AFM03 中把“构造 MLP”的入口改成“构造 backend”的入口。
+   即支持：
+   `nn_backend = mlp`
+   `nn_backend = kan`
+
+4. 修改 `st1pl`。
+   `st1pl` 需要支持：
+   用 KAN 初始化参数；
+   用 KAN 执行前向；
+   把 KAN 参数存入 `p_net_vec`；
+   在结果里记录 backend 类型和 KAN 配置；
+   不再依赖 `w_pred` 与 `nn_gain`。
+
+5. 修改 `st2lw`。
+   `st2lw` 需要支持：
+   从 `st1pl` 结果中读出 backend 类型；
+   如果是 KAN，则按 KAN 配置重建模型和参数；
+   继续执行当前 windowed gradient optimization；
+   不再读取或更新 `nn_gain`。
+
+6. 修改 `step2b`。
+   `step2b` 需要支持：
+   读取 stage2 产物中的 KAN 参数；
+   用 KAN 替代当前 MLP；
+   保持 single shooting / multiple shooting 逻辑不变；
+   不再保留 `w_pred` 与 `nn_gain` 分支。
+
+7. 修改 checkpoint / resume / result 文件。
+   KAN 版结果文件中必须多记录：
+   `nn_backend`
+   `kan_config`
+   `p_net_vec`
+   以及必要时的参数长度信息。
+   同时应删除或废弃依赖 `nn_gain` 的旧字段逻辑。
+
+8. 修改可视化和诊断脚本。
+   当前很多地方默认 NN 架构由
+   `num_hidden_layers`
+   `num_hidden_nodes`
+   来定义。
+   KAN 版至少需要补上：
+   backend 标签；
+   KAN 配置；
+   参数恢复逻辑。
+
+9. 对 `st1pl/st2lw/step2b` 的 sanity/selftest 分支做适配。
+   当前这些分支默认假设 NN 是 MLP。
+   KAN 接入后，sanity、自检、`p_net_vec` 长度检查、warm start 判据都要同步更新。
+
+10. 结果文件与现有 MLP 版彻底分家。
+   建议新 basename 明确带上 `kan`，
+   例如：
+   `afm_param_stage1pluslight_03_kan.jld`
+   `afm_param_stage2light_windowed_03_kan.jld`
+   以避免旧 MLP 结果与新 KAN 结果在 `p_net_vec` 结构上混淆。
+
+
+六、推荐的实施顺序
+
+1. 先在 Julia 中实现最小 KAN backend，不接 AFM03。
+
+2. 先做一个最小测试：
+   给定 `x = (x1, x2, x3)`，
+   确认 KAN 能直接输出 `F_contact` 标量，
+   且 `Zygote.gradient` 能对参数正常求导。
+
+3. 再把 KAN 接入 AFM03 的 RHS，但只做单次前向 roll-out。
+   目标是确认：
+   ODEProblem 能跑；
+   RHS 内部调用 KAN 不报错；
+   输出维度和类型都正确；
+   且已经不再依赖 `w_pred` 与 `nn_gain`。
+
+4. 再打通 `st2lw`。
+   因为 `st2lw` 更直接暴露“梯度是否能穿过 ODE + KAN”。
+   如果 `st2lw` 不能稳定 backward，则没有必要更早接 `st1pl`。
+
+5. 最后再接 `st1pl`。
+   原因是 `st1pl` 除了前向/梯度问题，还包含：
+   搜索空间定义；
+   排名逻辑；
+   checkpoint/resume；
+   result 文件结构；
+   可视化；
+   这些改动面更大。
+
+6. `step2b` 放在 `st2lw` 之后接入。
+   因为它本质上是 stage2 结果的延续，必须先保证 stage2 的 KAN 版是稳定的。
+
+
+七、第一版默认策略
+
+如果没有额外新决定，第一版建议按以下默认策略推进：
+
+1. 使用 Julia-native KAN backend；
+2. 不在运行时直接调用 Python `pykan`；
+3. 保持输入为 `(x1, x2, x3)`；
+4. 保持输出为直接进入 RHS 的单标量 `F_contact`；
+5. 删除 `w_pred`；
+6. 禁用 `nn_gain`；
+7. 结构先固定为 `3-5-1`；
+8. `base_fun` 先固定为 `pykan` 默认 `silu`；
+9. `grid/k/grid_eps/grid_range` 等数值设置先按 `pykan` 默认值执行；
+10. 不允许直接继承旧 MLP 参数；
+11. 结果文件单独命名；
+12. 初版先固定一套小 KAN 配置，而不是立即把 KAN 超参数一起纳入全局搜索。
+
+
+八、需要进一步拍板的细节
+
+1. “与 `pykan` 严格一致”这一要求，目前是否包括：
+   训练时也保留 `pykan` 风格的 early-stage grid update 逻辑？
+   还是只要求前向结构与初始设置一致？
+
+2. 当前结构已经固定为 `3-5-1`，
+   但还需要进一步确认：
+   第一版是否严格不允许 multiplication nodes，
+   即只实现加法节点的基础 KAN。
+
+3. `st1pl` 第一版是否完全不搜索 KAN 结构，只搜索 mech 和随机 seed？
+
+4. 由于当前想法已经明确为“删除 `w_pred`、禁用 `nn_gain`”，这里需要进一步确认的是：
+   KAN 输出的标量究竟定义为：
+   直接的 `F_contact`；
+   还是“未缩放 raw force”，但不再经过任何外层 gate/gain。
+
+5. 是否要求 KAN 版结果文件与旧 MLP 版完全分开？
+   当前建议是必须分开。
+
+6. 是否接受“先打通 `st2lw`，后接 `st1pl`”的顺序？
+   当前建议是接受。
+
+7. 第一版是否接受：
+   先实现固定 grid，
+   再补 `pykan` 风格的 adaptive grid update；
+   还是从一开始就要求 grid update 逻辑同步到位。
+
+
+九、当前最合理的下一步
+
+当前最合理的下一步，不是直接写大改，而是先做一份精确到文件级别的改造地图：
+
+1. 哪些文件要先改；
+2. 哪些函数签名要抽象成 backend 接口；
+3. 哪些结果字段要新增；
+4. 哪些旧逻辑默认写死了 MLP；
+5. 哪些可视化/诊断脚本需要做 backend 兼容。
+
+只有这份文件级别改造地图明确后，KAN 完整替换 MLP 的实施才会稳。

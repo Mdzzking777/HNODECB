@@ -1,0 +1,15 @@
+[2026-04-21 09:23:08] AFM04 KAN random-search driver start | windows=W1 compute_shards=5 workers=5 trials_per_window=1000
+[2026-04-21 09:23:08] Logs -> C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard
+[2026-04-21 09:23:08] Results -> C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\results\random_search
+[2026-04-21 09:23:08] Trial seeds -> mode=deterministic-bank | count=1000 | path=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\results\random_search\kan_full_test_random_search_trial_seeds.json
+[2026-04-21 09:23:08] launched random-search worker S1/5 | pid=17160 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard\log2_04_step2a_kan_full_test_random_search_local_s1.txt
+[2026-04-21 09:23:08] launched random-search worker S2/5 | pid=15680 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard\log2_04_step2a_kan_full_test_random_search_local_s2.txt
+[2026-04-21 09:23:08] launched random-search worker S3/5 | pid=17444 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard\log2_04_step2a_kan_full_test_random_search_local_s3.txt
+[2026-04-21 09:23:08] launched random-search worker S4/5 | pid=7948 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard\log2_04_step2a_kan_full_test_random_search_local_s4.txt
+[2026-04-21 09:23:08] launched random-search worker S5/5 | pid=23792 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard\log2_04_step2a_kan_full_test_random_search_local_s5.txt
+[2026-04-21 09:30:41] random-search worker exited | S1/5 | code=0 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard\log2_04_step2a_kan_full_test_random_search_local_s1.txt
+[2026-04-21 09:30:45] random-search worker exited | S2/5 | code=0 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard\log2_04_step2a_kan_full_test_random_search_local_s2.txt
+[2026-04-21 09:30:45] random-search worker exited | S3/5 | code=0 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard\log2_04_step2a_kan_full_test_random_search_local_s3.txt
+[2026-04-21 09:30:45] random-search worker exited | S4/5 | code=0 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard\log2_04_step2a_kan_full_test_random_search_local_s4.txt
+[2026-04-21 09:30:46] random-search worker exited | S5/5 | code=0 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\logs\random_search\window_per_shard\log2_04_step2a_kan_full_test_random_search_local_s5.txt
+[2026-04-21 09:30:56] random-search merge complete | best_rank(train_loss)=3.532200e-06

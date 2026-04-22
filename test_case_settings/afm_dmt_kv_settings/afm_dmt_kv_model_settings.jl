@@ -15,7 +15,7 @@ Fad = 2.0e-9
 dist = 24e-9
 
 # Drive
-Fd = 2.05e-9
+Fd = 4.10e-9
 
 # Surface (Kelvin-Voigt)
 ks = 0.1

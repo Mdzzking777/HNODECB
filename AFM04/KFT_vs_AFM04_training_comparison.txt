@@ -1,0 +1,515 @@
+KFT 与 AFM04 正式训练的正确对比
+
+说明
+1. 本文只比较你这次明确指定的两组：
+   - AFM04 formal st1pl 对 KFT-RS
+   - AFM04 formal st2lw 对 KFT-GBO
+2. 不再讨论上一个版本里错误配对的：
+   - KFT-SR vs st1pl
+   - KFT-GBO vs st2lw 以外的扩展配对
+
+==================================================
+一、AFM04 st1pl vs KFT-RS
+==================================================
+
+一句话总结
+- st1pl 是 structured candidate generation。
+- KFT-RS 是 pure random initialization screening。
+
+1. 阶段目标不同
+- st1pl 的目标是：
+  在 formal AFM04 框架里，同时扫描 mech 候选和小型 NN 候选，产出一批可进入 Stage2 的 candidate。
+- KFT-RS 的目标是：
+  仅仅给 KAN 找一个比较好的初始权重，再交给后续 GBO 正式训练。
+
+所以本质上：
+- st1pl 是“候选生成器”
+- KFT-RS 是“初值筛选器”
+
+2. 搜索空间不同
+
+st1pl 搜索什么
+- ks 节点
+- cs 节点
+- nn seed bank
+- 可选 trial 内微调后的 mech + MLP 参数
+
+KFT-RS 搜索什么
+- 只搜索 KAN 初始化
+- 更具体地说，是：
+  - KAN 的随机初始权重
+  - 初始 grid 后的 KAN 状态
+  - 初始 g_nn
+- ks / cs 在 KFT-RS 中不参与搜索，它们是已知真值
+
+这是第一条本质区别：
+- st1pl 搜的是 mech + NN
+- KFT-RS 搜的是 KAN init only
+
+3. 模型族不同
+
+st1pl
+- 用的是 AFM03 风格的小型 MLP
+- 输入 3 维：x1, x2, x3
+- 输出 direct contact model
+
+KFT-RS
+- 用的是 KAN
+- 当前配置是 width=(3,7,1), base=silu, grid=11, spline_k=3
+- 仍然是 3 输入 1 输出，但中间结构是 spline + base function，不是 MLP
+
+所以：
+- st1pl 的候选差异，来自 ks/cs 节点和 MLP seed
+- KFT-RS 的候选差异，来自 KAN seed
+
+4. 候选生成方式不同
+
+st1pl
+- 是结构化网格：
+  - ks_node_count
+  - cs_node_count
+  - nn_seed_bank_size
+- 默认形态是：
+  ks 节点数 × cs 节点数 × 每节点 NN seed 数
+- 因此它是可解释的、可覆盖的、规则化的 candidate pool
+
+KFT-RS
+- 是 trial-based random search
+- 每个 trial 就是一套 KAN 初始化
+- trial seed 可以是：
+  - deterministic pseudo-random bank
+  - true random seed bank
+- 当前本地 runner 默认是 deterministic pseudo-random
+
+所以：
+- st1pl 是规则枚举式
+- KFT-RS 是随机采样式
+
+5. trial 内是否进一步优化不同
+
+st1pl
+- 支持 trial_opt_enabled
+- 即使当前常常关闭，它的框架也允许：
+  一个 candidate 进来后，再在该 candidate 周围做少量有限差分优化
+
+KFT-RS
+- trial 内不做正式训练
+- 每个 trial 只是：
+  1. 初始化 KAN
+  2. 可选 adaptive grid update
+  3. initialize g_nn from truth
+  4. 直接 rollout 评估 train/val loss
+
+也就是说：
+- st1pl candidate 可以“边搜边修”
+- KFT-RS candidate 是“只投不修”
+
+6. 优化方式不同
+
+st1pl
+- 如果启用 trial 内优化，用的是有限差分梯度 + step guard + retry
+- 不是标准 autograd 训练
+
+KFT-RS
+- 根本不优化
+- 它只评估，不更新参数
+
+这是第二条本质区别：
+- st1pl 是 search + optional local optimization
+- KFT-RS 是 pure evaluation-only search
+
+7. 多窗口组织方式不同
+
+st1pl
+- 在 stage2_w123 模式下，一个 trial 会同时覆盖 W1/W2/W3
+- 同一套参数会被送到多个窗口上评估
+- 最终把多窗口结果聚合成一个 candidate record
+
+KFT-RS
+- 窗口天然分开
+- 它先对每个 window 单独做 random search 记录
+- 然后再 merge：
+  - 如果只搜一个窗口，就把那个窗口挑出的 best trial 扩展给 3 个窗口
+  - 如果多个窗口一起搜，就找一个 common trial，使其在各窗口上平均 ranking loss 最好
+
+所以：
+- st1pl 是“一个 candidate 同时服务多窗口”
+- KFT-RS 是“各窗口先各自评，再通过 common-trial 规则合并”
+
+8. 排名逻辑不同
+
+st1pl
+- 排名来自 trial 的 train/val loss 聚合结果
+- 本质上是 formal candidate ranking
+
+KFT-RS
+- 明确有 ranking_metric
+- 可选：
+  - train_loss
+  - val_loss
+- 当前本地 runner 默认：
+  - val eval OFF
+  - ranking=train_loss
+
+也就是说，当前 KFT-RS 的候选排名比 st1pl 更“轻量”，更偏训练侧快速筛选，而不是 formal train/val candidate ranking。
+
+9. fail-fast / 守卫机制不同
+
+st1pl
+- 有 step guard / retry / early stop 这类 trial 内优化守卫
+- 重点是防止 trial 内更新失控
+
+KFT-RS
+- 有 rollout fail-fast
+- 通过 x1/x2 state guard 直接拦截明显爆炸的随机初始化
+- 当前本地 runner 默认 guard 是 ON，且倍率较大
+
+所以：
+- st1pl guard 主要保护“优化过程”
+- KFT-RS guard 主要保护“随机投点的物理可行性”
+
+10. 输出产物不同
+
+st1pl 输出
+- 一批 candidate records
+- 每条 candidate 包含：
+  - ks/cs 候选
+  - MLP 参数
+  - loss
+  - val_parts
+  - 可行性判断
+- 供 Stage2 继续使用
+
+KFT-RS 输出
+- 每个窗口的 trial history
+- 每个窗口的 best checkpoint
+- merged summary
+- 关键产物是：
+  best_state_dict
+- 这个 state_dict 是给 KFT-GBO warmstart 用的
+
+所以：
+- st1pl 输出的是“candidate pool”
+- KFT-RS 输出的是“warmstartable KAN init”
+
+11. 和后续阶段的连接方式不同
+
+st1pl -> st2lw
+- st2lw 会读取 st1pl 的 top candidates
+- 再从里面选定若干 cand_rank 做正式 refinement
+
+KFT-RS -> KFT-GBO
+- KFT-GBO 直接读取 random search best checkpoint
+- 本质上继承的是一整套 KAN state_dict
+
+所以：
+- st1pl 向后传的是 candidate identity
+- KFT-RS 向后传的是 ready-to-train model weights
+
+12. 最简结论
+- st1pl 是 formal AFM04 的“候选生成层”
+- KFT-RS 是 KFT 的“模型初始化层”
+- 两者都在正式训练前，但 st1pl 更重 mech/NN 联合筛选，KFT-RS 更重快速筛 KAN 初值
+
+==================================================
+二、AFM04 st2lw vs KFT-GBO
+==================================================
+
+一句话总结
+- st2lw 是 formal AFM04 的 Stage2 windowed refinement。
+- KFT-GBO 是 KFT 的 KAN 正式训练阶段。
+- 两者都属于“正式 rollout 优化”，但它们优化的对象并不一样。
+
+1. 共同点
+- 都是正式训练阶段，不再是只做初值筛选
+- 都基于 rollout
+- 都使用窗口化训练数据
+- 都会记录 state / x2dot / x3_range / fts_range 等 loss component
+- 都有 F_contact / NN error 监控
+
+所以从功能角色上，它们确实是最接近的一对。
+
+2. 起点来源不同
+
+st2lw
+- 起点来自 st1pl 的 top candidates
+- 它会读取 Stage1pluslight 输出的 candidate pool
+- 再选定某个 cand_rank 进入 Stage2
+
+KFT-GBO
+- 起点来自 KFT-RS
+- 当前 runner 逻辑是：
+  - 优先继承 RS best
+  - 如果没有 RS 文件，再 fallback 到随机初始化
+
+所以：
+- st2lw 继承的是 candidate record
+- KFT-GBO 继承的是 KAN state_dict
+
+3. 模型类型不同
+
+st2lw
+- 用的是 Julia / Lux 的小型 contact_net
+- 本质还是 MLP
+
+KFT-GBO
+- 用的是 KANForceModule
+- 本质是 KAN
+
+这仍然是最大的模型族差异。
+
+4. mech 是否参与学习不同
+
+st2lw
+- ks / cs 仍然是优化变量
+- theta 里显式包含 mech_raw
+- Stage2 会继续更新 mech
+
+KFT-GBO
+- ks / cs 是 known mech true
+- 不学习
+- 学的只有 force module 和 g_nn
+
+这是最关键的一条差异：
+- st2lw = mech + NN 联合优化
+- KFT-GBO = fixed mech + KAN optimization
+
+5. contact gate / w_pred 的地位不同
+
+st2lw
+- contact_weight(s) 是正式结构的一部分
+- F_contact 在 learned 分支里天然是：
+  nn_gain * nn_raw * w_pred
+
+KFT-GBO
+- 结构上也支持：
+  g_nn * w_pred * nn_raw
+- 但 w_pred 是可开关项
+- 当前常用 runner 下通常设置为 OFF
+
+所以当前现实中：
+- st2lw 默认是 gated model
+- KFT-GBO 当前常见运行更接近 ungated KAN model
+
+6. 窗口组织方式不同
+
+st2lw
+- 是 single-window Stage2 refinement
+- wrapper 决定本轮训练的是哪个 window
+- 单次运行通常对应一个选中的 windowed horizon
+
+KFT-GBO
+- 原生就是 3 shards：
+  - W1
+  - W2
+  - W3
+- 每个 shard 一套独立 KAN 参数，各自训练，各自产生日志、checkpoint、result
+
+所以：
+- st2lw 是“formal one-window refinement per run”
+- KFT-GBO 是“3 个窗口各自独立训练”
+
+7. 多窗口参数共享关系不同
+
+st2lw
+- 同一个 candidate 在某次运行中只对当前窗口细化
+- 不存在 KFT 那种 3 个窗口各自一套完全独立 Python 训练脚本同时跑的天然结构
+
+KFT-GBO
+- W1/W2/W3 是三个独立模型
+- W1 训出的参数不会自然共享给 W2/W3
+
+所以 KFT-GBO 的窗口独立性更强，也更碎片化。
+
+8. 优化技术栈不同
+
+st2lw
+- Julia
+- DifferentialEquations
+- Lux / Flux
+- Zygote
+- GaussAdjoint(ZygoteVJP())
+
+KFT-GBO
+- Python
+- PyTorch
+- torchdiffeq 风格 rollout 路线
+- Adam / AMSGrad
+
+所以两者都能做 gradient-based rollout training，但底层实现完全不同。
+
+9. loss 组成不同
+
+st2lw 当前 loss
+- state
+- x1_state
+- x2_state
+- x2dot
+- x3_range
+- fts_range
+- cont
+- l2
+
+KFT-GBO 当前 loss
+- state
+- x1_state
+- x2_state
+- x2dot
+- x3_range
+- fts_range
+- cont 固定 0
+- 无 l2
+
+因此：
+- st2lw 比 KFT-GBO 多出 formal optimization 常见的 l2 / cont 角色
+- KFT-GBO 更“干净”，更偏直接 rollout loss
+
+10. x2dot loss 的定义不同
+
+st2lw
+- x2dot loss 只在真实 contact 点上计算
+
+KFT-GBO
+- x2dot loss 在全窗口上计算
+- 但 contact 点权重大，non-contact 点权重小
+
+这是一条非常重要的实现差异。
+
+11. x1/x2 state loss 的定义
+- 两者都在全窗口上算 x1/x2 state loss
+- 两者都带 contact/non-contact 权重
+
+所以 state 项上，两边反而是比较接近的。
+
+12. 正则与先验不同
+
+st2lw
+- 有 L2 grid
+- 可有 continuity penalty
+- x3_range weight 可配
+- fts_range weight 可配
+
+KFT-GBO
+- 无 L2
+- cont=0
+- 有 x3_range 和 fts_range
+- 另有 KAN 特有的：
+  - grid
+  - spline order
+  - adaptive grid update
+  - g_nn
+  - 可选 w_pred
+
+所以：
+- st2lw 的正则更像 formal ODE/NN optimization
+- KFT-GBO 的结构先验更像 KAN-specific inductive bias
+
+13. 监控项不同
+
+st2lw 典型监控
+- train/val loss
+- state components
+- x2dot / x3r / ftsr / cont / l2
+- x1_rec / x3_rec
+- fcontact_err
+- nn raw 的 min/max/span/mean/neg_frac
+- nn_gain
+
+KFT-GBO 典型监控
+- train/val loss
+- state / x2dot / x3_range / fts_range
+- x1_rec / x3_rec
+- fts_teacher_rec
+- g_nn
+- grad norm
+- retry / step-guard / lr adapt
+- 可选 w_pred 统计
+
+所以：
+- st2lw 更强调 candidate diagnostics
+- KFT-GBO 更强调 training dynamics diagnostics
+
+14. 参数初始化和 warm start 粒度不同
+
+st2lw
+- warm start 可以来自：
+  - 当前 candidate 自带 p_net
+  - 外部 stage1 warm pool
+- 还可以结合 cand_rank / warm_rank 进行选择
+
+KFT-GBO
+- warm start 就是一整份 RS best state_dict
+- 继承粒度更粗，更直接
+
+15. early-stop / retry 机制不同
+
+st2lw
+- 有 init retries
+- 有 epoch retry / failure epoch 处理
+- 更强调 candidate 进入正式训练前后的稳定性
+
+KFT-GBO
+- 有 epoch retry
+- 有 step guard
+- 有 recent-val early stop
+- 更强调正式训练中的稳定下降
+
+所以两边都有 guard，但 guard 所服务的训练哲学不一样。
+
+16. 输出产物不同
+
+st2lw 输出
+- Stage2 candidate records
+- best record
+- selected top-k
+- window meta
+- mech_hat / p_net_vec 等 formal Stage2 结果
+
+KFT-GBO 输出
+- 每个 shard 的 best checkpoint
+- 每个 shard 的 result payload
+- history json
+- merged summary
+
+所以：
+- st2lw 输出的是 formal Stage2 refined candidate
+- KFT-GBO 输出的是 trained KAN models per window
+
+17. 最简结论
+- st2lw 和 KFT-GBO 都是正式训练阶段，但：
+  - st2lw 学 mech + MLP
+  - KFT-GBO 学 fixed-mech + KAN
+- st2lw 是 formal candidate refinement
+- KFT-GBO 是 KAN model training
+
+==================================================
+三、最终一句话压缩版
+==================================================
+
+如果只保留一句最核心判断：
+
+- st1pl 和 KFT-RS 的区别在于：
+  st1pl 是结构化 mech+MLP 候选生成，KFT-RS 只是对固定-mech 的 KAN 初值做随机筛选。
+
+- st2lw 和 KFT-GBO 的区别在于：
+  st2lw 是联合优化 mech+MLP 的 formal Stage2 refinement，KFT-GBO 是在固定 mech 下对 KAN 做独立分窗口正式训练。
+
+==================================================
+四、代码入口
+==================================================
+
+AFM04 formal st1pl
+- AFM04\stage1pluslight
+
+KFT-RS
+- AFM04\KAN_full_test\random_search.py
+- AFM04\KAN_full_test\runner\run_kan_full_test_with_random_search_local.ps1
+
+AFM04 formal st2lw
+- step2a_hyperparameter_tuning\hyperparameter_tuning_second_stage\stage2light_windowed_run.jl
+- step2a_hyperparameter_tuning\hyperparameter_tuning_second_stage\afm_param_stage2_03.jl
+
+KFT-GBO
+- AFM04\KAN_full_test\train.py
+- AFM04\KAN_full_test\runner\run_KFT-GBO_only_local.ps1
+

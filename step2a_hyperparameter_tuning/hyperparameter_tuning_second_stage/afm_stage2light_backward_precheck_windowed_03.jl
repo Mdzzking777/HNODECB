@@ -53,12 +53,6 @@ end
 if !haskey(ENV, "HNODECB_STAGE2_NN_WARM_INPUT_BASENAME")
   ENV["HNODECB_STAGE2_NN_WARM_INPUT_BASENAME"] = "afm_param_stage1pluslight_03.jld"
 end
-if !haskey(ENV, "HNODECB_STAGE2_USE_GNN")
-  ENV["HNODECB_STAGE2_USE_GNN"] = "1"
-end
-if !haskey(ENV, "HNODECB_STAGE2_GNN_DEFAULT")
-  ENV["HNODECB_STAGE2_GNN_DEFAULT"] = "1.0"
-end
 
 include("afm_param_stage2_03.jl")
 
@@ -93,7 +87,6 @@ function build_diag_case(candidate_idx::Int, warm_rank::Int, window_start::Int, 
 
   warm_rank_used = 0
   warm_source = "random_template"
-  g_nn_current = stage2_use_gnn ? stage2_gnn_default : 1.0
   p_net_vec = copy(p_net_template_vec)
 
   if stage2_nn_warm_enabled && haskey(stage2_nn_warm_by_base_rank, candidate_idx)
@@ -104,9 +97,6 @@ function build_diag_case(candidate_idx::Int, warm_rank::Int, window_start::Int, 
       length(warm_pick.p_net_vec) == length(p_net_template_vec) ||
         error("Warm-start p_net_vec length mismatch: warm=$(length(warm_pick.p_net_vec)) template=$(length(p_net_template_vec))")
       p_net_vec .= warm_pick.p_net_vec
-      if stage2_use_gnn
-        g_nn_current = warm_pick.g_nn
-      end
       warm_source = "stage1pluslight_rank_" * string(warm_rank_used)
     end
   end
@@ -127,13 +117,12 @@ function build_diag_case(candidate_idx::Int, warm_rank::Int, window_start::Int, 
     state12_scale_full, x2dot_scale_full, x3_scale,
     use_multiple_shooting, ms_group_size, ms_continuity_term,
     approximating_neural_network, st, known_pars, ode_used[3, 1],
-    0.0, re_pnet, nothing; nn_gain=g_nn_current)
+    0.0, re_pnet, nothing)
 
   return (
     theta0=theta0,
     loss_fn=loss_fn,
     pnet_len=length(p_net_template_vec),
-    g_nn=g_nn_current,
     warm_rank_used=warm_rank_used,
     warm_source=warm_source,
     window_start=first(rg),
@@ -239,7 +228,6 @@ end
 
 case = build_diag_case(diag_candidate, diag_warm_rank, diag_window_start, diag_window_len)
 tprintln("diag init: p_net_len=", case.pnet_len,
-  " g_nn=", fmt_hp(case.g_nn),
   " warm_source=", case.warm_source,
   " window=[", case.window_start, ", ", case.window_stop, "]",
   " len=", case.window_len, "/", case.full_npts,

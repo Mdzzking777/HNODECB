@@ -2,12 +2,16 @@
 Windowed Stage2light training entry for AFM03.
 
 This keeps the official Stage2light training code path and warm-start logic,
-but restricts the post-contact horizon to a contiguous stable-region window.
+but restricts the post-contact horizon to a contiguous window.
 
-Defaults:
-- stable-region window starting at a contact onset
-- full post-contact point index start = 17124
-- window length = 939 points (~15 us)
+Preferred mode:
+- set HNODECB_STAGE2_WINDOW_AUTOMANIFEST=1 in the runner
+- auto-build event-anchored two-cycle windows:
+  first-contact, max-x1-peak-to-peak-change, tail-stable
+
+Manual fallback defaults:
+- post-contact point index start = 1
+- window length = 399 points (~two drive periods)
 
 Override with:
 - HNODECB_STAGE2_WINDOW_START
@@ -22,11 +26,11 @@ function env_missing(name)
 end
 
 if env_missing("HNODECB_STAGE2_WINDOW_START")
-  ENV["HNODECB_STAGE2_WINDOW_START"] = "17124"
+  ENV["HNODECB_STAGE2_WINDOW_START"] = "1"
 end
 
 if env_missing("HNODECB_STAGE2_WINDOW_LEN")
-  ENV["HNODECB_STAGE2_WINDOW_LEN"] = "939"
+  ENV["HNODECB_STAGE2_WINDOW_LEN"] = "399"
 end
 
 if env_missing("HNODECB_STAGE2_RESULT_BASENAME")

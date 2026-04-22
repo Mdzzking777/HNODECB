@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AFM03 Stage1 archi screening Pareto front</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    body { margin: 0; font-family: sans-serif; background: #ffffff; }
+    #plot { width: 100vw; height: 100vh; }
+    #pinned-layer { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+    .pinned-card {
+      position: fixed; left: 0; top: 0; width: 340px; max-height: 72vh;
+      overflow-y: auto; padding: 14px 16px 16px 16px;
+      background: rgba(255,255,255,0.96); border: 1px solid #c96f6f;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.14); border-radius: 12px;
+      font-size: 13px; line-height: 1.45; color: #222222;
+      pointer-events: auto;
+    }
+    .pinned-card .panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; cursor: move; user-select: none; }
+    .pinned-card .panel-title { font-size: 14px; font-weight: 700; }
+    .pinned-card .panel-subtitle { font-size: 12px; color: #666666; margin-top: 2px; }
+    .pinned-card .panel-body { border-top: 1px solid #ececec; padding-top: 10px; }
+    .pinned-card .close-btn { border: 0; background: #f3f3f3; color: #333333; border-radius: 999px; padding: 5px 9px; cursor: pointer; font-size: 12px; }
+    .pinned-card .close-btn:hover { background: #e7e7e7; }
+  </style>
+</head>
+<body>
+  <div id="plot"></div>
+  <div id="pinned-layer"></div>
+  <script>
+    const sourcePath = "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\step2a_hyperparameter_tuning\\hyperparameter_tuning_first_stage\\results_afm\\afm_param_stage1_03.jld";
+    const nonparetoTrace = {
+      type: 'scatter3d',
+      mode: 'markers',
+      name: 'non-Pareto',
+      x: [0.698601647615749, 0.698602426187905, 0.7737170846579173, 1.0],
+      y: [0.0954788533457748, 0.630087996923055, 0.8299711985291728, 0.7948864853134632],
+      z: [0.33333333333333337, 0.5000000000000001, 0.6666666666666667, 0.25000000000000006],
+      hovertext: ["L0-N2<br>layers=0<br>nodes=2<br>hidden=4<br>params=16<br>trials=10<br>status=non-Pareto<br>raw_obj1=-1.0018e-08<br>raw_obj2=4.5965e+01<br>raw_obj3=9.0000e-01<br>norm_obj1=0.6986<br>norm_obj2=0.0955<br>norm_obj3=0.3333<br>origin_l2_radius=0.7799<br>weighted_l2_min_obj=0.2571", "L2-N1<br>layers=2<br>nodes=1<br>hidden=2<br>params=16<br>trials=10<br>status=non-Pareto<br>raw_obj1=-3.2724e-09<br>raw_obj2=5.9944e+01<br>raw_obj3=1.1000e+00<br>norm_obj1=0.6986<br>norm_obj2=0.6301<br>norm_obj3=0.5000<br>origin_l2_radius=1.0654<br>weighted_l2_min_obj=0.3875", "L2-N2<br>layers=2<br>nodes=2<br>hidden=4<br>params=48<br>trials=10<br>status=non-Pareto<br>raw_obj1=6.5078e-04<br>raw_obj2=6.5170e+01<br>raw_obj3=1.3000e+00<br>norm_obj1=0.7737<br>norm_obj2=0.8300<br>norm_obj3=0.6667<br>origin_l2_radius=1.3160<br>weighted_l2_min_obj=0.4802", "L1-N1<br>layers=1<br>nodes=1<br>hidden=2<br>params=12<br>trials=10<br>status=non-Pareto<br>raw_obj1=2.6113e-03<br>raw_obj2=6.4253e+01<br>raw_obj3=8.0000e-01<br>norm_obj1=1.0000<br>norm_obj2=0.7949<br>norm_obj3=0.2500<br>origin_l2_radius=1.3017<br>weighted_l2_min_obj=0.5029"],
+      hovertemplate: '%{hovertext}<extra></extra>',
+      marker: { size: 7, color: '#808080', line: { color: '#111111', width: 1 } }
+    };
+    const paretoTrace = {
+      type: 'scatter3d',
+      mode: 'markers',
+      name: 'Pareto',
+      x: [0.37410669032004734, 0.76904212961797, 0.0, 0.09110476790866373, 0.467730359190422],
+      y: [0.0, 0.23676693485939662, 0.7010509967071711, 0.6523787870924405, 1.0],
+      z: [0.25000000000000006, 0.08333333333333331, 0.6666666666666667, 1.0, 0.0],
+      hovertext: ["L0-N1<br>layers=0<br>nodes=1<br>hidden=2<br>params=8<br>trials=10<br>status=Pareto<br>raw_obj1=-2.8114e-03<br>raw_obj2=4.3469e+01<br>raw_obj3=8.0000e-01<br>norm_obj1=0.3741<br>norm_obj2=0.0000<br>norm_obj3=0.2500<br>origin_l2_radius=0.4500<br>weighted_l2_min_obj=0.1402", "L0-N3<br>layers=0<br>nodes=3<br>hidden=8<br>params=32<br>trials=10<br>status=Pareto<br>raw_obj1=6.1028e-04<br>raw_obj2=4.9660e+01<br>raw_obj3=6.0000e-01<br>norm_obj1=0.7690<br>norm_obj2=0.2368<br>norm_obj3=0.0833<br>origin_l2_radius=0.8090<br>weighted_l2_min_obj=0.2900", "L1-N2<br>layers=1<br>nodes=2<br>hidden=4<br>params=32<br>trials=10<br>status=Pareto<br>raw_obj1=-6.0526e-03<br>raw_obj2=6.1799e+01<br>raw_obj3=1.3000e+00<br>norm_obj1=0.0000<br>norm_obj2=0.7011<br>norm_obj3=0.6667<br>origin_l2_radius=0.9674<br>weighted_l2_min_obj=0.3425", "L1-N3<br>layers=1<br>nodes=3<br>hidden=8<br>params=96<br>trials=10<br>status=Pareto<br>raw_obj1=-5.2633e-03<br>raw_obj2=6.0527e+01<br>raw_obj3=1.7000e+00<br>norm_obj1=0.0911<br>norm_obj2=0.6524<br>norm_obj3=1.0000<br>origin_l2_radius=1.1975<br>weighted_l2_min_obj=0.3567", "L2-N3<br>layers=2<br>nodes=3<br>hidden=8<br>params=160<br>trials=10<br>status=Pareto<br>raw_obj1=-2.0002e-03<br>raw_obj2=6.9616e+01<br>raw_obj3=5.0000e-01<br>norm_obj1=0.4677<br>norm_obj2=1.0000<br>norm_obj3=0.0000<br>origin_l2_radius=1.1040<br>weighted_l2_min_obj=0.4789"],
+      hovertemplate: '%{hovertext}<extra></extra>',
+      marker: { size: 9, color: ["#d32f2f", "#f57c00", "#388e3c", "#7b1fa2", "#1976d2"], line: { color: '#111111', width: 1 } }
+    };
+    const layout = {
+      title: "AFM03 Stage1 archi screening Pareto front (unweighted axes)",
+      paper_bgcolor: '#ffffff',
+      plot_bgcolor: '#ffffff',
+      legend: { orientation: 'h', x: 0, y: 1.05 },
+      margin: { l: 0, r: 0, t: 60, b: 0 },
+      annotations: [{
+        text: 'source: ' + sourcePath,
+        x: 0, y: 1.12, xref: 'paper', yref: 'paper',
+        xanchor: 'left', yanchor: 'bottom',
+        showarrow: false, font: { size: 12, color: '#444444' }
+      }],
+      scene: {
+        xaxis: { title: 'val_loss efficient norm', range: [0, 1] },
+        yaxis: { title: 'time efficient norm', range: [0, 1] },
+        zaxis: { title: 'stability efficient norm', range: [0, 1] },
+        camera: { eye: { x: 1.45, y: 1.2, z: 0.85 } }
+      }
+    };
+    const plotDiv = document.getElementById('plot');
+    const pinnedLayer = document.getElementById('pinned-layer');
+    const paretoPointColorNames = ["Red", "Orange", "Green", "Violet", "Blue"];
+    let pinCounter = 0;
+    let zCounter = 30;
+    const pinnedCards = new Map();
+    function bringCardToFront(card) {
+      zCounter += 1;
+      card.style.zIndex = String(zCounter);
+    }
+    function clamp(value, minValue, maxValue) {
+      return Math.max(minValue, Math.min(maxValue, value));
+    }
+    function placePinnedCard(clientX, clientY, offsetIndex) {
+      const margin = 16;
+      const width = 340;
+      const height = 220;
+      const x0 = typeof clientX === 'number' ? clientX : Math.round(window.innerWidth * 0.55);
+      const y0 = typeof clientY === 'number' ? clientY : Math.round(window.innerHeight * 0.28);
+      const bump = 18 * (offsetIndex % 6);
+      const left = clamp(x0 + 18 + bump, margin, window.innerWidth - width - margin);
+      const top = clamp(y0 + 18 + bump, margin, window.innerHeight - height - margin);
+      return { left, top };
+    }
+    function makeCardDraggable(card) {
+      const handle = card.querySelector('.panel-header');
+      if (!handle) {
+        return;
+      }
+      handle.addEventListener('mousedown', function(event) {
+        if (event.target && event.target.closest('.close-btn')) {
+          return;
+        }
+        bringCardToFront(card);
+        const rect = card.getBoundingClientRect();
+        const offsetX = event.clientX - rect.left;
+        const offsetY = event.clientY - rect.top;
+        function onMove(moveEvent) {
+          const margin = 8;
+          const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+          const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+          const left = clamp(moveEvent.clientX - offsetX, margin, maxLeft);
+          const top = clamp(moveEvent.clientY - offsetY, margin, maxTop);
+          card.style.left = left + 'px';
+          card.style.top = top + 'px';
+        }
+        function onUp() {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        event.preventDefault();
+      });
+    }
+    function clearPinnedInfo() {
+      for (const card of pinnedCards.values()) {
+        card.remove();
+      }
+      pinnedCards.clear();
+    }
+    function pinPointInfo(pt, evt) {
+      if (!pt || (pt.curveNumber !== 0 && pt.curveNumber !== 1)) {
+        return;
+      }
+      const eventObj = evt && evt.event ? evt.event : null;
+      const pos = placePinnedCard(eventObj && eventObj.clientX, eventObj && eventObj.clientY, pinnedCards.size);
+      const cardId = 'pin-' + String(++pinCounter);
+      const isPareto = pt.curveNumber === 1;
+      const colorName = isPareto ? paretoPointColorNames[pt.pointNumber] : 'Gray';
+      const card = document.createElement('div');
+      card.className = 'pinned-card';
+      card.style.left = pos.left + 'px';
+      card.style.top = pos.top + 'px';
+      bringCardToFront(card);
+      card.innerHTML = '' +
+        '<div class="panel-header">' +
+          '<div>' +
+            '<div class="panel-title">Pinned Point</div>' +
+            '<div class="panel-subtitle">' + (isPareto ? 'Pareto' : 'non-Pareto') + ' | Color: ' + colorName + ' | double click plot area to clear all</div>' +
+          '</div>' +
+          '<button class="close-btn" type="button">Close</button>' +
+        '</div>' +
+        '<div class="panel-body"><div style="font-weight:600;margin-bottom:8px;">Color: ' + colorName + '</div>' + pt.hovertext + '</div>';
+      const closeBtn = card.querySelector('.close-btn');
+      closeBtn.addEventListener('click', function(event) {
+        event.stopPropagation();
+        card.remove();
+        pinnedCards.delete(cardId);
+      });
+      makeCardDraggable(card);
+      pinnedLayer.appendChild(card);
+      pinnedCards.set(cardId, card);
+    }
+    Plotly.newPlot('plot', [nonparetoTrace, paretoTrace], layout, {responsive: true});
+    plotDiv.on('plotly_click', function(evt) {
+      const pt = evt.points && evt.points[0];
+      pinPointInfo(pt, evt);
+    });
+    plotDiv.on('plotly_doubleclick', function() {
+      clearPinnedInfo();
+    });
+  </script>
+</body>
+</html>

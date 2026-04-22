@@ -32,11 +32,5 @@ end
 if !haskey(ENV, "HNODECB_STAGE2_X3R_WEIGHT")
   ENV["HNODECB_STAGE2_X3R_WEIGHT"] = "0.0"
 end
-if !haskey(ENV, "HNODECB_STAGE2_USE_GNN")
-  ENV["HNODECB_STAGE2_USE_GNN"] = "1"
-end
-if !haskey(ENV, "HNODECB_STAGE2_GNN_DEFAULT")
-  ENV["HNODECB_STAGE2_GNN_DEFAULT"] = "1.0"
-end
 
 include("afm_param_stage2_03.jl")

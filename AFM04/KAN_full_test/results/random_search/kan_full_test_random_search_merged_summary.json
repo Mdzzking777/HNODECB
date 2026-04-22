@@ -1,0 +1,59 @@
+{
+  "total_shards": 3,
+  "trials_per_shard": 1000,
+  "compute_shards": 5,
+  "selection_mode": "source_window_best_ranking_loss",
+  "common_trial": 850,
+  "common_trial_mean_ranking_loss": 3.532199610624221e-06,
+  "common_trial_mean_train_loss": 3.532199610624221e-06,
+  "ranking_metric": "train_loss",
+  "best_ranking_loss": 3.532199610624221e-06,
+  "best_val_loss": NaN,
+  "shards": [
+    {
+      "shard_index": 1,
+      "role": "first_contact",
+      "label": "first_contact_window",
+      "title": "window1: right after first contact",
+      "trials": 1000,
+      "ranking_metric": "train_loss",
+      "best_trial": 850,
+      "best_seed": 20261256,
+      "best_ranking_loss": 3.532199610624221e-06,
+      "best_train_loss": 3.532199610624221e-06,
+      "best_val_loss": NaN,
+      "source_window_index": 1,
+      "summary_path": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM04\\KAN_full_test\\results\\random_search\\kan_full_test_random_search_summary_p1.json"
+    },
+    {
+      "shard_index": 2,
+      "role": "max_x1_pp_change",
+      "label": "max_x1_pp_change_window",
+      "title": "max_x1_pp_change_window",
+      "trials": 1000,
+      "ranking_metric": "train_loss",
+      "best_trial": 850,
+      "best_seed": 20261256,
+      "best_ranking_loss": 3.532199610624221e-06,
+      "best_train_loss": 3.532199610624221e-06,
+      "best_val_loss": NaN,
+      "source_window_index": 1,
+      "summary_path": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM04\\KAN_full_test\\results\\random_search\\kan_full_test_random_search_summary_p2.json"
+    },
+    {
+      "shard_index": 3,
+      "role": "tail_stable",
+      "label": "tail_stable_window",
+      "title": "tail_stable_window",
+      "trials": 1000,
+      "ranking_metric": "train_loss",
+      "best_trial": 850,
+      "best_seed": 20261256,
+      "best_ranking_loss": 3.532199610624221e-06,
+      "best_train_loss": 3.532199610624221e-06,
+      "best_val_loss": NaN,
+      "source_window_index": 1,
+      "summary_path": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM04\\KAN_full_test\\results\\random_search\\kan_full_test_random_search_summary_p3.json"
+    }
+  ]
+}

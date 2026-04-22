@@ -1,12 +1,12 @@
 #=
 Standalone Stage2light runner for AFM parameter search (case 03).
-Same as Stage2 runner, but fixed to one candidate rank (default 6) and shard count 1.
+Same as Stage2 runner, but fixed to one candidate rank (default 1) and shard count 1.
 =#
 
 cd(@__DIR__)
 
 function stage2light_candidate_index()
-  raw = strip(get(ENV, "HNODECB_STAGE2LIGHT_CANDIDATE", "6"))
+  raw = strip(get(ENV, "HNODECB_STAGE2LIGHT_CANDIDATE", "1"))
   idx = tryparse(Int, raw)
   if idx === nothing || idx < 1
     error("HNODECB_STAGE2LIGHT_CANDIDATE must be a positive integer, got: " * raw)
@@ -20,8 +20,11 @@ end
 if !haskey(ENV, "HNODECB_STAGE2_SHARD_COUNT")
   ENV["HNODECB_STAGE2_SHARD_COUNT"] = "1"
 end
+if !haskey(ENV, "HNODECB_STAGE2_INPUT_BASENAME")
+  ENV["HNODECB_STAGE2_INPUT_BASENAME"] = "afm_param_stage1pluslight_03.jld"
+end
 if !haskey(ENV, "HNODECB_STAGE2_INPUT_TOPK")
-  ENV["HNODECB_STAGE2_INPUT_TOPK"] = "9"
+  ENV["HNODECB_STAGE2_INPUT_TOPK"] = "10"
 end
 if !haskey(ENV, "HNODECB_STAGE2_LOG_EVERY")
   ENV["HNODECB_STAGE2_LOG_EVERY"] = "1"
@@ -57,7 +60,7 @@ if !haskey(ENV, "HNODECB_STAGE2_X3R_WEIGHT")
   ENV["HNODECB_STAGE2_X3R_WEIGHT"] = "0.0"
 end
 if !haskey(ENV, "HNODECB_STAGE2_NN_WARM_ENABLED")
-  ENV["HNODECB_STAGE2_NN_WARM_ENABLED"] = "1"
+  ENV["HNODECB_STAGE2_NN_WARM_ENABLED"] = "0"
 end
 if !haskey(ENV, "HNODECB_STAGE2_NN_WARM_INPUT_BASENAME")
   ENV["HNODECB_STAGE2_NN_WARM_INPUT_BASENAME"] = "afm_param_stage1pluslight_03.jld"
@@ -67,12 +70,6 @@ if !haskey(ENV, "HNODECB_STAGE2_NN_WARM_RANK")
 end
 if !haskey(ENV, "HNODECB_STAGE2_LOG_PREFIX")
   ENV["HNODECB_STAGE2_LOG_PREFIX"] = "log2_03_step2a_stage2light"
-end
-if !haskey(ENV, "HNODECB_STAGE2_USE_GNN")
-  ENV["HNODECB_STAGE2_USE_GNN"] = "1"
-end
-if !haskey(ENV, "HNODECB_STAGE2_GNN_DEFAULT")
-  ENV["HNODECB_STAGE2_GNN_DEFAULT"] = "1.0"
 end
 
 include("afm_param_search_stage2_03.jl")

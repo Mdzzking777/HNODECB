@@ -168,7 +168,7 @@ end
 function evaluate_loss(p_est, ranges, range_is_contact)
   # Single shooting: ranges are ignored; kept only for interface compatibility.
   if any(x -> !isfinite(x), p_est)
-    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+    return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
   end
   ks_est = p_est[10]
   cs_est = p_est[11]
@@ -176,24 +176,24 @@ function evaluate_loss(p_est, ranges, range_is_contact)
   if ks_est < ks_bounds[1] || ks_est > ks_bounds[2] ||
      cs_est < cs_bounds[1] || cs_est > cs_bounds[2] ||
      Estar_est < Estar_bounds[1] || Estar_est > Estar_bounds[2]
-    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+    return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
   end
 
   u0 = [ode_data[1, 1], ode_data[2, 1], ode_data[3, 1]]
   prob = ODEProblem{true}(ground_truth_function, u0, tspan, p_est)
   sol = solve(prob, integrator; saveat=tmp_steps, abstol=abstol, reltol=reltol)
   if !retcode_success(sol)
-    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+    return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
   end
   uhat = Array(sol)
   if size(uhat, 2) != length(tmp_steps)
-    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+    return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
   end
 
   weights_val = ifelse.(contact_mask, contact_loss_weight, noncontact_loss_weight)
   weights_sum = sum(weights_val)
   if !isfinite(weights_sum) || weights_sum <= 0
-    return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+    return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
   end
 
   state_err_per_t = vec(sum(abs2.((ode_data[1:2, :] .- uhat[1:2, :]) ./ state12_scale), dims=1))
@@ -205,7 +205,7 @@ function evaluate_loss(p_est, ranges, range_is_contact)
   else
     x2dot_pred = [x2dot_rhs(uhat[:, j], p_est, tmp_steps[j]) for j in eachindex(tmp_steps)]
     if any(x -> !isfinite(x), x2dot_pred)
-      return Inf, (state=Inf, x2dot=Inf, x3_obs=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
+      return Inf, (state=Inf, x2dot=Inf, x3_range=Inf, x1_rec=Inf, x3_rec=Inf)
     end
     x2dot_err = abs2.((x2dot_data[contact_idx] .- x2dot_pred[contact_idx]) ./ x2dot_scale)
     x2dot_w = weights_val[contact_idx]
@@ -225,7 +225,7 @@ function evaluate_loss(p_est, ranges, range_is_contact)
   x3_rec = relative_rmse_pct(x3_err_sum, x3_truth_sum, count_sum, scale_eps)
 
   total = state_loss + x2dot_loss + x3_range_loss
-  return total, (state=state_loss, x2dot=x2dot_loss, x3_obs=0.0, x3_range=x3_range_loss,
+  return total, (state=state_loss, x2dot=x2dot_loss, x3_range=x3_range_loss,
     x1_rec=x1_rec, x3_rec=x3_rec)
 end
 
@@ -247,7 +247,7 @@ for i in 1:num_samples
   local Estar = sample_log_uniform(rng, Estar_bounds[1], Estar_bounds[2])
   p_est = make_parameter_vector(ks, cs, Estar)
   loss, comps = evaluate_loss(p_est, ranges, range_is_contact)
-  results[i] = (loss=loss, state=comps.state, x2dot=comps.x2dot, x3_obs=comps.x3_obs, x3_range=comps.x3_range,
+  results[i] = (loss=loss, state=comps.state, x2dot=comps.x2dot, x3_range=comps.x3_range,
     x1_rec=comps.x1_rec, x3_rec=comps.x3_rec, ks=ks, cs=cs, Estar=Estar)
   if i % 20 == 0
     ks_err = percent_error_pct(ks, ks_true)
@@ -257,7 +257,6 @@ for i in 1:num_samples
       " | x1_rec=", @sprintf("%.2f", comps.x1_rec), "% x3_rec=", @sprintf("%.2f", comps.x3_rec), "%",
       " | state=", @sprintf("%.4e", comps.state),
       " x2dot=", @sprintf("%.4e", comps.x2dot),
-      " x3_obs=None",
       " x3_range=", @sprintf("%.4e", comps.x3_range),
       " x3_u0=None cont=None",
       " | ks=", @sprintf("%.3e", ks), " (true=", @sprintf("%.3e", ks_true), ", ", @sprintf("%.2f", ks_err), "%)",
@@ -269,7 +268,6 @@ end
 serialize(result_folder * "/" * result_name_string, (
   results=results,
   bounds=(ks=ks_bounds, cs=cs_bounds, Estar=Estar_bounds),
-  x3_obs_fraction=0.0,
   error_level=error_level
 ))
 
@@ -289,7 +287,6 @@ for i in 1:topn
     " | x1_rec=", @sprintf("%.2f", r.x1_rec), "% x3_rec=", @sprintf("%.2f", r.x3_rec), "%",
     " | state=", @sprintf("%.4e", r.state),
     " x2dot=", @sprintf("%.4e", r.x2dot),
-    " x3_obs=None",
     " x3_range=", @sprintf("%.4e", r.x3_range),
     " x3_u0=None cont=None",
     " | ks=", @sprintf("%.3e", r.ks), " (true=", @sprintf("%.3e", ks_true), ", ", @sprintf("%.2f", ks_err), "%)",

@@ -1,0 +1,34 @@
+AFM03 Check-3: p_net gradient cancellation across loss components
+Date: 2026-03-25
+Input: afm_param_stage1pluslight_03.jld
+Config: single-shooting train loss, compare x1_state / x2_state / x2dot component gradients
+Windows: first_contact + max_x1_pp_change only
+
+Rank 1
+  arch: layers=0 nodes=2 | p_count=16
+  init: ks0=2.378e-01 cs0=5.081e-08 g_nn=4.062e-07
+  Window first_contact [34, 425] len=392
+    losses : x1_state=1.617e-07 x2_state=5.255e-07 x2dot=1.496e-06 total=2.183e-06
+    ||grad||: x1_state=6.067e-11 x2_state=4.093e-10 x2dot=4.097e-09 total=4.562e-09
+    cosines : cos(x1,x2dot)=9.688e-01 cos(x2,x2dot)=9.910e-01 cos(state,x2dot)=9.889e-01
+    cancel? : total/max_component=1.113e+00 total/sum_components=9.989e-01
+  Window max_x1_pp_change [1137, 1534] len=398
+    losses : x1_state=8.475e-07 x2_state=1.453e-06 x2dot=1.271e-06 total=3.571e-06
+    ||grad||: x1_state=4.007e-09 x2_state=1.147e-08 x2dot=1.717e-08 total=3.265e-08
+    cosines : cos(x1,x2dot)=1.000e+00 cos(x2,x2dot)=1.000e+00 cos(state,x2dot)=1.000e+00
+    cancel? : total/max_component=1.901e+00 total/sum_components=1.000e+00
+
+Rank 8
+  arch: layers=0 nodes=2 | p_count=16
+  init: ks0=1.204e-01 cs0=5.858e-08 g_nn=1.929e-07
+  Window first_contact [34, 425] len=392
+    losses : x1_state=1.617e-07 x2_state=5.253e-07 x2dot=1.496e-06 total=2.183e-06
+    ||grad||: x1_state=3.294e-11 x2_state=7.873e-11 x2dot=8.468e-10 total=7.399e-10
+    cosines : cos(x1,x2dot)=-9.804e-01 cos(x2,x2dot)=-9.552e-01 cos(state,x2dot)=-9.637e-01
+    cancel? : total/max_component=8.738e-01 total/sum_components=7.720e-01
+  Window max_x1_pp_change [1137, 1534] len=398
+    losses : x1_state=8.524e-07 x2_state=1.460e-06 x2dot=1.273e-06 total=3.586e-06
+    ||grad||: x1_state=6.865e-09 x2_state=1.726e-08 x2dot=2.318e-08 total=4.730e-08
+    cosines : cos(x1,x2dot)=1.000e+00 cos(x2,x2dot)=1.000e+00 cos(state,x2dot)=1.000e+00
+    cancel? : total/max_component=2.041e+00 total/sum_components=1.000e+00
+

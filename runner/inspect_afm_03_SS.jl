@@ -1,7 +1,7 @@
 #=
-Offline oracle diagnostics for AFM 03 (NN Hertz replacement).
-This does NOT affect training. It only compares NN Hertz outputs to the
-ground-truth Hertz force using full (oracle) state trajectories.
+Offline oracle diagnostics for AFM 03.
+This does NOT affect training. It compares NN force outputs against the
+ground-truth force target using full (oracle) state trajectories.
 =#
 
 cd(@__DIR__)
@@ -20,13 +20,47 @@ end
 payload = deserialize(path)
 results = haskey(payload, :results) ? payload.results : payload
 
-# Rebuild the Hertz-NN architecture (same as train_afm_03_SS.jl)
-approximating_neural_network = Lux.Chain(
-  Lux.Dense(2, 16, tanh),
-  Lux.Dense(16, 16, tanh),
-  Lux.Dense(16, 1)
-)
-_, st = Lux.setup(Random.default_rng(), approximating_neural_network)
+function result_get(r, key::Symbol, default=nothing)
+  if r isa NamedTuple
+    return hasproperty(r, key) ? getproperty(r, key) : default
+  elseif r isa AbstractDict
+    return haskey(r, key) ? r[key] : default
+  end
+  return default
+end
+
+function params_get(params, key::AbstractString, default)
+  if params isa AbstractDict && haskey(params, key)
+    return params[key]
+  end
+  return default
+end
+
+function as_int(x, default::Int)
+  x === nothing && return default
+  x isa Integer && return Int(x)
+  parsed = tryparse(Int, string(x))
+  return parsed === nothing ? default : parsed
+end
+
+function as_float(x, default::Float64)
+  x === nothing && return default
+  x isa AbstractFloat && return Float64(x)
+  x isa Integer && return Float64(x)
+  parsed = tryparse(Float64, string(x))
+  return parsed === nothing ? default : parsed
+end
+
+function build_nn(num_hidden_layers::Int, num_hidden_nodes::Int)
+  hidden = 2 ^ num_hidden_nodes
+  layers = Any[]
+  push!(layers, Lux.Dense(3, hidden, gelu; use_bias=false))
+  for _ in 1:num_hidden_layers
+    push!(layers, Lux.Dense(hidden, hidden, gelu; use_bias=false))
+  end
+  push!(layers, Lux.Dense(hidden, 1; use_bias=false))
+  return Lux.Chain(layers...)
+end
 
 # Load data (oracle trajectory)
 ode_data = deserialize("../datasets/e0.0/data/ode_data_afm_dmt_kv.jld")
@@ -46,12 +80,25 @@ function hertz_true(u1, u3)
   return (4.0 / 3.0) * Estar * sqrt(R) * (delta^1.5)
 end
 
-function hertz_pred(u1, u2, u3, p_net)
+function contact_net_true(u1, u3)
+  s = dist + u1 - u3
+  return hertz_true(u1, u3) - Fad * contact_weight(s, adhesion_transition)
+end
+
+function hertz_pred(u1, u2, u3, p_net, appr, st)
   s = dist + u1 - u3
   w = contact_weight(s, adhesion_transition)
-  nn_in = [u1, u2]
-  û = approximating_neural_network(nn_in, p_net, st)[1]
-  return û[1] * w
+  nn_in = [u1, u2, u3]
+  uhat = appr(nn_in, p_net, st)[1]
+  return uhat[1] * w
+end
+
+function contact_net_pred(u1, u2, u3, p_net, appr, st)
+  s = dist + u1 - u3
+  w = contact_weight(s, adhesion_transition)
+  nn_in = [u1, u2, u3]
+  uhat = appr(nn_in, p_net, st)[1]
+  return uhat[1] * w
 end
 
 function mape_pct(pred, truth; eps=1e-12)
@@ -63,16 +110,24 @@ function rel_rmse_pct(pred, truth; eps=1e-12)
   return 100.0 * sqrt(mean(abs2.(pred .- truth))) / denom
 end
 
-println("=== ORACLE NN Hertz diagnostics (offline only) ===")
-println("NOTE: oracle uses true x1/x2/x3 and true parameters for Hertz.")
+println("=== ORACLE NN force diagnostics (offline only) ===")
+println("NOTE: oracle uses true x1/x2/x3 and true parameters for the force target.")
 
 if results isa AbstractVector
   for (i, r) in enumerate(results)
-    if !haskey(r, :p_net) || !haskey(r, :parameters_training)
-      println("Run ", i, " [ORACLE] skipped (missing p_net or parameters_training).")
+    p_net_raw = result_get(r, :p_net, nothing)
+    if p_net_raw === nothing
+      println("Run ", i, " [ORACLE] skipped (missing p_net).")
       continue
     end
-    p_net = ComponentArray(r.p_net)
+    params = result_get(r, :params, Dict{Any, Any}())
+    num_hidden_layers = as_int(result_get(r, :num_hidden_layers, params_get(params, "num_hidden_layers", 1)), 1)
+    num_hidden_nodes = as_int(result_get(r, :num_hidden_nodes, params_get(params, "num_hidden_nodes", 4)), 4)
+    nn_force_mode = String(result_get(r, :nn_force_mode, params_get(params, "nn_force_mode", "contact_net")))
+
+    approximating_neural_network = build_nn(num_hidden_layers, num_hidden_nodes)
+    _, st = Lux.setup(Random.default_rng(), approximating_neural_network)
+    p_net = ComponentArray(p_net_raw)
 
     n = size(ode_data, 2)
     F_true = Vector{Float64}(undef, n)
@@ -81,8 +136,13 @@ if results isa AbstractVector
       u1 = ode_data[1, j]
       u2 = ode_data[2, j]
       u3 = ode_data[3, j]
-      F_true[j] = hertz_true(u1, u3)
-      F_pred[j] = hertz_pred(u1, u2, u3, p_net)
+      if nn_force_mode == "contact_net"
+        F_true[j] = contact_net_true(u1, u3)
+        F_pred[j] = contact_net_pred(u1, u2, u3, p_net, approximating_neural_network, st)
+      else
+        F_true[j] = hertz_true(u1, u3)
+        F_pred[j] = hertz_pred(u1, u2, u3, p_net, approximating_neural_network, st)
+      end
     end
 
     idx_contact = findall(contact_mask)
@@ -93,11 +153,15 @@ if results isa AbstractVector
     rmse_all = rel_rmse_pct(F_pred, F_true)
     mape_c = isempty(idx_contact) ? NaN : mape_pct(F_pred_c, F_true_c)
     rmse_c = isempty(idx_contact) ? NaN : rel_rmse_pct(F_pred_c, F_true_c)
+    force_label = nn_force_mode == "contact_net" ? "F_contact" : "F_hertz"
 
-    println("Run ", i, " [ORACLE] Hertz MAPE(all)=", @sprintf("%.3f", mape_all),
+    println("Run ", i, " [ORACLE] ", force_label,
+      " MAPE(all)=", @sprintf("%.3f", mape_all),
       "% RMSE(all)=", @sprintf("%.3f", rmse_all), "%",
       " | MAPE(contact)=", @sprintf("%.3f", mape_c),
-      "% RMSE(contact)=", @sprintf("%.3f", rmse_c), "%")
+      "% RMSE(contact)=", @sprintf("%.3f", rmse_c), "%",
+      " | nn(layers=", num_hidden_layers,
+      ", nodes=", num_hidden_nodes, ")")
   end
 else
   println("Results format not recognized; no oracle diagnostics computed.")

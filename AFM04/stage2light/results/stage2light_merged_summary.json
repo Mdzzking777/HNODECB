@@ -1,0 +1,15 @@
+{
+  "total_shards": 1,
+  "best_val_loss": 4.249114874862771e-09,
+  "shards": [
+    {
+      "shard_index": 1,
+      "role": "first_contact",
+      "label": "first_contact_window",
+      "title": "window1: right after first contact",
+      "best_epoch": 998,
+      "best_val_loss": 4.249114874862771e-09,
+      "result_path": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM04\\stage2light\\results\\stage2light_result_p1.pt"
+    }
+  ]
+}
