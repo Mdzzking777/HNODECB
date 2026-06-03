@@ -1,4 +1,4 @@
-"""pykan wrapper used as an HNODE force module in the isolated full test."""
+"""pykan wrapper used as the AFM04 formal force module."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 def import_pykan(pykan_root: str | Path):
@@ -20,70 +19,10 @@ def import_pykan(pykan_root: str | Path):
     return KAN
 
 
-def _softplus_eps(x: torch.Tensor, eps: float) -> torch.Tensor:
-    return float(eps) * F.softplus(x / float(eps))
-
-
-def w_pred_from_states(
-    states: torch.Tensor,
-    *,
-    dist: float,
-    a0: float,
-    eps: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    states = torch.as_tensor(states)
-    if states.ndim != 2 or states.shape[1] < 3:
-        raise ValueError("w_pred_from_states expects states shaped [N, 3]")
-    s_pred = float(dist) + states[:, 0] - states[:, 2]
-    delta = _softplus_eps(float(a0) - s_pred, float(eps))
-    weights = 1.0 - torch.exp(-delta / float(eps))
-    return s_pred, torch.clamp(weights, min=0.0, max=1.0)
-
-
-def summarize_wpred_from_states(
-    states: torch.Tensor,
-    *,
-    dist: float,
-    a0: float,
-    eps: float,
-) -> dict[str, float]:
-    states = torch.as_tensor(states)
-    if states.ndim != 2 or states.shape[1] < 3:
-        raise ValueError("summarize_wpred_from_states expects states shaped [N, 3]")
-    n = int(states.shape[0])
-    meta = {
-        "base_samples": float(n),
-        "extra_samples": 0.0,
-        "total_samples": float(n),
-        "mean_w_pred": float("nan"),
-        "max_w_pred": float("nan"),
-        "q50_w_pred": float("nan"),
-        "q90_w_pred": float("nan"),
-        "q99_w_pred": float("nan"),
-        "frac_s_le_a0": float("nan"),
-        "frac_s_le_1p5a0": float("nan"),
-        "frac_wpred_ge_05": float("nan"),
-        "frac_wpred_ge_08": float("nan"),
-    }
-    if n <= 0:
-        return meta
-
-    s_pred, weights = w_pred_from_states(states, dist=dist, a0=a0, eps=eps)
-    if torch.any(~torch.isfinite(weights)):
-        return meta
-
-    mean_w = float(torch.mean(weights).detach())
-    max_w = float(torch.max(weights).detach())
-    meta["mean_w_pred"] = mean_w
-    meta["max_w_pred"] = max_w
-    meta["q50_w_pred"] = float(torch.quantile(weights, 0.50).detach())
-    meta["q90_w_pred"] = float(torch.quantile(weights, 0.90).detach())
-    meta["q99_w_pred"] = float(torch.quantile(weights, 0.99).detach())
-    meta["frac_s_le_a0"] = float(torch.mean((s_pred <= float(a0)).to(weights.dtype)).detach())
-    meta["frac_s_le_1p5a0"] = float(torch.mean((s_pred <= (1.5 * float(a0))).to(weights.dtype)).detach())
-    meta["frac_wpred_ge_05"] = float(torch.mean((weights >= 0.5).to(weights.dtype)).detach())
-    meta["frac_wpred_ge_08"] = float(torch.mean((weights >= 0.8).to(weights.dtype)).detach())
-    return meta
+def _inverse_sigmoid_fraction(value: float, lo: float, hi: float) -> float:
+    frac = (float(value) - float(lo)) / max(float(hi) - float(lo), 1.0e-30)
+    frac = min(max(frac, 1.0e-12), 1.0 - 1.0e-12)
+    return float(np.log(frac / (1.0 - frac)))
 
 
 class KANForceModule(nn.Module):
@@ -107,8 +46,14 @@ class KANForceModule(nn.Module):
         gnn_learnable: bool,
         dist: float = 0.0,
         a0: float = 0.0,
-        wpred_enabled: bool = False,
-        wpred_eps: float = 1.0e-10,
+        soft_mask_enabled: bool = True,
+        soft_mask_trainable: bool = True,
+        soft_mask_s0_a0: float = 20.0,
+        soft_mask_s0_min_a0: float = 1.0,
+        soft_mask_s0_max_a0: float = 100.0,
+        soft_mask_alpha_a0: float = 0.25,
+        soft_mask_alpha_min_a0: float = 0.02,
+        soft_mask_alpha_max_a0: float = 5.0,
         device: str = "cpu",
         dtype: torch.dtype = torch.float64,
     ) -> None:
@@ -131,48 +76,100 @@ class KANForceModule(nn.Module):
         ).speed()
         self.kan = self.kan.to(str(device))
         self.kan = self.kan.double() if dtype == torch.float64 else self.kan.float()
-        self.register_buffer("state_mean", torch.as_tensor(np.asarray(state_mean, dtype=float), dtype=dtype))
-        self.register_buffer("state_scale", torch.as_tensor(np.asarray(state_scale, dtype=float), dtype=dtype))
+        # Formal AFM04 now follows KFT raw-input coordinates: pykan sees
+        # physical [x1, x2, x3] directly, and AGU controls the spline grid.
+        # Keep identity buffers only for payload/checkpoint compatibility.
+        input_dim = int(width[0])
+        mean_arr = np.zeros(input_dim, dtype=float)
+        scale_arr = np.ones(input_dim, dtype=float)
+        if mean_arr.size != input_dim or scale_arr.size != input_dim:
+            raise ValueError(
+                "state normalizer dimension mismatch: "
+                f"width[0]={input_dim} mean={mean_arr.size} scale={scale_arr.size}"
+            )
+        self.register_buffer("state_mean", torch.as_tensor(mean_arr, dtype=dtype))
+        self.register_buffer("state_scale", torch.as_tensor(scale_arr, dtype=dtype))
         self.log_gnn = nn.Parameter(torch.zeros(1, dtype=dtype), requires_grad=bool(gnn_learnable))
         self.dist = float(dist)
         self.a0 = float(a0)
-        self.wpred_enabled = bool(wpred_enabled)
-        self.wpred_eps = float(wpred_eps)
+        self.soft_mask_enabled = bool(soft_mask_enabled)
+        self.soft_mask_trainable = bool(soft_mask_trainable)
+
+        a0_safe = max(abs(float(a0)), 1.0e-30)
+        s0_min = max(float(soft_mask_s0_min_a0), 1.0e-6) * a0_safe
+        s0_max = max(float(soft_mask_s0_max_a0), float(soft_mask_s0_min_a0) + 1.0e-6) * a0_safe
+        s0_init = min(max(float(soft_mask_s0_a0) * a0_safe, s0_min), s0_max)
+
+        alpha_min = max(float(soft_mask_alpha_min_a0), 1.0e-9) / a0_safe
+        alpha_max = max(float(soft_mask_alpha_max_a0), float(soft_mask_alpha_min_a0) + 1.0e-9) / a0_safe
+        alpha_init = min(max(float(soft_mask_alpha_a0) / a0_safe, alpha_min), alpha_max)
+
+        self.register_buffer("soft_mask_s0_min", torch.tensor(s0_min, dtype=dtype))
+        self.register_buffer("soft_mask_s0_max", torch.tensor(s0_max, dtype=dtype))
+        self.register_buffer("soft_mask_alpha_min", torch.tensor(alpha_min, dtype=dtype))
+        self.register_buffer("soft_mask_alpha_max", torch.tensor(alpha_max, dtype=dtype))
+        self.soft_mask_s0_raw = nn.Parameter(
+            torch.tensor([_inverse_sigmoid_fraction(s0_init, s0_min, s0_max)], dtype=dtype),
+            requires_grad=self.soft_mask_enabled and self.soft_mask_trainable,
+        )
+        self.soft_mask_alpha_raw = nn.Parameter(
+            torch.tensor([_inverse_sigmoid_fraction(alpha_init, alpha_min, alpha_max)], dtype=dtype),
+            requires_grad=self.soft_mask_enabled and self.soft_mask_trainable,
+        )
 
     def normalized_inputs(self, states: torch.Tensor) -> torch.Tensor:
         states = torch.as_tensor(states, dtype=self.state_mean.dtype, device=self.state_mean.device)
-        return (states - self.state_mean) / self.state_scale
+        return states
 
     def raw_output(self, states: torch.Tensor) -> torch.Tensor:
         x = self.normalized_inputs(states)
         y = self.kan(x)
         return y.reshape(-1)
 
-    def w_pred(self, states: torch.Tensor) -> torch.Tensor:
-        states_t = torch.as_tensor(states, dtype=self.state_mean.dtype, device=self.state_mean.device)
-        if not self.wpred_enabled:
-            return torch.ones(states_t.shape[0], dtype=states_t.dtype, device=states_t.device)
-        _, weights = w_pred_from_states(
-            states_t,
-            dist=self.dist,
-            a0=self.a0,
-            eps=self.wpred_eps,
-        )
-        return weights.to(dtype=states_t.dtype, device=states_t.device)
-
-    def weighted_raw_output(self, states: torch.Tensor) -> torch.Tensor:
-        raw = self.raw_output(states)
-        return self.w_pred(states) * raw
-
     def gain(self) -> torch.Tensor:
         return torch.exp(self.log_gnn)
 
+    def soft_mask_s0(self) -> torch.Tensor:
+        frac = torch.sigmoid(self.soft_mask_s0_raw.reshape(()))
+        return self.soft_mask_s0_min + (self.soft_mask_s0_max - self.soft_mask_s0_min) * frac
+
+    def soft_mask_alpha(self) -> torch.Tensor:
+        frac = torch.sigmoid(self.soft_mask_alpha_raw.reshape(()))
+        return self.soft_mask_alpha_min + (self.soft_mask_alpha_max - self.soft_mask_alpha_min) * frac
+
+    def soft_mask(self, states: torch.Tensor) -> torch.Tensor:
+        states_t = torch.as_tensor(states, dtype=self.state_mean.dtype, device=self.state_mean.device)
+        if not self.soft_mask_enabled:
+            return torch.ones(states_t.shape[0], dtype=states_t.dtype, device=states_t.device)
+        s = self.dist + states_t[:, 0] - states_t[:, 2]
+        contact_gate = s <= float(self.a0)
+        noncontact_mask = torch.sigmoid(self.soft_mask_alpha() * (self.soft_mask_s0() - s))
+        return torch.where(contact_gate, torch.ones_like(noncontact_mask), noncontact_mask)
+
+    def soft_mask_summary(self) -> dict[str, float | bool]:
+        with torch.no_grad():
+            s0 = float(self.soft_mask_s0().detach().cpu())
+            alpha = float(self.soft_mask_alpha().detach().cpu())
+        a0_safe = max(abs(float(self.a0)), 1.0e-30)
+        return {
+            "enabled": bool(self.soft_mask_enabled),
+            "trainable": bool(self.soft_mask_trainable),
+            "s0": s0,
+            "s0_a0": s0 / a0_safe,
+            "alpha": alpha,
+            "alpha_a0": alpha * a0_safe,
+            "m_min": 0.0,
+        }
+
+    def masked_raw_output(self, states: torch.Tensor) -> torch.Tensor:
+        return self.soft_mask(states) * self.raw_output(states)
+
     def forward(self, states: torch.Tensor) -> torch.Tensor:
-        return self.gain() * self.weighted_raw_output(states)
+        return self.gain() * self.masked_raw_output(states)
 
     @torch.no_grad()
     def initialize_gain_from_truth(self, states: torch.Tensor, fts_true: torch.Tensor) -> float:
-        raw = self.weighted_raw_output(states)
+        raw = self.masked_raw_output(states)
         amp_true = torch.quantile(torch.abs(fts_true.reshape(-1)), 0.95)
         amp_pred = torch.quantile(torch.abs(raw.reshape(-1)), 0.95)
         if not torch.isfinite(amp_true) or float(amp_true) <= 1.0e-18:
@@ -187,10 +184,15 @@ class KANForceModule(nn.Module):
         x = self.normalized_inputs(states)
         self.kan.update_grid_from_samples(x)
 
+    @torch.no_grad()
+    def update_grid_from_normalized_inputs(self, inputs: torch.Tensor) -> None:
+        """Legacy name: inputs are raw physical KAN coordinates."""
+
+        x = torch.as_tensor(inputs, dtype=self.state_mean.dtype, device=self.state_mean.device)
+        self.kan.update_grid_from_samples(x)
+
 
 __all__ = [
     "KANForceModule",
     "import_pykan",
-    "summarize_wpred_from_states",
-    "w_pred_from_states",
 ]

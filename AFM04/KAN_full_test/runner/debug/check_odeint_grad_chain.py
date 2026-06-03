@@ -222,7 +222,7 @@ def run_check(*, shard_index: int, max_points: int, seed: int | None = None) -> 
             "fts_range": float(parts_full.fts_range),
             "x1_rec": float(parts_full.x1_rec),
             "x3_rec": float(parts_full.x3_rec),
-            "nn_err": float(parts_full.fts_teacher_rec),
+            "nn_err": float(parts_full.fts_rollout_rec),
         },
         "traj_requires_grad": rollout_requires_grad,
         "rollout_only_loss": float(rollout_only_loss.detach().cpu()),
@@ -300,4 +300,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

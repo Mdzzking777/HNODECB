@@ -1,0 +1,766 @@
+# mypy: allow-untyped-defs
+"""KFT-local copy of PyTorch LBFGS with exposed curvature threshold.
+
+This file is derived from the PyTorch LBFGS implementation bundled in the
+project virtual environment. Keep algorithm changes minimal and explicit.
+"""
+
+import torch
+from torch import Tensor
+
+from torch.optim.optimizer import _to_scalar, Optimizer, ParamsT
+
+
+__all__ = ["LBFGS"]
+
+
+def _debug_scalar(value):
+    if value is None:
+        return float("nan")
+    if isinstance(value, Tensor):
+        if value.numel() == 0:
+            return float("nan")
+        return float(value.detach().reshape(-1)[0].cpu().item())
+    return float(value)
+
+
+def _debug_norm(value):
+    if value is None:
+        return float("nan")
+    if isinstance(value, Tensor):
+        if value.numel() == 0:
+            return 0.0
+        return float(torch.linalg.vector_norm(value.detach().reshape(-1)).cpu().item())
+    return float(abs(value))
+
+
+def _debug_max_abs(value):
+    if value is None:
+        return float("nan")
+    if isinstance(value, Tensor):
+        if value.numel() == 0:
+            return 0.0
+        return float(torch.max(torch.abs(value.detach())).cpu().item())
+    return float(abs(value))
+
+
+def _cubic_interpolate(x1, f1, g1, x2, f2, g2, bounds=None):
+    # ported from https://github.com/torch/optim/blob/master/polyinterp.lua
+    # Compute bounds of interpolation area
+    if bounds is not None:
+        xmin_bound, xmax_bound = bounds
+    else:
+        xmin_bound, xmax_bound = (x1, x2) if x1 <= x2 else (x2, x1)
+
+    # Code for most common case: cubic interpolation of 2 points
+    #   w/ function and derivative values for both
+    # Solution in this case (where x2 is the farthest point):
+    #   d1 = g1 + g2 - 3*(f1-f2)/(x1-x2);
+    #   d2 = sqrt(d1^2 - g1*g2);
+    #   min_pos = x2 - (x2 - x1)*((g2 + d2 - d1)/(g2 - g1 + 2*d2));
+    #   t_new = min(max(min_pos,xmin_bound),xmax_bound);
+    d1 = g1 + g2 - 3 * (f1 - f2) / (x1 - x2)
+    d2_square = d1**2 - g1 * g2
+    if d2_square >= 0:
+        d2 = d2_square.sqrt()
+        if x1 <= x2:
+            min_pos = x2 - (x2 - x1) * ((g2 + d2 - d1) / (g2 - g1 + 2 * d2))
+        else:
+            min_pos = x1 - (x1 - x2) * ((g1 + d2 - d1) / (g1 - g2 + 2 * d2))
+        return min(max(min_pos, xmin_bound), xmax_bound)
+    else:
+        return (xmin_bound + xmax_bound) / 2.0
+
+
+def _strong_wolfe(
+    obj_func,
+    x,
+    t,
+    d,
+    f,
+    g,
+    gtd,
+    c1=1e-4,
+    c2=0.9,
+    tolerance_change=1e-9,
+    max_ls=25,
+    debug=None,
+):
+    # ported from https://github.com/torch/optim/blob/master/lswolfe.lua
+    d_norm = d.abs().max()
+    g = g.clone(memory_format=torch.contiguous_format)
+    if debug is not None:
+        debug.clear()
+        debug.update(
+            {
+                "c1": float(c1),
+                "c2": float(c2),
+                "tolerance_change": float(tolerance_change),
+                "max_ls": int(max_ls),
+                "initial_t": _debug_scalar(t),
+                "initial_f": float(f),
+                "initial_gtd": _debug_scalar(gtd),
+                "direction_max_abs": _debug_max_abs(d),
+                "direction_l2": _debug_norm(d),
+                "events": [],
+                "bracket_reason": "",
+                "zoom_stop_reason": "",
+                "final_reason": "",
+            }
+        )
+    # evaluate objective and gradient using initial step
+    f_new, g_new = obj_func(x, t, d)
+    ls_func_evals = 1
+    gtd_new = g_new.dot(d)
+    if debug is not None:
+        debug["events"].append(
+            {
+                "phase": "initial_trial",
+                "iter": 0,
+                "t": _debug_scalar(t),
+                "f": float(f_new),
+                "gtd": _debug_scalar(gtd_new),
+            }
+        )
+
+    # bracket an interval containing a point satisfying the Wolfe criteria
+    t_prev, f_prev, g_prev, gtd_prev = 0, f, g, gtd
+    done = False
+    ls_iter = 0
+    while ls_iter < max_ls:
+        # check conditions
+        if f_new > (f + c1 * t * gtd) or (ls_iter > 1 and f_new >= f_prev):
+            if debug is not None:
+                debug["bracket_reason"] = "armijo_or_not_lower_than_previous"
+            bracket = [t_prev, t]
+            bracket_f = [f_prev, f_new]
+            bracket_g = [g_prev, g_new.clone(memory_format=torch.contiguous_format)]
+            bracket_gtd = [gtd_prev, gtd_new]
+            break
+
+        if abs(gtd_new) <= -c2 * gtd:
+            if debug is not None:
+                debug["bracket_reason"] = "strong_wolfe_satisfied_in_bracket"
+            bracket = [t]
+            bracket_f = [f_new]
+            bracket_g = [g_new]
+            done = True
+            break
+
+        if gtd_new >= 0:
+            if debug is not None:
+                debug["bracket_reason"] = "directional_derivative_nonnegative"
+            bracket = [t_prev, t]
+            bracket_f = [f_prev, f_new]
+            bracket_g = [g_prev, g_new.clone(memory_format=torch.contiguous_format)]
+            bracket_gtd = [gtd_prev, gtd_new]
+            break
+
+        # interpolate
+        min_step = t + 0.01 * (t - t_prev)
+        max_step = t * 10
+        tmp = t
+        t = _cubic_interpolate(
+            t_prev, f_prev, gtd_prev, t, f_new, gtd_new, bounds=(min_step, max_step)
+        )
+
+        # next step
+        t_prev = tmp
+        f_prev = f_new
+        g_prev = g_new.clone(memory_format=torch.contiguous_format)
+        gtd_prev = gtd_new
+        f_new, g_new = obj_func(x, t, d)
+        ls_func_evals += 1
+        gtd_new = g_new.dot(d)
+        ls_iter += 1
+        if debug is not None:
+            debug["events"].append(
+                {
+                    "phase": "bracket",
+                    "iter": int(ls_iter),
+                    "t": _debug_scalar(t),
+                    "f": float(f_new),
+                    "gtd": _debug_scalar(gtd_new),
+                }
+            )
+
+    # reached max number of iterations?
+    if ls_iter == max_ls:
+        if debug is not None:
+            debug["bracket_reason"] = "max_ls_reached_before_zoom"
+        bracket = [0, t]
+        bracket_f = [f, f_new]
+        bracket_g = [g, g_new]
+
+    # zoom phase: we now have a point satisfying the criteria, or
+    # a bracket around it. We refine the bracket until we find the
+    # exact point satisfying the criteria
+    insuf_progress = False
+    # find high and low points in bracket
+    low_pos, high_pos = (0, 1) if bracket_f[0] <= bracket_f[-1] else (1, 0)  # type: ignore[possibly-undefined]
+    while not done and ls_iter < max_ls:
+        # line-search bracket is so small
+        if abs(bracket[1] - bracket[0]) * d_norm < tolerance_change:  # type: ignore[possibly-undefined]
+            if debug is not None:
+                debug["zoom_stop_reason"] = "bracket_width_below_tolerance_change"
+            break
+
+        # compute new trial value
+        t = _cubic_interpolate(
+            # pyrefly: ignore [index-error]
+            # pyrefly: ignore [unbound-name]
+            bracket[0],
+            # pyrefly: ignore [unbound-name]
+            bracket_f[0],
+            bracket_gtd[0],  # type: ignore[possibly-undefined]
+            # pyrefly: ignore [index-error]
+            # pyrefly: ignore [unbound-name]
+            bracket[1],
+            # pyrefly: ignore [unbound-name]
+            bracket_f[1],
+            # pyrefly: ignore [unbound-name]
+            bracket_gtd[1],
+        )
+
+        # test that we are making sufficient progress:
+        # in case `t` is so close to boundary, we mark that we are making
+        # insufficient progress, and if
+        #   + we have made insufficient progress in the last step, or
+        #   + `t` is at one of the boundary,
+        # we will move `t` to a position which is `0.1 * len(bracket)`
+        # away from the nearest boundary point.
+        # pyrefly: ignore [unbound-name]
+        eps = 0.1 * (max(bracket) - min(bracket))
+        # pyrefly: ignore [unbound-name]
+        if min(max(bracket) - t, t - min(bracket)) < eps:
+            # interpolation close to boundary
+            # pyrefly: ignore [unbound-name]
+            if insuf_progress or t >= max(bracket) or t <= min(bracket):
+                # evaluate at 0.1 away from boundary
+                # pyrefly: ignore [unbound-name]
+                if abs(t - max(bracket)) < abs(t - min(bracket)):
+                    # pyrefly: ignore [unbound-name]
+                    t = max(bracket) - eps
+                else:
+                    # pyrefly: ignore [unbound-name]
+                    t = min(bracket) + eps
+                insuf_progress = False
+            else:
+                insuf_progress = True
+        else:
+            insuf_progress = False
+
+        # Evaluate new point
+        f_new, g_new = obj_func(x, t, d)
+        ls_func_evals += 1
+        gtd_new = g_new.dot(d)
+        ls_iter += 1
+        if debug is not None:
+            debug["events"].append(
+                {
+                    "phase": "zoom",
+                    "iter": int(ls_iter),
+                    "t": _debug_scalar(t),
+                    "f": float(f_new),
+                    "gtd": _debug_scalar(gtd_new),
+                    "bracket_low": _debug_scalar(bracket[low_pos]),  # type: ignore[possibly-undefined]
+                    "bracket_high": _debug_scalar(bracket[high_pos]),  # type: ignore[possibly-undefined]
+                }
+            )
+
+        # pyrefly: ignore [unbound-name]
+        if f_new > (f + c1 * t * gtd) or f_new >= bracket_f[low_pos]:
+            # Armijo condition not satisfied or not lower than lowest point
+            # pyrefly: ignore [unsupported-operation]
+            # pyrefly: ignore [unbound-name]
+            bracket[high_pos] = t
+            # pyrefly: ignore [unbound-name]
+            bracket_f[high_pos] = f_new
+            bracket_g[high_pos] = g_new.clone(memory_format=torch.contiguous_format)  # type: ignore[possibly-undefined]
+            # pyrefly: ignore [unbound-name]
+            bracket_gtd[high_pos] = gtd_new
+            # pyrefly: ignore [unbound-name]
+            low_pos, high_pos = (0, 1) if bracket_f[0] <= bracket_f[1] else (1, 0)
+        else:
+            if abs(gtd_new) <= -c2 * gtd:
+                # Wolfe conditions satisfied
+                done = True
+                if debug is not None:
+                    debug["zoom_stop_reason"] = "strong_wolfe_satisfied_in_zoom"
+            # pyrefly: ignore [index-error]
+            # pyrefly: ignore [unbound-name]
+            elif gtd_new * (bracket[high_pos] - bracket[low_pos]) >= 0:
+                # old high becomes new low
+                # pyrefly: ignore [unsupported-operation]
+                # pyrefly: ignore [unbound-name]
+                bracket[high_pos] = bracket[low_pos]
+                # pyrefly: ignore [unbound-name]
+                bracket_f[high_pos] = bracket_f[low_pos]
+                bracket_g[high_pos] = bracket_g[low_pos]  # type: ignore[possibly-undefined]
+                # pyrefly: ignore [unbound-name]
+                bracket_gtd[high_pos] = bracket_gtd[low_pos]
+
+            # new point becomes new low
+            # pyrefly: ignore [unsupported-operation]
+            # pyrefly: ignore [unbound-name]
+            bracket[low_pos] = t
+            # pyrefly: ignore [unbound-name]
+            bracket_f[low_pos] = f_new
+            bracket_g[low_pos] = g_new.clone(memory_format=torch.contiguous_format)  # type: ignore[possibly-undefined]
+            # pyrefly: ignore [unbound-name]
+            bracket_gtd[low_pos] = gtd_new
+
+    # return stuff
+    t = bracket[low_pos]  # type: ignore[possibly-undefined]
+    # pyrefly: ignore [unbound-name]
+    f_new = bracket_f[low_pos]
+    g_new = bracket_g[low_pos]  # type: ignore[possibly-undefined]
+    if debug is not None:
+        if debug.get("zoom_stop_reason"):
+            debug["final_reason"] = debug["zoom_stop_reason"]
+        elif done:
+            debug["final_reason"] = debug.get("bracket_reason") or "strong_wolfe_satisfied"
+        elif ls_iter >= max_ls:
+            debug["final_reason"] = "max_ls_reached"
+        else:
+            debug["final_reason"] = debug.get("bracket_reason") or "unknown"
+        debug.update(
+            {
+                "final_t": _debug_scalar(t),
+                "final_f": float(f_new),
+                "final_gtd": _debug_scalar(g_new.dot(d)),
+                "ls_iter": int(ls_iter),
+                "ls_func_evals": int(ls_func_evals),
+                "done": bool(done),
+                "final_bracket_low": _debug_scalar(bracket[low_pos]),  # type: ignore[possibly-undefined]
+                "final_bracket_high": _debug_scalar(bracket[high_pos]),  # type: ignore[possibly-undefined]
+            }
+        )
+    return f_new, g_new, t, ls_func_evals
+
+
+class LBFGS(Optimizer):
+    """Implements L-BFGS algorithm.
+
+    Heavily inspired by `minFunc
+    <https://www.cs.ubc.ca/~schmidtm/Software/minFunc.html>`_.
+
+    .. warning::
+        This optimizer doesn't support per-parameter options and parameter
+        groups (there can be only one).
+
+    .. warning::
+        Right now all parameters have to be on a single device. This will be
+        improved in the future.
+
+    .. note::
+        This is a very memory intensive optimizer (it requires additional
+        ``param_bytes * (history_size + 1)`` bytes). If it doesn't fit in memory
+        try reducing the history size, or use a different algorithm.
+
+    Args:
+        params (iterable): iterable of parameters to optimize. Parameters must be real.
+        lr (float, optional): learning rate (default: 1)
+        max_iter (int, optional): maximal number of iterations per optimization step
+            (default: 20)
+        max_eval (int, optional): maximal number of function evaluations per optimization
+            step (default: max_iter * 1.25).
+        tolerance_grad (float, optional): termination tolerance on first order optimality
+            (default: 1e-7).
+        tolerance_change (float, optional): termination tolerance on function
+            value/parameter changes (default: 1e-9).
+        history_size (int, optional): update history size (default: 100).
+        line_search_fn (str, optional): either 'strong_wolfe' or None (default: None).
+    """
+
+    def __init__(
+        self,
+        params: ParamsT,
+        lr: float | Tensor = 1,
+        max_iter: int = 20,
+        max_eval: int | None = None,
+        tolerance_grad: float = 1e-7,
+        tolerance_change: float = 1e-9,
+        history_size: int = 100,
+        line_search_fn: str | None = None,
+        ys_threshold: float = 1e-15,
+    ) -> None:
+        if isinstance(lr, Tensor) and lr.numel() != 1:
+            raise ValueError("Tensor lr must be 1-element")
+        if not 0.0 <= lr:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if max_eval is None:
+            max_eval = max_iter * 5 // 4
+        defaults = {
+            "lr": lr,
+            "max_iter": max_iter,
+            "max_eval": max_eval,
+            "tolerance_grad": tolerance_grad,
+            "tolerance_change": tolerance_change,
+            "history_size": history_size,
+            "line_search_fn": line_search_fn,
+            "ys_threshold": ys_threshold,
+        }
+        super().__init__(params, defaults)
+
+        if len(self.param_groups) != 1:
+            raise ValueError(
+                "LBFGS doesn't support per-parameter options (parameter groups)"
+            )
+
+        self._params = self.param_groups[0]["params"]
+        self._numel_cache = None
+
+    def _numel(self):
+        if self._numel_cache is None:
+            # pyrefly: ignore [bad-assignment]
+            self._numel_cache = sum(
+                2 * p.numel() if torch.is_complex(p) else p.numel()
+                for p in self._params
+            )
+
+        return self._numel_cache
+
+    def _gather_flat_grad(self):
+        views = []
+        for p in self._params:
+            if p.grad is None:
+                view = p.new(p.numel()).zero_()
+            elif p.grad.is_sparse:
+                view = p.grad.to_dense().view(-1)
+            else:
+                view = p.grad.view(-1)
+            if torch.is_complex(view):
+                view = torch.view_as_real(view).view(-1)
+            views.append(view)
+        return torch.cat(views, 0)
+
+    def _add_grad(self, step_size, update) -> None:
+        offset = 0
+        for p in self._params:
+            if torch.is_complex(p):
+                p = torch.view_as_real(p)
+            numel = p.numel()
+            # view as to avoid deprecated pointwise semantics
+            p.add_(update[offset : offset + numel].view_as(p), alpha=step_size)
+            offset += numel
+        if offset != self._numel():
+            raise AssertionError(f"Expected offset {offset} to equal {self._numel()}")
+
+    def _clone_param(self):
+        return [p.clone(memory_format=torch.contiguous_format) for p in self._params]
+
+    def _set_param(self, params_data) -> None:
+        for p, pdata in zip(self._params, params_data, strict=True):
+            p.copy_(pdata)
+
+    def _directional_evaluate(self, closure, x, t, d):
+        self._add_grad(t, d)
+        loss = float(closure())
+        flat_grad = self._gather_flat_grad()
+        self._set_param(x)
+        return loss, flat_grad
+
+    @torch.no_grad()
+    def step(self, closure):  # type: ignore[override]
+        """Perform a single optimization step.
+
+        Args:
+            closure (Callable): A closure that reevaluates the model
+                and returns the loss.
+        """
+        if len(self.param_groups) != 1:
+            raise AssertionError(
+                f"Expected exactly one param_group, but got {len(self.param_groups)}"
+            )
+
+        # Make sure the closure is always called with grad enabled
+        closure = torch.enable_grad()(closure)
+
+        group = self.param_groups[0]
+        lr = _to_scalar(group["lr"])
+        max_iter = group["max_iter"]
+        max_eval = group["max_eval"]
+        tolerance_grad = group["tolerance_grad"]
+        tolerance_change = group["tolerance_change"]
+        line_search_fn = group["line_search_fn"]
+        history_size = group["history_size"]
+        ys_threshold = group["ys_threshold"]
+        step_debug = {
+            "lr": float(lr),
+            "max_iter": int(max_iter),
+            "max_eval": int(max_eval),
+            "tolerance_grad": float(tolerance_grad),
+            "tolerance_change": float(tolerance_change),
+            "history_size": int(history_size),
+            "line_search_fn": str(line_search_fn),
+            "ys_threshold": float(ys_threshold),
+            "break_reason": "",
+        }
+
+        # NOTE: LBFGS has only global state, but we register it as state for
+        # the first param, because this helps with casting in load_state_dict
+        state = self.state[self._params[0]]
+        state.setdefault("func_evals", 0)
+        state.setdefault("n_iter", 0)
+
+        # evaluate initial f(x) and df/dx
+        orig_loss = closure()
+        loss = float(orig_loss)
+        current_evals = 1
+        state["func_evals"] += 1
+
+        flat_grad = self._gather_flat_grad()
+        opt_cond = flat_grad.abs().max() <= tolerance_grad
+        step_debug.update(
+            {
+                "initial_loss": float(loss),
+                "initial_grad_max_abs": _debug_max_abs(flat_grad),
+                "initial_grad_l2": _debug_norm(flat_grad),
+                "opt_cond_initial": bool(opt_cond),
+            }
+        )
+
+        # optimal condition
+        if opt_cond:
+            step_debug["break_reason"] = "initial_opt_cond"
+            state["last_step_debug"] = step_debug
+            return orig_loss
+
+        # tensors cached in state (for tracing)
+        d = state.get("d")
+        t = state.get("t")
+        old_dirs = state.get("old_dirs")
+        old_stps = state.get("old_stps")
+        ro = state.get("ro")
+        H_diag = state.get("H_diag")
+        prev_flat_grad = state.get("prev_flat_grad")
+        prev_loss = state.get("prev_loss")
+
+        n_iter = 0
+        # optimize for a max of max_iter iterations
+        while n_iter < max_iter:
+            # keep track of nb of iterations
+            n_iter += 1
+            state["n_iter"] += 1
+            step_debug["optimizer_state_n_iter"] = int(state["n_iter"])
+            step_debug["history_len_before"] = int(len(old_dirs) if old_dirs is not None else 0)
+
+            ############################################################
+            # compute gradient descent direction
+            ############################################################
+            if state["n_iter"] == 1:
+                d = flat_grad.neg()
+                old_dirs = []
+                old_stps = []
+                ro = []
+                H_diag = 1
+                step_debug.update(
+                    {
+                        "curvature_update_applicable": False,
+                        "curvature_update_reason": "first_lbfgs_iteration",
+                        "curvature_update": False,
+                        "ys": float("nan"),
+                        "y_norm": float("nan"),
+                        "s_norm": float("nan"),
+                        "yy": float("nan"),
+                        "H_diag_before_direction": float(H_diag),
+                    }
+                )
+            else:
+                # do lbfgs update (update memory)
+                y = flat_grad.sub(prev_flat_grad)
+                s = d.mul(t)
+                ys = y.dot(s)  # y*s
+                state["last_ys"] = ys
+                state["last_ys_threshold"] = ys_threshold
+                state["last_curvature_update"] = bool(ys > ys_threshold)
+                yy = y.dot(y)
+                step_debug.update(
+                    {
+                        "curvature_update_applicable": True,
+                        "ys": _debug_scalar(ys),
+                        "ys_threshold": float(ys_threshold),
+                        "curvature_update": bool(ys > ys_threshold),
+                        "y_norm": _debug_norm(y),
+                        "s_norm": _debug_norm(s),
+                        "yy": _debug_scalar(yy),
+                        "H_diag_before_direction": _debug_scalar(H_diag),
+                    }
+                )
+                if ys > ys_threshold:
+                    # updating memory
+                    if len(old_dirs) == history_size:
+                        # shift history by one (limited-memory)
+                        old_dirs.pop(0)
+                        old_stps.pop(0)
+                        ro.pop(0)
+
+                    # store new direction/step
+                    old_dirs.append(y)
+                    old_stps.append(s)
+                    ro.append(1.0 / ys)
+
+                    # update scale of initial Hessian approximation
+                    H_diag = ys / yy  # (y*y)
+                    step_debug["H_diag_after_curvature_update"] = _debug_scalar(H_diag)
+                else:
+                    step_debug["curvature_update_reason"] = "ys_below_or_equal_threshold"
+
+                # compute the approximate (L-BFGS) inverse Hessian
+                # multiplied by the gradient
+                num_old = len(old_dirs)
+                step_debug["history_len_after_curvature"] = int(num_old)
+
+                if "al" not in state:
+                    state["al"] = [None] * history_size
+                al = state["al"]
+
+                # iteration in L-BFGS loop collapsed to use just one buffer
+                q = flat_grad.neg()
+                for i in range(num_old - 1, -1, -1):
+                    al[i] = old_stps[i].dot(q) * ro[i]
+                    q.add_(old_dirs[i], alpha=-al[i])
+
+                # multiply by initial Hessian
+                # r/d is the final direction
+                d = r = torch.mul(q, H_diag)
+                for i in range(num_old):
+                    be_i = old_dirs[i].dot(r) * ro[i]
+                    r.add_(old_stps[i], alpha=al[i] - be_i)
+
+            if prev_flat_grad is None:
+                prev_flat_grad = flat_grad.clone(memory_format=torch.contiguous_format)
+            else:
+                prev_flat_grad.copy_(flat_grad)
+            prev_loss = loss
+
+            ############################################################
+            # compute step length
+            ############################################################
+            # reset initial guess for step size
+            if state["n_iter"] == 1:
+                t = min(1.0, 1.0 / flat_grad.abs().sum()) * lr
+            else:
+                t = lr
+
+            # directional derivative
+            gtd = flat_grad.dot(d)  # g * d
+            step_vec = d.mul(t)
+            step_debug.update(
+                {
+                    "t_initial": _debug_scalar(t),
+                    "gtd": _debug_scalar(gtd),
+                    "direction_l2": _debug_norm(d),
+                    "direction_max_abs": _debug_max_abs(d),
+                    "proposed_step_l2": _debug_norm(step_vec),
+                    "proposed_step_max_abs": _debug_max_abs(step_vec),
+                }
+            )
+
+            # directional derivative is below tolerance
+            if gtd > -tolerance_change:
+                step_debug["break_reason"] = "gtd_above_negative_tolerance"
+                break
+
+            # optional line search: user function
+            ls_func_evals = 0
+            line_search_debug = {}
+            if line_search_fn is not None:
+                # perform line search, using user function
+                if line_search_fn != "strong_wolfe":
+                    raise RuntimeError("only 'strong_wolfe' is supported")
+                else:
+                    x_init = self._clone_param()
+
+                    def obj_func(x, t, d):
+                        return self._directional_evaluate(closure, x, t, d)
+
+                    loss, flat_grad, t, ls_func_evals = _strong_wolfe(
+                        obj_func,
+                        x_init,
+                        t,
+                        d,
+                        loss,
+                        flat_grad,
+                        gtd,
+                        tolerance_change=tolerance_change,
+                        max_ls=max_eval - current_evals,
+                        debug=line_search_debug,
+                    )
+                step_debug["line_search_debug"] = line_search_debug
+                self._add_grad(t, d)
+                opt_cond = flat_grad.abs().max() <= tolerance_grad
+            else:
+                # no line search, simply move with fixed-step
+                self._add_grad(t, d)
+                if n_iter != max_iter:
+                    # re-evaluate function only if not in last iteration
+                    # the reason we do this: in a stochastic setting,
+                    # no use to re-evaluate that function here
+                    with torch.enable_grad():
+                        loss = closure()
+                    loss = float(loss)
+                    flat_grad = self._gather_flat_grad()
+                    opt_cond = flat_grad.abs().max() <= tolerance_grad
+                    ls_func_evals = 1
+
+            # update func eval
+            current_evals += ls_func_evals
+            state["func_evals"] += ls_func_evals
+            actual_step_vec = d.mul(t)
+            step_debug.update(
+                {
+                    "t_final": _debug_scalar(t),
+                    "line_search_func_evals": int(ls_func_evals),
+                    "current_evals": int(current_evals),
+                    "loss_after_internal": float(loss),
+                    "grad_after_max_abs": _debug_max_abs(flat_grad),
+                    "grad_after_l2": _debug_norm(flat_grad),
+                    "actual_step_l2": _debug_norm(actual_step_vec),
+                    "actual_step_max_abs": _debug_max_abs(actual_step_vec),
+                    "opt_cond_after": bool(opt_cond),
+                    "loss_change_abs": float(abs(loss - prev_loss)),
+                }
+            )
+
+            ############################################################
+            # check conditions
+            ############################################################
+            if n_iter == max_iter:
+                step_debug["break_reason"] = "max_iter"
+                break
+
+            if current_evals >= max_eval:
+                step_debug["break_reason"] = "max_eval"
+                break
+
+            # optimal condition
+            if opt_cond:
+                step_debug["break_reason"] = "opt_cond"
+                break
+
+            # lack of progress
+            if d.mul(t).abs().max() <= tolerance_change:
+                step_debug["break_reason"] = "step_change_below_tolerance_change"
+                break
+
+            if abs(loss - prev_loss) < tolerance_change:
+                step_debug["break_reason"] = "loss_change_below_tolerance_change"
+                break
+
+        state["d"] = d
+        state["t"] = t
+        state["old_dirs"] = old_dirs
+        state["old_stps"] = old_stps
+        state["ro"] = ro
+        state["H_diag"] = H_diag
+        state["prev_flat_grad"] = prev_flat_grad
+        state["prev_loss"] = prev_loss
+        step_debug["history_len_after"] = int(len(old_dirs) if old_dirs is not None else 0)
+        step_debug["H_diag_final"] = _debug_scalar(H_diag)
+        if not step_debug.get("break_reason"):
+            step_debug["break_reason"] = "loop_exited"
+        state["last_step_debug"] = step_debug
+
+        return orig_loss

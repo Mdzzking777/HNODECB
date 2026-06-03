@@ -1,0 +1,369 @@
+KFT raw input + KAN adaptive grid 更改计划
+================================================
+
+背景
+----
+
+目前 KFT / AFM04 中存在一套显式的 state_mean / state_scale 归一化体系：
+
+    normalized_state = (raw_state - state_mean) / state_scale
+
+这套体系不是 KAN 原作者 pykan 的主路线。pykan 的核心思路更接近：
+
+    raw input -> KAN spline grid -> update_grid_from_samples
+
+也就是说，输入坐标系主要由 KAN 的 spline grid 及其 sample-adaptive grid update 机制承担，
+而不是由我们手写 mean / scale 去规定。
+
+因此，KFT 后续主线应从：
+
+    手写 mean / scale normalizer + refit / rerank
+
+转向：
+
+    raw physical input + KAN adaptive grid
+
+其中 mean / scale 体系最多保留为 legacy / ablation，不再作为主方案。
+
+
+总原则
+------
+
+1. KAN 直接接收 raw physical input。
+2. 不再在 KAN forward 前执行 state_mean / state_scale 归一化。
+3. KAN 输入坐标系由 spline grid 决定。
+4. grid update 只能使用当前实验允许使用的信息。
+5. 对 hidden state 相关输入，不能使用 true x3 或 true x3dot 引导 grid。
+6. Adam 阶段可以按 schedule 更新 grid。
+7. LBFGS / strong-Wolfe 阶段冻结 grid，避免 line search closure 中 objective 改变。
+
+
+影响范围
+--------
+
+本计划首先只作用于 KFT。
+
+涉及模块预计包括：
+
+    AFM04/KAN_full_test/data.py
+    AFM04/KAN_full_test/kan_backend.py
+    AFM04/KAN_full_test/rollout.py
+    AFM04/KAN_full_test/random_search.py
+    AFM04/KAN_full_test/train.py
+    AFM04/KAN_full_test/config.py
+    AFM04/KAN_full_test/runner/...
+    AFM04/KAN_full_test/runner/visualization/...
+    AFM04/KAN_full_test/runner/analysis/...
+
+暂不直接同步到 AFM04 formal stages，除非 KFT 试点稳定。
+
+
+RS 阶段更改
+-----------
+
+RS 不再保存或使用 state_mean / state_scale。
+
+每个 trial 应改为以下逻辑：
+
+1. 构造 raw-input KAN。
+
+   Plan Z 启用时，KAN 输入为：
+
+       x1, x2, x3_pred, q_pre
+
+   其中：
+
+       q_pre = accepted dopri5 path 中最接近 T_k^- 的 predicted x3dot
+
+   不再输入：
+
+       (x1 - mean_x1) / scale_x1
+       (x2 - mean_x2) / scale_x2
+       (x3 - mean_x3) / scale_x3
+       (q  - mean_q ) / scale_q
+
+2. 初始化 KAN grid。
+
+   对 observed states：
+
+       x1, x2
+
+   可以使用当前训练窗口中的 observed trajectory samples。
+
+   对 hidden / predicted channels：
+
+       x3_pred, q_pre
+
+   不能使用 true x3 / true x3dot。
+
+   可选方式：
+
+   A. 使用 trial rollout 产生的 predicted x3 / q_pre samples 初始化或更新 grid。
+   B. 使用不含 true hidden state 的保守物理 grid range。
+
+   主线倾向 A，但必须确认不会反向影响 rollout 本身。
+
+3. RS loss 直接基于 raw-input KAN rollout。
+
+   RS winner 的选择不再受 normalizer refit 影响。
+
+4. RS result 必须保存完整 KAN state。
+
+   至少包括：
+
+       KAN weights
+       spline coefficients
+       grid
+       architecture
+       seed / trial id
+       Plan Z q_init
+       soft mask fixed parameters
+       allowed grid update metadata
+
+5. 旧的 refit-rerank 逻辑降级。
+
+   mean / scale refit-rerank 不再作为主线。
+
+   如果未来仍需要 rerank，应改成：
+
+       grid-calibrated rerank
+
+   即检查不同 trial 的 grid calibration 是否改变 rank，而不是检查 normalizer refit 是否改变 rank。
+
+
+GBO 阶段更改
+------------
+
+GBO 从 RS winner 继承完整 raw-input KAN state，而不是 seed + normalizer。
+
+1. 删除 forward 中的 normalizer。
+
+   旧逻辑：
+
+       z = (states - state_mean) / state_scale
+       Fts = KAN(z)
+
+   新逻辑：
+
+       Fts = KAN(raw_states)
+
+2. GBO 开始前进行一次 grid calibration。
+
+   使用当前 warmstart rollout 中的 allowed input samples：
+
+       x1, x2, x3_pred, q_pre
+
+   注意：
+
+       x3_pred / q_pre 必须来自当前模型 rollout
+       不能来自 true x3 / true x3dot
+
+3. Adam 阶段允许 AGU。
+
+   AGU 应按已有 schedule 或新的明确 schedule 执行。
+
+   grid update samples 来自当前 epoch / 当前模型 rollout 的 raw inputs。
+
+4. LBFGS 阶段冻结 AGU。
+
+   原因：
+
+       LBFGS + strong-Wolfe 会在一次 outer step 内多次调用 closure。
+       如果 closure 内 grid 会变化，则每次 closure 看到的 objective 不是同一个函数。
+       这会污染 line search 和 curvature update。
+
+5. Plan Z q_init 保持可训练。
+
+   q_init 的单位应为 physical x3dot 单位。
+
+   不再存在 normalized q_init。
+
+6. soft mask 继续存在。
+
+   soft mask 与 raw-input KAN 并不冲突。
+
+   但 soft mask 参数、KAN grid、Plan Z q_pre 三者的日志需要清楚区分。
+
+
+Plan Z 相关更改
+---------------
+
+Plan Z 的核心输入从 3-input KAN 改为 4-input KAN：
+
+    Fts_pred = KAN(x1, x2, x3_pred, q_pre)
+
+其中：
+
+    q_pre ~= predicted x3dot(T_k^-)
+
+工程要求：
+
+1. q_pre 必须来自 accepted dopri5 path。
+2. q_pre 不能来自 rejected trial step。
+3. q_pre 不等价于 current-time x3dot(T_k)，因此不构成 same-time algebraic loop。
+4. q_pre 应尽量取 accepted path 中最接近 T_k^- 的 predicted x3dot。
+5. q_pre 作为 raw fourth input 进入 KAN，不再使用 q_mean / q_scale。
+6. q_init 初始值可继续使用：
+
+       q_init = -x2_init
+
+   并在 GBO 中作为可训练标量。
+
+7. RS 阶段由于没有 backprop 训练 q_init，可先固定使用该初始值。
+
+
+AGU / grid update 规则
+---------------------
+
+AGU 在 raw-input KAN 中从辅助功能变成核心机制。
+
+必须明确：
+
+1. 哪些阶段允许 grid update：
+
+       RS: 可以做 trial-level grid calibration，但必须不使用 hidden true 信息。
+       GBO Adam: 可以按 schedule 更新。
+       GBO LBFGS: 关闭。
+
+2. 哪些 samples 可以用于 grid update：
+
+       x1 observed
+       x2 observed
+       x3 predicted by current rollout
+       q_pre predicted by accepted dopri5 path
+
+3. 哪些 samples 禁止用于 grid update：
+
+       true x3
+       true x3dot
+       any post-hoc oracle hidden trajectory
+
+4. grid 必须写入 checkpoint / result。
+
+5. resume 时必须恢复 grid，而不是重新按当前数据静默初始化。
+
+
+Checkpoint / result 格式
+------------------------
+
+由于 grid 变成输入坐标系本身的一部分，checkpoint 和 result 必须包含：
+
+    model state_dict
+    KAN grid state
+    architecture
+    Plan Z enabled flag
+    q_init value
+    soft mask state
+    optimizer state
+    current epoch
+    grid update schedule metadata
+    last grid update epoch
+
+不再把 state_mean / state_scale 当作主线必需字段。
+
+旧 checkpoint 如果含有 state_mean / state_scale，应视为 legacy，不应作为严格复现实验依据。
+
+
+可视化和分析影响
+----------------
+
+所有可视化脚本需要避免假设 normalized coordinate。
+
+重点检查：
+
+1. Fts / x1 / x3 / x2dot rollout 图。
+2. full-time extrapolation 图。
+3. preopt / warmstart 图。
+4. NN raw / reconstructed force 图。
+5. Plan Z q_pre 相关监控图。
+6. grid range / grid update 诊断图。
+
+full-time extrapolation 时尤其需要说明：
+
+    使用的是训练得到的 KAN grid，而不是重新用 full-span true hidden state 生成坐标系。
+
+
+预期收益
+--------
+
+1. 移除 mean / scale 选择带来的大量人为自由度。
+2. 避免 hidden-state scale leakage / local-window scale misuse。
+3. 更接近 KAN 原作者的 raw input + adaptive grid 设计哲学。
+4. RS rank 不再被 normalizer refit 这类后处理改变。
+5. full-time extrapolation 的解释更干净：外推失败时，更可能来自模型/窗口/缺失变量，而不是坐标系作弊或误设。
+
+
+主要风险
+--------
+
+1. raw physical units 的量纲差异可能让初始 grid 难以设置。
+2. x3_pred / q_pre 初期 rollout 很差时，grid calibration 也可能被带偏。
+3. 不同 trial 的 grid 可能差异较大，rank 比较需要确认公平性。
+4. 如果 grid update 太频繁，可能影响 GBO 稳定性。
+5. 如果 grid update 太少，KAN 可能无法覆盖实际输入区域。
+6. LBFGS 前的 grid frozen state 对后续优化影响很大。
+
+
+建议执行顺序
+------------
+
+第一阶段：只做 KFT 内部 raw-input 最小闭环。
+
+    1. 移除 KFT KAN forward 的 state_mean / state_scale。
+    2. 保留旧 normalizer 代码为 legacy，但默认不启用。
+    3. 确保 Plan Z 4-input KAN 可 raw-input rollout。
+    4. 确保 RS 能完成。
+    5. 确保 GBO 能从 RS winner 启动。
+
+第二阶段：补强 grid update。
+
+    1. 明确 RS grid calibration。
+    2. 明确 GBO Adam AGU schedule。
+    3. 明确 LBFGS 阶段冻结 grid。
+    4. 保存 / 恢复 grid metadata。
+
+2026-05-31 implementation note
+------------------------------
+
+当前第一版代码实现采用更稳的 raw-prior AGU：
+
+    x1/x2: observed train-window raw samples
+    x3: conservative physical prior range, not true x3
+    q_pre/x3dot: conservative physical prior range from observed x2 / q_init, not true x3dot
+
+原因：
+
+    在未训练模型上，为 AGU 额外执行一次 full rollout 可能非常慢，甚至卡住。
+    因此 rollout-based AGU 先不作为默认路径。
+
+当前默认：
+
+    KAN forward: raw physical input
+    RS AGU: raw observed x1/x2 + hidden physical prior
+    GBO/prerun Adam AGU: raw observed x1/x2 + hidden physical prior
+    GBO/prerun LBFGS AGU: frozen
+
+后续如果要启用 rollout-based AGU，应先做独立小型实验，不应直接放进主训练循环。
+
+第三阶段：补强诊断。
+
+    1. 增加 grid range 可视化。
+    2. 增加 x3_pred / q_pre input distribution 可视化。
+    3. 增加 full-time extrapolation 的 grid provenance 标注。
+
+第四阶段：和 legacy normalizer 做 ablation。
+
+    1. raw-input + adaptive grid。
+    2. old mean/scale normalizer。
+    3. 对比 W0 reconstruction。
+    4. 对比 full-time extrapolation。
+    5. 对比 RS rank 稳定性。
+
+
+一句话总结
+----------
+
+KFT 后续应从“手写 hidden-state mean/scale 坐标系”切换到“raw physical input + KAN adaptive spline grid 坐标系”。
+
+RS 负责在 raw-input KAN + calibrated grid 下选择 trial。
+GBO 负责从完整 KAN state 出发，在 Adam 阶段允许 grid 随 rollout samples 调整，在 LBFGS 阶段冻结 grid 并精修参数。

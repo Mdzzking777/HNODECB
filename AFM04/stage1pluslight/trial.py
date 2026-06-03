@@ -227,6 +227,12 @@ def stage1pluslight_joint_trial(
     step_max_loss_frac: float = 0.1,
     early_stop_epoch: int = 5,
     early_stop_min_drop_frac: float = 0.01,
+    ode_full: np.ndarray | None = None,
+    x2dot_full: np.ndarray | None = None,
+    contact_full: np.ndarray | None = None,
+    times_full: np.ndarray | None = None,
+    train_idx: np.ndarray | None = None,
+    val_idx: np.ndarray | None = None,
     ode_solver: str = "Radau",
     ode_fallback_solver: str = "BDF",
     ode_rtol: float = 1.0e-8,
@@ -250,33 +256,49 @@ def stage1pluslight_joint_trial(
     )
     theta0 = _theta_from_vectors(model_param_vec, mech_raw, bundle)
 
-    val_loss_start, _ = loss_single_or_ms(
-        theta0,
-        ode_val,
-        x2dot_val,
-        contact_val,
-        times_val,
-        state12_scale,
-        x2dot_scale,
-        100.0e-9,
-        use_multiple_shooting,
-        ms_group_size,
-        ms_continuity_term,
-        bundle.model,
-        known_pars,
-        x3_t0_val,
-        zero_contact_override=zero_contact_override,
-        ode_solver=ode_solver,
-        ode_fallback_solver=ode_fallback_solver,
-        ode_rtol=ode_rtol,
-        ode_atol=ode_atol,
-        ode_max_step=ode_max_step,
+    use_full_rollout_split = (
+        ode_full is not None
+        and x2dot_full is not None
+        and contact_full is not None
+        and times_full is not None
+        and train_idx is not None
+        and val_idx is not None
     )
 
-    def train_loss_from_vectors(model_vec: np.ndarray, mech_vec: np.ndarray) -> float:
-        theta = _theta_from_vectors(model_vec, mech_vec, bundle)
-        return float(
-            loss_single_or_ms(
+    def loss_for_split(theta: Any, split_name: str) -> tuple[float, LossParts]:
+        if use_full_rollout_split:
+            if split_name == "train":
+                loss_indices = np.asarray(train_idx, dtype=int)
+            elif split_name == "val":
+                loss_indices = np.asarray(val_idx, dtype=int)
+            else:
+                raise ValueError(f"unsupported split_name={split_name!r}")
+            return loss_single_or_ms(
+                theta,
+                np.asarray(ode_full, dtype=float),
+                np.asarray(x2dot_full, dtype=float),
+                np.asarray(contact_full, dtype=bool),
+                np.asarray(times_full, dtype=float),
+                state12_scale,
+                x2dot_scale,
+                100.0e-9,
+                use_multiple_shooting,
+                ms_group_size,
+                ms_continuity_term,
+                bundle.model,
+                known_pars,
+                x3_t0_val,
+                zero_contact_override=zero_contact_override,
+                ode_solver=ode_solver,
+                ode_fallback_solver=ode_fallback_solver,
+                ode_rtol=ode_rtol,
+                ode_atol=ode_atol,
+                ode_max_step=ode_max_step,
+                loss_indices=loss_indices,
+            )
+
+        if split_name == "train":
+            return loss_single_or_ms(
                 theta,
                 ode_train,
                 x2dot_train,
@@ -297,33 +319,41 @@ def stage1pluslight_joint_trial(
                 ode_rtol=ode_rtol,
                 ode_atol=ode_atol,
                 ode_max_step=ode_max_step,
-            )[0]
-        )
+            )
+        if split_name == "val":
+            return loss_single_or_ms(
+                theta,
+                ode_val,
+                x2dot_val,
+                contact_val,
+                times_val,
+                state12_scale,
+                x2dot_scale,
+                100.0e-9,
+                use_multiple_shooting,
+                ms_group_size,
+                ms_continuity_term,
+                bundle.model,
+                known_pars,
+                x3_t0_val,
+                zero_contact_override=zero_contact_override,
+                ode_solver=ode_solver,
+                ode_fallback_solver=ode_fallback_solver,
+                ode_rtol=ode_rtol,
+                ode_atol=ode_atol,
+                ode_max_step=ode_max_step,
+            )
+        raise ValueError(f"unsupported split_name={split_name!r}")
+
+    val_loss_start, _ = loss_for_split(theta0, "val")
+
+    def train_loss_from_vectors(model_vec: np.ndarray, mech_vec: np.ndarray) -> float:
+        theta = _theta_from_vectors(model_vec, mech_vec, bundle)
+        return float(loss_for_split(theta, "train")[0])
 
     def val_loss_from_vectors(model_vec: np.ndarray, mech_vec: np.ndarray) -> tuple[float, dict[str, float]]:
         theta = _theta_from_vectors(model_vec, mech_vec, bundle)
-        loss, parts = loss_single_or_ms(
-            theta,
-            ode_val,
-            x2dot_val,
-            contact_val,
-            times_val,
-            state12_scale,
-            x2dot_scale,
-            100.0e-9,
-            use_multiple_shooting,
-            ms_group_size,
-            ms_continuity_term,
-            bundle.model,
-            known_pars,
-            x3_t0_val,
-            zero_contact_override=zero_contact_override,
-            ode_solver=ode_solver,
-            ode_fallback_solver=ode_fallback_solver,
-            ode_rtol=ode_rtol,
-            ode_atol=ode_atol,
-            ode_max_step=ode_max_step,
-        )
+        loss, parts = loss_for_split(theta, "val")
         return float(loss), _val_diag_or_empty(parts)
 
     trial_failed = False
@@ -454,50 +484,8 @@ def stage1pluslight_joint_trial(
 
     theta_final = _theta_from_vectors(model_vec_cur, mech_raw_cur, bundle)
     try:
-        train_loss_end, _ = loss_single_or_ms(
-            theta_final,
-            ode_train,
-            x2dot_train,
-            contact_train,
-            times_train,
-            state12_scale,
-            x2dot_scale,
-            100.0e-9,
-            use_multiple_shooting,
-            ms_group_size,
-            ms_continuity_term,
-            bundle.model,
-            known_pars,
-            x3_t0_val,
-            zero_contact_override=zero_contact_override,
-            ode_solver=ode_solver,
-            ode_fallback_solver=ode_fallback_solver,
-            ode_rtol=ode_rtol,
-            ode_atol=ode_atol,
-            ode_max_step=ode_max_step,
-        )
-        val_loss_end, val_diag = loss_single_or_ms(
-            theta_final,
-            ode_val,
-            x2dot_val,
-            contact_val,
-            times_val,
-            state12_scale,
-            x2dot_scale,
-            100.0e-9,
-            use_multiple_shooting,
-            ms_group_size,
-            ms_continuity_term,
-            bundle.model,
-            known_pars,
-            x3_t0_val,
-            zero_contact_override=zero_contact_override,
-            ode_solver=ode_solver,
-            ode_fallback_solver=ode_fallback_solver,
-            ode_rtol=ode_rtol,
-            ode_atol=ode_atol,
-            ode_max_step=ode_max_step,
-        )
+        train_loss_end, _ = loss_for_split(theta_final, "train")
+        val_loss_end, val_diag = loss_for_split(theta_final, "val")
         val_diag = _val_diag_or_empty(val_diag)
     except Exception as err:
         trial_failed = True
@@ -541,7 +529,7 @@ def stage1pluslight_joint_trial(
     }
 
     return {
-        "loss": float(val_loss_end),
+        "loss": float(train_loss_end),
         "train_loss": float(train_loss_end),
         "val_loss": float(val_loss_end),
         "val_loss_start": float(val_loss_start),
@@ -648,6 +636,12 @@ def stage1pluslight_joint_trial_multiwindow(
             step_max_loss_frac=step_max_loss_frac,
             early_stop_epoch=early_stop_epoch,
             early_stop_min_drop_frac=early_stop_min_drop_frac,
+            ode_full=bundle.get("ode_full"),
+            x2dot_full=bundle.get("x2dot_full"),
+            contact_full=bundle.get("contact_full"),
+            times_full=bundle.get("times_full"),
+            train_idx=bundle.get("train_idx"),
+            val_idx=bundle.get("val_idx"),
             ode_solver=ode_solver,
             ode_fallback_solver=ode_fallback_solver,
             ode_rtol=ode_rtol,
@@ -678,7 +672,7 @@ def stage1pluslight_joint_trial_multiwindow(
     params["window_val_losses"] = [float(rec["val_loss"]) for rec in window_recs]
     params["window_val_loss_starts"] = [float(rec["val_loss_start"]) for rec in window_recs]
     return {
-        "loss": mean_finite(rec["loss"] for rec in window_recs),
+        "loss": mean_finite(rec["train_loss"] for rec in window_recs),
         "train_loss": mean_finite(rec["train_loss"] for rec in window_recs),
         "val_loss": mean_finite(rec["val_loss"] for rec in window_recs),
         "val_loss_start": mean_finite(rec["val_loss_start"] for rec in window_recs),

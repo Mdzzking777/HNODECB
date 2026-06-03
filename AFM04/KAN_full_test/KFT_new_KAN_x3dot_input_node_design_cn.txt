@@ -1,0 +1,1330 @@
+KFT new KAN input node design: predicted x3dot as the 4th input
+=================================================================
+
+Document status
+---------------
+
+This is an engineering design note, not an implemented code change.
+
+Scope:
+- Trial target: AFM04/KAN_full_test only.
+- Do not change AFM04 formal stages yet.
+- Do not use true x3, true x3dot, or teacher Fts as an extra training input.
+- Keep archive and existing experiment records untouched.
+
+
+1. Problem background
+---------------------
+
+Current KFT force model:
+
+    Fts_pred = KAN(x1, x2, x3)
+
+Current KFT rollout RHS:
+
+    x1dot = x2
+    x2dot = (Fd*cos(wd*t) - k*x1 - c*x2 + Fts_pred) / m
+    x3dot = (-Fts_pred - ks*x3) / cs
+
+So x3dot is already computed during rollout and is already used by odeint to
+integrate x3. However, it is not currently used as a KAN input.
+
+The shared DMT-KV truth layer contains a Kelvin-Voigt velocity term:
+
+    Fts = F_static + eta_star*sqrt(R)*sqrt(delta)*delta_dot
+    delta_dot = x3dot - x2
+
+The truth layer solves x3dot explicitly inside the physics formula. This means
+that the real force family contains x3dot-like velocity information. The
+current 3-input KAN sees x2, but not x3dot. This may be one reason why W0 is
+harder than W1: the model may be forced to imitate an x3dot-dependent force
+with only x1, x2, x3.
+
+
+2. Rejected or postponed alternatives
+-------------------------------------
+
+2.1 Parallel-NN scheme
+
+Idea:
+- Use an auxiliary 3-input NN to generate a proxy x3dot.
+- Feed this proxy into a formal 4-input NN.
+
+Main problem:
+- Two NNs can compensate for each other.
+- It becomes hard to tell which NN is responsible for a good or bad trajectory.
+- Joint optimization creates too many hidden degrees of freedom.
+
+Decision:
+- Do not use this as the first KFT trial.
+
+
+2.2 Current-x3dot implicit input
+
+If we require
+
+    q = current x3dot
+    Fts = KAN(x1, x2, x3, q)
+
+then physics also requires
+
+    q = (-KAN(x1, x2, x3, q) - ks*x3) / cs
+
+This is an implicit equation for q at every RHS evaluation.
+
+Engineering consequences:
+- Every RHS evaluation needs an inner fixed-point/root solve.
+- Inner solve may fail to converge.
+- Training cost can grow substantially.
+- Autograd through the inner solve becomes another major design problem.
+- Early in training, x1/x2/x3 are predicted states, not true states, so an
+  implicit self-consistent q may reinforce a wrong but internally consistent
+  trajectory.
+
+Decision:
+- Postpone this route.
+- It is theoretically meaningful but too heavy as the next KFT step.
+- A more complete version is recorded below as Plan A / 方案A.
+
+
+Plan A / 方案A: current-x3dot DAE and ODE relaxation
+----------------------------------------------------
+
+Status:
+- This is a design record, not an implemented code change.
+- This plan directly addresses the current-x3dot input question.
+- It contains two related routes:
+  - Plan A1: exact DAE / implicit current-x3dot system.
+  - Plan A2: ODE relaxation approximation with an extra dynamic memory state.
+
+
+Plan A1: exact DAE / implicit current-x3dot system
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Core idea:
+- Do not bypass the algebraic closed loop.
+- Accept the system as a neural differential-algebraic equation.
+- Treat current x3dot as an algebraic variable q.
+
+Let:
+
+    q = current x3dot
+    Ftheta = KAN(x1, x2, x3, q)
+
+Then the differential part is:
+
+    x1dot = x2
+    x2dot = (Fd*cos(wd*t) - k*x1 - c*x2 + Ftheta) / m
+    x3dot = q
+
+The algebraic constraint is:
+
+    0 = q - (-Ftheta - ks*x3) / cs
+
+Equivalently:
+
+    0 = cs*q + ks*x3 + KAN(x1, x2, x3, q)
+
+In semi-explicit DAE form:
+
+    xdot = f(x, q, t)
+    0    = g(x, q, t)
+
+where:
+
+    x = [x1, x2, x3]
+    q = algebraic current x3dot
+    g(x, q, t) = cs*q + ks*x3 + KAN(x1, x2, x3, q)
+
+Scientific advantage:
+- This is the cleanest mathematical route for current-x3dot input.
+- It uses no true x3dot, no teacher Fts, and no pred+true mixed force chain.
+- q and the KAN force are forced to be self-consistent at the same time point.
+- It directly represents the fact that Fts and x3dot are implicitly coupled.
+
+Engineering cost:
+- Every RHS evaluation needs an inner solve for q.
+- A Newton or fixed-point solve may fail, especially early in training.
+- Multiple roots or wrong-but-self-consistent roots may appear.
+- Backpropagation through the inner solve is another design problem.
+- torchdiffeq is an ODE solver, not a dedicated DAE solver.
+- A rigorous DAE implementation may require a dedicated DAE solver or a custom
+  differentiable implicit solve layer.
+
+Current decision:
+- Plan A1 is the most rigorous future route.
+- It is not recommended as the first small KFT implementation.
+- It should be revisited only after a lighter x3dot-information route has been
+  tested.
+
+
+Plan A2: ODE relaxation approximation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Core idea:
+- Keep the system as a standard ODE so torchdiffeq can still be used.
+- Add an extra dynamic state q that tracks predicted x3dot.
+- Feed q into the KAN as x3dot-like memory information.
+
+Extended state:
+
+    u = [x1, x2, x3, q]
+
+Force model:
+
+    Ftheta = KAN(x1, x2, x3, q)
+
+Dynamics:
+
+    x1dot = x2
+    x2dot = (Fd*cos(wd*t) - k*x1 - c*x2 + Ftheta) / m
+    x3dot = (-Ftheta - ks*x3) / cs
+
+Relaxation equation:
+
+    qdot = (x3dot - q) / tau
+
+Therefore:
+
+    qdot = (((-Ftheta - ks*x3) / cs) - q) / tau
+
+where tau is a fixed relaxation time scale in the first version.
+
+Interpretation:
+- q is not true x3dot.
+- q is not teacher-provided.
+- q is not finite-difference x3dot.
+- q is a model-generated dynamic memory state.
+- q carries x3dot-like information while preserving a pure ODE RHS:
+
+      udot = f(t, u)
+
+Why this is cleaner than RHS-call lag memory:
+- q is part of the solver state.
+- q does not depend on hidden mutable cache outside the RHS.
+- Rejected adaptive solver trial steps do not pollute an external q_lag.
+- The same input state [x1, x2, x3, q] always gives the same RHS output.
+
+Engineering tradeoff:
+- It introduces one new hyperparameter tau.
+- tau should be fixed in the first version, not trainable.
+- q_init must be specified. In Plan Z it starts at -x2_init and is treated as a
+  trainable scalar because true initial x3dot is not available.
+- The model is no longer the original 3-state AFM system; it is an augmented
+  state-space surrogate.
+
+Current decision:
+- Plan A2 is less rigorous than Plan A1 but far more implementable.
+- It is a plausible intermediate KFT experiment if we want current-x3dot-like
+  information without implementing a full DAE solver.
+- It should still be feature-flagged and compared against the current 3-input
+  KFT path.
+
+
+Plan A literature note: Neural DAE via operator splitting
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Reference read:
+
+    Learning Neural Differential Algebraic Equations via Operator Splitting
+
+Main relevance to Plan A:
+- The paper studies semi-explicit neural DAEs:
+
+      xdot = f(x, y, u)
+      0    = g(x, y, u)
+
+  where x are differential states and y are algebraic states.
+
+- This directly matches the mathematical structure of Plan A1 if we set:
+
+      x = [x1, x2, x3]
+      y = q = current x3dot
+
+  and:
+
+      g(x, q) = cs*q + ks*x3 + KAN(x1, x2, x3, q)
+
+- The paper emphasizes the index-1 / local solvability condition:
+
+      det(dg/dy) != 0
+
+  For our scalar q case, this becomes:
+
+      dg/dq = cs + dKAN(x1,x2,x3,q)/dq != 0
+
+  This is a critical warning for Plan A1. If this derivative becomes near zero,
+  the implicit q solve can become ill-conditioned, multi-rooted, or unstable.
+
+What the paper actually proposes:
+- It does not simply solve the exact implicit DAE at every RHS call.
+- It uses an operator-splitting neural timestepper:
+
+      y_{k+1} = h(x_k, y_k, u_k)
+      x_{k+1} = ODESolve(f, x_k, y_{k+1}, u_k)
+
+  In words:
+  1. update the algebraic variable first;
+  2. then advance the differential states using the updated algebraic variable.
+
+- This suggests a possible Plan A3 for KFT:
+
+      q_k = h_phi(x1_k, x2_k, x3_k, q_{k-1}, t_k)
+      F_k = KAN(x1_k, x2_k, x3_k, q_k)
+      x_{k+1} = one-step rollout using F_k and q_k
+
+  with an algebraic residual penalty:
+
+      L_g = mean( (cs*q_k + ks*x3_k + F_k)^2 / S_g^2 )
+
+Why this is useful:
+- It gives a cleaner alternative to hidden RHS-call q_lag memory.
+- q is updated explicitly as an algebraic/memory variable, not as a mutable
+  cache that depends on dopri5 internal call order.
+- It supports the idea that algebraic update and differential rollout can be
+  separated into modular substeps.
+
+Why it cannot be copied directly:
+- Their examples are tank/manifold/pipe/pump networks, not AFM contact
+  mechanics.
+- Their algebraic variables are typically flow rates or constraint variables
+  with strong engineering constraints and often reference trajectories.
+- Their formulation includes losses like:
+
+      ||x - x_hat||^2 + ||y - y_hat||^2 + ||g(x,y,u)||^2
+
+  whereas in KFT:
+
+      x3 is unobserved
+      q = x3dot is unobserved
+      ks and cs may be unknown in formal AFM04
+
+  Therefore we cannot directly supervise q with ||q - q_hat||^2.
+
+- Their numerical scheme is closer to fixed-step neural timestepping /
+  operator splitting. Current KFT uses torchdiffeq/dopri5 continuous adaptive
+  rollout. The semantics are not identical.
+
+- Their systems appear more regular and less contact-fragile than W0 AFM.
+  Our W0 case has stronger local fragility and weaker state-only x3dot
+  inferability.
+
+Takeaway for KFT:
+- The paper supports treating current-x3dot input as a DAE/algebraic constraint
+  problem.
+- It does not guarantee Plan A1 will be easy or stable.
+- It suggests that a lighter operator-splitting route, Plan A3, may be more
+  practical than exact DAE solving:
+
+      Plan A1: exact implicit DAE, most rigorous, highest engineering cost.
+      Plan A2: ODE relaxation q-state, pure ODE, moderate engineering cost.
+      Plan A3: operator-splitting algebraic updater h_phi, potentially useful
+               but must prevent q from becoming a compensation channel.
+
+- Any A3 implementation must add KFT-specific safeguards:
+  1. no true x3dot input;
+  2. no q teacher supervision unless it is explicitly a synthetic diagnostic
+     experiment;
+  3. algebraic residual L_g must be logged;
+  4. q must not replace physical force consistency;
+  5. train and rollout must use the exact same q update rule.
+
+
+Plan B / 方案B: PI-NARX / recurrent-history KAN
+------------------------------------------------
+
+Status:
+- This is a design record, not an implemented code change.
+- This plan is motivated by the PI-NARX / hybrid physics-informed
+  regularization literature and by the need to inject x3dot-like information
+  without solving a current-time algebraic loop.
+
+Core premise:
+- In experimental AFM, true x3dot is not directly measured.
+- In the KFT / AFM04 state-space setting, x3 and x3dot are unobserved.
+- Therefore, any x3dot-like input given to KAN must be predicted or
+  model-generated:
+
+      q_pred
+      x3dot_pred
+      x3_{k-1}^{pred}
+      Delta x3_k^{pred}
+      recurrent/history features
+
+- This means compensation risk cannot be eliminated. It can only be managed by
+  structure, constraints, diagnostics, and controlled comparisons.
+
+
+Reference read:
+
+    A novel hybrid neural network for modeling dynamic systems using
+    physics-informed regularization
+
+Main relevance:
+- The paper proposes PI-NARX: a nonlinear autoregressive model with exogenous
+  inputs plus physics-informed residual regularization.
+- Its basic form is:
+
+      y_hat_t = g(y_{t-w}, ..., y_{t-1}, u_{t-1})
+
+  where past outputs and exogenous inputs provide dynamic memory.
+
+- The physics-informed version adds:
+
+      L = lambda_l * L_labeled + lambda_p * L_physics
+
+  where L_physics is computed from known ODE residuals.
+
+- The key idea that is useful for KFT is:
+
+      use history states to replace currently unavailable dynamic variables.
+
+
+KFT translation:
+- Instead of forcing current x3dot into the KAN through an implicit equation,
+  give KAN a short predicted history.
+
+Possible KAN input designs:
+
+1. Full one-step state history:
+
+      Fts_k = KAN(x1_k, x2_k, x3_k, x1_{k-1}, x2_{k-1}, x3_{k-1})
+
+2. Minimal x3 history:
+
+      Fts_k = KAN(x1_k, x2_k, x3_k, x3_{k-1})
+
+3. Minimal velocity-like history:
+
+      Delta x3_k = x3_k - x3_{k-1}
+      Fts_k = KAN(x1_k, x2_k, x3_k, Delta x3_k)
+
+4. Scaled velocity-like history:
+
+      v3_proxy_k = (x3_k - x3_{k-1}) / Delta t
+      Fts_k = KAN(x1_k, x2_k, x3_k, v3_proxy_k)
+
+Current preference for a first KFT trial:
+
+      Fts_k = KAN(x1_k, x2_k, x3_k, Delta x3_k)
+
+Reason:
+- It adds only one input node.
+- It is closer to x3dot-like information than raw x3_{k-1}.
+- It avoids a current-time algebraic solve.
+- It has clear fixed-grid semantics.
+
+
+Important difference from the PI-NARX paper:
+- The paper assumes all states are measured and fully observable in its main
+  CSTR setting.
+- In KFT, x3 and Delta x3 are predicted rollout quantities, not measured
+  quantities.
+- Therefore Plan B is riskier than the paper's PI-NARX setting. History inputs
+  can become a compensation channel.
+
+
+Required semantics:
+- Plan B should use a fixed-grid recurrent rollout, at least for the first KFT
+  trial.
+- The history feature must be built from predicted rollout states only.
+- No true x3 history.
+- No true x3dot.
+- No teacher Fts.
+- Train, validation, postprocess, and visualization must use exactly the same
+  recurrent history construction.
+
+
+Possible physics-informed regularization:
+- Reuse the existing KFT loss terms:
+
+      state loss
+      x2dot loss
+      x3/force range penalties
+      soft mask
+
+- If needed, add a history-consistency diagnostic rather than a new teacher
+  loss. For example, log:
+
+      Delta x3_k / Delta t
+      implied x3dot_pred_k = (-Fts_k - ks*x3_k) / cs
+      difference between the two
+
+  but do not supervise them against true x3dot.
+
+
+Advantages:
+- Avoids exact DAE root solving.
+- Avoids hidden mutable q_lag cache inside adaptive RHS calls.
+- Directly targets the W0 issue: missing dynamic history / x3dot-like
+  information.
+- Engineering path is simpler than Plan A1.
+- It aligns with the broader PI-NARX idea that history inputs can carry dynamic
+  memory more cheaply than full recurrent neural networks.
+
+
+Risks:
+- Predicted history can become a compensation channel.
+- Fixed-grid recurrent rollout is a meaningful change from current torchdiffeq
+  continuous rollout.
+- Delta x3 can be noisy or scale-sensitive.
+- It may improve training-window reconstruction but not necessarily W0
+  extrapolation.
+- It must be compared against the current 3-input KFT under the same RS/GBO
+  conditions.
+
+
+Plan B decision:
+- Plan B is a plausible and useful alternative route.
+- It is less mathematically rigorous than Plan A1 exact DAE.
+- It is probably easier to implement and test than Plan A1.
+- It should be treated as a KFT-only feature-flagged experiment.
+
+
+Plan Z / 方案Z: accepted-dopri5-history predicted x3dot KAN
+----------------------------------------------------
+
+Status:
+- This is a design record, not an implemented code change.
+- This plan is the engineering version of "break the algebraic loop by unit
+  delay".
+- It is closest to Plan B, but the fourth input is not Delta x3. The fourth
+  input is the nearest available past model-generated x3dot from the accepted
+  dopri5 trajectory.
+
+Core idea:
+- Do not feed current x3dot into KAN, because that creates a same-time
+  algebraic loop.
+- Feed a lagged predicted x3dot instead.
+- The main line is:
+
+      q_pre(T_k) = x3dot_pred(T_k^-)
+
+  where q_pre is taken from the accepted dopri5 integration history immediately
+  before the external sample/output time T_k.
+- q_pre(T_k) is not equal to current x3dot(T_k). Therefore it does not create
+  the same-time algebraic loop.
+- This is analogous to inserting a Unit Delay block in control / Simulink
+  language.
+
+The problematic same-time form is:
+
+    Fts_k = KAN(x1_k, x2_k, x3_k, q_k)
+    q_k   = (-Fts_k - ks*x3_k) / cs
+
+where q_k is current x3dot. This requires an implicit solve.
+
+Plan Z changes it to:
+
+    Fts(T_k) = KAN(x1(T_k), x2(T_k), x3(T_k), q_pre(T_k))
+
+where:
+
+    q_pre(T_k) = x3dot_pred(T_k^-)
+
+and after Fts(T_k) is evaluated:
+
+    x3dot_pred(T_k) = (-Fts(T_k) - ks*x3(T_k)) / cs
+
+This current x3dot(T_k) can be used only as history for later times, not as the
+same-time input for Fts(T_k).
+
+Physical interpretation:
+- q is not true x3dot.
+- q is not teacher-provided.
+- q is not finite-difference x3dot.
+- q is not produced by a second NN.
+- q is generated by the rollout itself through the same RHS force chain.
+- The model becomes history-dependent:
+
+      Fts(T_k) = F(x1(T_k), x2(T_k), x3(T_k), x3dot_pred(T_k^-))
+
+Why this is attractive for W0:
+- W0 appears hard because state-only inputs (x1,x2,x3) poorly infer
+  x3dot-like information.
+- Plan Z gives KAN a model-generated dynamic memory channel without requiring
+  true x3dot.
+- It avoids the full DAE burden of Plan A1.
+- It is more physically direct than using raw x3_{k-1} or Delta x3 alone.
+
+Important semantic rule:
+- q_pre must come from an accepted dopri5 integration path.
+- q_pre must not come from a rejected trial step.
+- q_pre is not equal to current x3dot(T_k); even if it is numerically close,
+  it is a lagged input and therefore does not close the same-time algebraic loop.
+- q_pre should be as close as practical to T_k from the left, because this is
+  much more informative than using x3dot at the previous external sample T_{k-1}.
+- A blind hidden mutable cache that simply follows every adaptive RHS call is
+  not acceptable unless it is proven to exclude rejected-step contamination.
+- q_pre has the same differentiable-rollout status as predicted x1, x2, and x3.
+  It should carry autograd history by default, because it is generated by the
+  model rollout itself and because q_init is intended to be trainable.
+
+Reason:
+- W0 appears to need x3dot-like information near the current state. Using
+  x3dot(T_{k-1}) can be too stale.
+- dopri5 adaptive rollout already computes finite RHS stages between external
+  sample times. The useful target is the accepted-history x3dot closest to
+  T_k^-.
+- Rejected trial stages must not be used. Otherwise q_pre becomes contaminated
+  by solver attempts that never became part of the accepted trajectory.
+
+Therefore the first Plan Z implementation should keep torchdiffeq/dopri5 as
+the rollout backbone, but must instrument or wrap the solver enough to recover
+accepted-history q_pre. If this cannot be guaranteed, the implementation must
+fail closed rather than silently falling back to rejected-step RHS-call memory.
+
+Initial value:
+
+    q_init = q_{-1}
+
+At the start of a rollout, x1, x2, and x3 use the known initial state values.
+However, true x3dot at the initial time is not available in the experimental
+setting and must not be supplied as hidden teacher information.
+
+Therefore Plan Z uses a learnable scalar initial condition:
+
+    q_init starts at -x2_init
+    q_init is trainable in GBO
+
+Interpretation:
+- q_init is not true x3dot(t0).
+- q_init is not measured.
+- q_init is a model parameter for the missing initial history channel.
+- Starting at -x2_init uses the known rollout initial velocity to provide a
+  physically oriented but still non-teacher missing-history guess. It does not
+  use true x3dot.
+- Making it trainable avoids hard-coding an arbitrary missing-history value.
+
+Constraint:
+- q_init must be logged, checkpointed, and restored like other trainable
+  parameters.
+- q_init must not be randomized from true x3dot.
+- q_init must not leak across independent rollouts except through the learned
+  model parameter itself.
+- In RS, q_init is fixed at -x2_init because RS has no gradient-based training
+  phase and therefore cannot optimize q_init.
+- In GBO/prerun, q_init starts from -x2_init and is optimized together with the
+  KAN and other trainable parameters.
+
+Architecture name:
+
+    KFT 4-input accepted-dopri5-history predicted-x3dot KAN
+
+Initial width:
+
+    4-9-1
+
+Reason:
+- Current KFT 3-input baseline uses 3-7-1.
+- After adding x3dot-like information, input dimension becomes 4.
+- Following the same theoretical KAN width rule 2*input_dim + 1 gives:
+
+      2*4 + 1 = 9
+
+- Therefore the first Plan Z KAN architecture should be 4-9-1, not 4-7-1.
+
+Grid, spline order, base function, soft mask, and optimizer settings should
+otherwise remain unchanged for the first comparison.
+
+
+Plan C / 方案C: augmented internal state KAN
+--------------------------------------------
+
+Status:
+- This is a design record, not an implemented code change.
+- This plan is inspired by augmented Neural ODE / latent state ideas, but it
+  should not be called a full Latent ODE in the strict literature sense.
+- The first feasible KFT version should avoid encoder/decoder machinery and
+  should only add a minimal internal ODE state.
+
+
+Core idea:
+- Do not feed x3dot directly into KAN.
+- Do not create an external lag cache.
+- Instead, augment the ODE state with an internal learned memory variable h.
+
+Current KFT state:
+
+    u = [x1, x2, x3]
+
+Plan C state:
+
+    u = [x1, x2, x3, h]
+
+Force model:
+
+    Fts_pred = KAN(x1, x2, x3, h)
+
+Dynamics:
+
+    x1dot = x2
+    x2dot = (Fd*cos(wd*t) - k*x1 - c*x2 + Fts_pred) / m
+    x3dot = (-Fts_pred - ks*x3) / cs
+    hdot  = r_phi(x1, x2, x3, h)
+
+where:
+
+    h      = learned internal memory state
+    r_phi  = learned or lightly structured dynamics for h
+    phi    = trainable parameters of r_phi
+
+Important interpretation:
+- h is not true x3dot.
+- h is not teacher-provided.
+- h is not finite-difference x3dot.
+- h is not a second force model.
+- h is a solver-managed ODE state that may carry missing dynamic memory.
+
+
+Why this is different from Plan Z:
+
+Plan Z gives KAN a physically interpretable fourth input:
+
+    q_pre(T_k) = accepted-history predicted x3dot near T_k^-
+
+Plan C gives KAN a learned internal state:
+
+    h = model-generated memory coordinate
+
+Therefore:
+- Plan Z has clearer physical semantics.
+- Plan C is smoother and more compatible with torchdiffeq adaptive rollout,
+  because h is a proper ODE state rather than an accepted-step cache.
+- Plan C has a larger compensation risk, because h may learn a window-local
+  coordinate that works inside W0 but fails in extrapolation.
+
+
+Minimal first-version design:
+
+    h_dim = 1
+    h0    = 0
+
+Use a constrained low-pass style h dynamics:
+
+    hdot = (g_phi(x1, x2, x3) - h) / tau_h
+
+where:
+
+    g_phi   = small neural module or very small KAN/MLP
+    tau_h   = fixed time scale in the first version
+
+Reason:
+- This prevents h from becoming a completely unconstrained arbitrary state.
+- h behaves like a smooth internal memory variable.
+- tau_h should be fixed first, not trainable, to avoid adding another
+  compensation channel.
+
+A less constrained version would be:
+
+    hdot = MLP_phi(x1, x2, x3, h)
+
+but this should not be the first KFT trial because it adds too much hidden
+freedom.
+
+
+Relation to augmented Neural ODE / Latent ODE literature:
+
+Relevant ideas:
+- Augmented Neural ODEs add extra state dimensions to improve expressivity.
+- Latent ODEs use hidden continuous-time states to represent unobserved
+  dynamics.
+- Neural state-space models allow states that are not directly measured.
+
+Important mismatch with KFT:
+- Standard Latent ODE often uses an encoder/recognition network to infer an
+  initial latent state z0 from observations.
+- It also usually has a decoder that maps latent state back to observations.
+- Current KFT does not have an encoder, decoder, or probabilistic latent
+  inference layer.
+
+Therefore Plan C should be described as:
+
+    augmented internal state KAN
+
+not as:
+
+    full Latent ODE
+
+unless a future version introduces encoder/decoder machinery.
+
+
+Possible physical regularization:
+
+If h is one-dimensional, the first version should not pretend that:
+
+    h = x3dot
+
+However, diagnostics can compare h against implied model-generated x3dot:
+
+    x3dot_pred = (-Fts_pred - ks*x3) / cs
+
+This comparison is diagnostic only. It must not use true x3dot.
+
+If a future two-dimensional internal state is tested:
+
+    h = [h1, h2]
+
+with:
+
+    h1dot = h2
+
+then h1/h2 can be interpreted as an auxiliary sample state and velocity. In
+that case a physical residual could be added:
+
+    R_h = cs*h2 + ks*h1 + Fts_pred
+    L_h_res = mean(R_h^2 / S_h^2)
+
+But this changes the meaning of x3:
+- The original hard x3 equation becomes a soft residual for the auxiliary h
+  subsystem.
+- This is a much larger design change and should not be the first Plan C
+  experiment.
+
+
+Engineering implications:
+- KAN input width changes from:
+
+      3-7-1
+
+  to:
+
+      4-7-1
+
+  if h_dim = 1.
+
+- Checkpoints are not compatible between 3-input and 4-input KANs.
+- h must be included in rollout state, checkpoint metadata, result files, and
+  visualization diagnostics.
+- h must reset at rollout start:
+
+      h(0) = h0
+
+- h must not leak across:
+  - random-search trials;
+  - train/validation evaluations;
+  - optimizer closure calls;
+  - epochs;
+  - postprocess rollouts.
+
+- AGU must not use true h or true x3dot, because neither exists.
+- First AGU strategy should use a neutral h axis, similar to the neutral axis
+  treatment used for other unavailable hidden coordinates.
+
+
+Advantages:
+- Compatible with torchdiffeq/dopri5 because h is a normal ODE state.
+- Avoids hidden mutable q_lag cache inside adaptive RHS calls.
+- Avoids exact DAE root solving.
+- Gives KAN an extra dynamic memory channel.
+- Can be implemented behind a KFT-only feature flag.
+
+
+Risks:
+- h has no teacher.
+- h may not learn x3dot-like information.
+- h may become a compensation coordinate.
+- h may work inside W0 but fail in extrapolation.
+- More parameters and one more ODE state increase optimization complexity.
+- Interpreting h physically may be difficult.
+
+
+Plan C decision:
+- Plan C is a plausible backup route.
+- It is cleaner than Plan Z with respect to adaptive ODE solver semantics.
+- It is less physically interpretable than Plan Z.
+- It should not be the first priority if the goal is specifically to inject
+  x3dot-like information.
+- Current preference remains:
+
+      first priority:  Plan Z, accepted-dopri5-history predicted x3dot
+      backup route:    Plan C, augmented internal state h
+
+
+4. Engineering implementation plan
+----------------------------------
+
+Engineering difficulty summary
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Layer 1: change KAN input architecture
+
+Required changes:
+- Add a fourth KAN input node for q_pre = predicted x3dot(T_k^-).
+- Add q_init as a trainable scalar initialized at -x2_init, because true x3dot
+  at the rollout initial time is not available.
+- Change the Plan Z KAN architecture from the current 3-7-1 baseline to:
+
+      4-9-1
+
+- Update input normalization without hidden-state leakage:
+
+      x3_mean  = x1_mean
+      x3_scale = x1_scale / 10
+      q_mean   = x2_mean
+      q_scale  = x2_scale / 10
+
+      state_mean  = [mean_x1, mean_x2, x3_mean, q_mean]
+      state_scale = [scale_x1, scale_x2, x3_scale, q_scale]
+
+- Update model construction, checkpoint metadata, compatibility checks, logs,
+  and visualization titles.
+
+Difficulty:
+- Medium-low by itself.
+- The architecture change is straightforward.
+- Old 3-input checkpoints and RS/GBO results are not compatible with the new
+  4-input model.
+
+
+Layer 2: make every force evaluation use q_pre consistently
+
+Required changes:
+- Current code often assumes:
+
+      Fts = force_module([x1, x2, x3])
+
+  Plan Z requires:
+
+      Fts = force_module([x1, x2, x3, q_pre])
+
+- Therefore all force evaluation paths must be updated consistently:
+  - rollout RHS;
+  - random search;
+  - prerun/GBO;
+  - x2dot loss;
+  - sanity checks;
+  - final result generation;
+  - viz.pkl generation;
+  - postprocess force reconstruction;
+  - visualization scripts that reconstruct Fts;
+  - archive core-essence files and metadata.
+
+Important rule:
+- Training, validation, postprocess, and visualization must use the exact same
+  q_pre construction rule.
+- A result is not scientifically interpretable if training uses q_pre but
+  x2dot loss or Fts visualization silently falls back to the old 3-input force.
+
+Difficulty:
+- Medium-high.
+- The risk is not the math, but missing one old force path and creating an
+  inconsistent experiment.
+
+
+Layer 3: extract q_pre(T_k) from accepted dopri5 path
+
+Target quantity:
+
+    q_pre(T_k) = predicted x3dot from the accepted dopri5 path that is closest
+                 to T_k from the left.
+
+This means:
+- q_pre must be produced by the model rollout itself.
+- q_pre must be located before T_k, not at the same time as Fts(T_k).
+- q_pre must be as close as practical to T_k^-.
+- q_pre must come from an accepted path, not a rejected trial path.
+
+Preferred engineering route: Route A
+
+Route A:
+- Copy or extend the dopri5 solver used by torchdiffeq.
+- Instrument the accepted-step logic.
+- When a dopri5 step is accepted, record the accepted internal stage times,
+  stage states, and the corresponding predicted x3dot values.
+- For each external output/sample time T_k, select the recorded accepted
+  predicted x3dot with time < T_k and maximal time coordinate.
+- Use that value as q_pre(T_k).
+- Implementation note: keep dopri5 adaptive, but pass external sample times as
+  step_t boundaries when Plan Z is enabled. This prevents one accepted adaptive
+  step from leaping over multiple T_k values and leaving no accepted internal
+  RHS point on the left side of those T_k values.
+
+Why Route A is preferred:
+- It is the only route that directly respects the Plan Z red line:
+
+      accepted path only, no rejected-step contamination
+
+- It keeps torchdiffeq/dopri5 adaptive rollout as the backbone.
+- It avoids blind RHS-call-history memory.
+- It allows us to audit which internal accepted point generated q_pre(T_k).
+
+Difficulty:
+- High.
+- This is the main hard part of Plan Z.
+- It requires careful solver instrumentation and dedicated tests before
+  connecting to RS/GBO.
+
+Required prototype before full training integration:
+- Before connecting Plan Z to RS/GBO, implement a small KFT-only
+  accepted-dopri5 recorder prototype.
+- The prototype should run a single controlled rollout and verify:
+  1. accepted internal dopri5 history can be recorded;
+  2. rejected trial steps are excluded;
+  3. q_pre(T_k) can be aligned to every external sample/output time T_k;
+  4. q_pre(T_k) is the accepted predicted x3dot closest to T_k from the left;
+  5. repeated runs with the same setup are reproducible within expected
+     numerical tolerance.
+- Only after this prototype passes should Plan Z be connected to random search,
+  prerun, or GBO.
+
+Routes not preferred as the main line:
+- Blind RHS-call lag: easier but can include rejected trial stages.
+- External T-grid lag x3dot(T_{k-1}): clean but too stale.
+- Fixed-grid rollout: clean semantics but changes the numerical rollout
+  backbone, which is not desired for this Plan Z main line.
+
+4.1 Add feature flags
+
+Add config flags, default OFF:
+
+    HNODECB_AFM04_KAN_TEST_X3DOT_INPUT = 0/1
+    HNODECB_AFM04_KAN_TEST_X3DOT_INPUT_MODE = accepted_dopri5_history
+    HNODECB_AFM04_KAN_TEST_X3DOT_INIT_POLICY = minus_x2_init
+    HNODECB_AFM04_KAN_TEST_X3DOT_INIT_TRAINABLE = 1
+    HNODECB_AFM04_KAN_TEST_X3DOT_SCALE_MODE = x2_scale_tenth
+
+Optional debug flag:
+
+    HNODECB_AFM04_KAN_TEST_X3DOT_LAG_DETACH = 0/1
+
+Default:
+
+    HNODECB_AFM04_KAN_TEST_X3DOT_LAG_DETACH = 0
+
+Meaning:
+- detach=0 is the scientific default.
+- q_pre keeps its autograd history, like predicted x1/x2/x3 in the rollout.
+- This allows gradients to flow through the accepted-history q_pre channel and
+  allows q_init to be optimized through its downstream effects.
+
+Debug-only alternative:
+- detach=1 treats q_pre as a cached numerical history feature.
+- q_pre still enters the forward KAN input and affects Fts, but loss gradients
+  do not flow backward through the historical computation that produced q_pre.
+- This mode is for engineering diagnosis only, not the default Plan Z
+  scientific setting.
+
+
+4.2 Change KAN width only when flag is enabled
+
+Default KFT remains:
+
+    width = (3, 7, 1)
+
+When x3dot input is enabled:
+
+    width = (4, 9, 1)
+
+This keeps old KFT behavior reproducible while making the Plan Z branch follow
+the 2*input_dim + 1 width rule.
+
+
+4.3 Normalize the 4th input
+
+KANForceModule currently normalizes inputs by state_mean/state_scale.
+
+For the 4-input mode:
+
+    x3_mean  = x1_mean
+    x3_scale = x1_scale / 10
+    q_mean   = x2_mean
+    q_scale  = x2_scale / 10
+
+    state_mean = [mean_x1, mean_x2, x3_mean, q_mean]
+    state_scale = [scale_x1, scale_x2, x3_scale, q_scale]
+
+Do not use true x3dot to set q_scale.
+Do not use true x3 to set x3_mean or x3_scale.
+
+Current non-cheating normalizer proposal:
+
+    x3_mean  = x1_mean
+    x3_scale = x1_scale / 10
+    q_mean   = x2_mean
+    q_scale  = x2_scale / 10
+
+Reason:
+- It is based only on measured x1/x2 scales, not teacher x3/x3dot.
+- Once q_init is set to -x2_init, the old a0/window_duration scale is too small
+  for W0 by roughly two orders of magnitude and pushes the fourth normalized
+  input far outside the KAN grid.
+- The x2-scale/10 velocity scale keeps q_init and q_pre in a reasonable
+  normalized range.
+- The x1-scale/10 displacement scale gives hidden x3 a physically plausible,
+  observable displacement coordinate without using hidden x3 statistics.
+
+Important update:
+- The observable-prior normalizer above is the RS normalizer.
+- It is window-specific, not a fixed physical constant:
+
+      RS x3_mean/x3_scale come from the current window's x1 statistics.
+      RS q_mean/q_scale come from the current window's x2 statistics.
+
+- GBO should not keep using that crude prior once a concrete warmstart source
+  has been selected.  Before GBO epoch 1, run exactly one rollout from the
+  selected warmstart object:
+
+      source = prerun candidate, manual RS trial, RS rank1, or deterministic
+               random fallback
+
+  Then compute:
+
+      x3_mean_GBO  = mean(x3_pred_train)
+      x3_scale_GBO = max(abs(x3_pred_train - x3_mean_GBO))
+      q_mean_GBO   = mean(q_pre_train)
+      q_scale_GBO  = max(abs(q_pre_train - q_mean_GBO))
+
+  where q_pre is the actual lagged x3dot-like input fed to the fourth KAN node.
+
+- These GBO mean/scale values are source-specific and window-specific. They
+  must be computed once before GBO starts, then frozen for all Adam/LBFGS
+  epochs. They must not be recomputed every epoch, otherwise the optimizer would
+  see a moving coordinate system.
+
+- This still avoids cheating:
+
+      no true x3
+      no true x3dot
+      no teacher force
+
+  The hidden normalizer is inferred only from the selected model's own predicted
+  rollout.
+
+
+4.4 Modify force input construction
+
+Current force call:
+
+    f_contact = force_module(u.unsqueeze(0))[0]
+
+4-input mode should build:
+
+    force_input = [u[0], u[1], u[2], q_lag]
+    f_contact = force_module(force_input.unsqueeze(0))[0]
+
+Soft mask and w_pred must continue to use only the physical state part:
+
+    x1, x2, x3
+
+They must not use q_lag to decide contact/noncontact.
+
+
+4.5 Modify rollout path
+
+Add an experimental rollout mode, for example:
+
+    KnownAFMAcceptedHistoryX3dotRollout
+
+or extend KnownAFMRHS behind the feature flag.
+
+Each rollout must reset q_lag at rollout start:
+
+    q_lag = q_init
+
+Then for each external sample/output time T_k:
+
+    q_lag = accepted-history x3dot_pred(T_k^-)
+    Fts = KAN(x1(T_k), x2(T_k), x3(T_k), q_lag)
+    du3 = (-Fts - ks*x3(T_k)) / cs
+
+The current du3 at T_k can update the accepted-history buffer for later times,
+but it must not be fed back into the same Fts(T_k) evaluation.
+
+Do not implement Plan Z as a blind hidden mutable cache that follows every
+adaptive solver RHS call. Plan Z's q_lag is accepted-history memory near T_k^-,
+not rejected-step call-history memory.
+
+Critical reset rule:
+- q_lag must not leak across epochs.
+- q_lag must not leak across optimizer closure calls.
+- q_lag must not leak across train/val evaluations.
+- q_lag must not leak across random-search trials.
+
+
+4.6 Update x2dot loss and postprocess force calls
+
+This is the most important engineering trap.
+
+Current x2dot_rhs_torch can call:
+
+    force_module(states)
+
+because states are 3D and the force model is memoryless.
+
+With q_lag, a force value is not determined by x1/x2/x3 alone. It also depends
+on the q_lag sequence. Therefore, every place that evaluates force over a
+trajectory must use the same 4-input construction rule.
+
+Required changes:
+- x2dot_rhs_torch
+- loss-term evaluation
+- sanity checks
+- visualization/postprocess Fts reconstruction
+- result/viz.pkl generation
+
+First practical approach:
+- Add a helper that evaluates a trajectory sequentially:
+
+      evaluate_force_with_lagged_x3dot(states, q_init, known_pars)
+
+  It walks through stored trajectory points in order, uses the previous q_lag,
+  computes Fts and current x3dot, then updates q_lag.
+
+Plan Z requirement:
+- The training rollout and postprocess force reconstruction must use the same
+  accepted-history q_lag sequence.
+- If a torchdiffeq adaptive rollout cannot expose or reconstruct accepted
+  dopri5-history q_pre, Plan Z must stop with a clear error or remain disabled.
+- The old idea "q_lag blindly follows previous RHS call" is rejected because it
+  can include rejected trial steps.
+
+
+4.7 Random search
+
+RS should work under the same rules:
+
+    width = 4-9-1
+    q_init is fixed at -x2_init in RS
+    q_init is included in the 4-input model state but is not randomized
+    q_lag generated only by rollout
+    no true x3dot
+    fail-fast guard still based only on active W0 window
+    ranking metric remains train loss
+
+Old 3-input RS results are not reusable for 4-input KAN.
+
+RS seed bank can remain deterministic, but the actual parameters differ because
+the architecture is different.
+
+
+4.8 Prerun/GBO
+
+Prerun and GBO should use the same model and rollout path as RS.
+
+Do not allow a mismatch such as:
+
+    RS uses 4-input KAN
+    GBO uses 3-input KAN
+
+or
+
+    rollout uses q_lag
+    x2dot loss ignores q_lag
+
+The log must print:
+
+    X3DOT input: ON/OFF
+    X3DOT input mode: accepted_dopri5_history
+    KAN width: 4-9-1
+    q_init: current value
+    q_init_trainable: ON/OFF
+    q_scale: ...
+    q_lag detach mode: OFF by default; ON only for debug
+
+
+4.9 Adaptive grid update
+
+AGU currently must avoid x3_true or x3_pred bias in KFT.
+
+For 4-input mode, AGU needs 4D samples. First version should use:
+
+    x1_true, x2_true, neutral x3 axis, neutral q axis
+
+or the closest existing KFT AGU convention extended with q=0.
+
+Do not use true x3dot for AGU.
+
+Do not use teacher x3dot for AGU.
+
+Using predicted q_lag from current rollout for AGU can be a later experiment,
+but it should not be the first version because it introduces another source of
+self-guidance.
+
+
+4.10 Checkpoints and compatibility
+
+4-input checkpoints are not compatible with 3-input checkpoints.
+
+Checkpoint metadata must include:
+
+    input_dim = 4
+    width = [4, 9, 1]
+    x3dot_input_enabled = true
+    x3dot_input_mode = accepted_dopri5_history
+    q_init
+    q_init_trainable
+    q_scale
+
+GBO warmstart selection must refuse incompatible checkpoints.
+
+
+4.11 Visualization and diagnostics
+
+Add diagnostics:
+
+1. q_lag over rollout time/order
+2. q_lag normalized range
+3. Fts_pred comparison as before
+4. x1/x2/x3 trajectories as before
+5. x2dot loss terms as before
+6. optional scatter: q_lag vs s_pred/contact status
+
+The visualization title must state:
+
+    KAN input: x1,x2,x3,lagged predicted x3dot
+
+
+5. Sanity checks before scientific interpretation
+-------------------------------------------------
+
+Before using results for scientific conclusions, pass these checks:
+
+1. No code path uses true x3dot as KAN input.
+2. No code path uses true x3dot in AGU.
+3. q_lag resets at every rollout.
+4. q_lag does not leak between train and val.
+5. q_lag does not leak between optimizer closure calls.
+6. width is consistently 4-9-1 in RS, prerun, and GBO.
+7. x2dot loss uses the 4-input force evaluation path.
+8. visualization Fts uses the 4-input force evaluation path.
+9. checkpoint metadata records the 4-input mode.
+10. Running the same seed twice gives the same result within expected numerical tolerance.
+
+
+6. Expected outcomes
+--------------------
+
+Best-case outcome:
+- W0 Fts reconstruction improves.
+- Noncontact restless behavior decreases.
+- x3 drift improves.
+- Loss basin becomes easier for Adam/LBFGS to navigate.
+
+Neutral outcome:
+- Loss changes little.
+- Fts shape does not improve.
+- q_lag feature is not the missing information.
+
+Bad outcome:
+- q_lag becomes another compensation channel.
+- W0 trajectory looks better but Fts becomes less physical.
+- Optimization becomes more sensitive to solver internals.
+
+
+7. Recommendation
+-----------------
+
+The next implementable trial should be:
+
+    KFT 4-9-1 KAN with Plan Z accepted-dopri5-history predicted x3dot input
+
+not:
+
+    parallel NN
+    current-x3dot implicit solve
+    true x3dot supervision
+    teacher x3dot AGU
+
+The experiment should be introduced behind a feature flag and should not replace
+the current 3-input KFT path until we have direct comparison results.

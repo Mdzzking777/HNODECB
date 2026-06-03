@@ -1,0 +1,443 @@
+AFM04 / KFT optimizer manual controls audit
+==========================================
+
+Purpose
+-------
+
+This note is for auditing optimizer-related logic in AFM04 formal training
+(stage1pluslight / prestage2 / stage2light) and KFT.
+
+Core agreement:
+
+1. We should first respect the native logic of the optimizer and line search.
+2. Any outer/manual logic must be explicitly named, logged, and justified.
+3. Manual logic must not pretend to be native optimizer behavior.
+4. If a failure happens, the first priority is to understand why it happens,
+   then fix the root cause, rather than patching over it with another guard.
+
+
+I. Adam / AMSGrad native part
+----------------------------
+
+Native optimizer:
+
+    torch.optim.Adam(..., amsgrad=True/False)
+
+Current default:
+
+    AMSGrad
+
+Native Adam/AMSGrad itself only proposes parameter updates based on gradients
+and its internal first/second moment states. It does not natively do Armijo
+line search, retry, rollback, state reset, or epoch-level early stopping.
+
+
+II. Manual logic added around Adam / AMSGrad
+-------------------------------------------
+
+1. Adam Armijo/backtracking controller
+
+Status:
+
+    Manual outer logic.
+
+Meaning:
+
+    Adam/AMSGrad proposes an update direction. We then test the candidate update
+    by evaluating the rollout loss. If the candidate does not satisfy the
+    Armijo-like acceptance rule, we roll back and retry with a smaller effective
+    learning rate.
+
+Main settings:
+
+    step_controller = armijo_backtracking
+    armijo_c1 = 1e-4
+    backtrack_shrink = 0.5
+    backtrack_max = 10
+    backtrack_min_alpha = 1e-8
+
+Rejection reasons include:
+
+    step_trial_loss_nonfinite
+    armijo_grad_dot_delta_nonfinite
+    armijo_not_descent
+    armijo_loss_increase
+    armijo_insufficient_decrease
+
+Audit question:
+
+    Should Adam be allowed to run as native Adam/AMSGrad, or do we still want
+    this Armijo/backtracking controller as a deliberate non-native stabilizer?
+
+
+2. Adam state reset after repeated Armijo failure
+
+Status:
+
+    Manual outer logic.
+
+Meaning:
+
+    If Adam/AMSGrad hits the backtracking cap and the failure reason looks
+    related to bad optimizer state, the code clears Adam/AMSGrad internal
+    momentum / second-moment buffers and retries the Armijo search.
+
+Main trigger:
+
+    backtracking reaches cap, typically backtrack_max = 10
+
+What is reset:
+
+    Adam/AMSGrad optimizer internal state
+
+What is not reset:
+
+    model parameters before the retry base point
+
+Audit question:
+
+    Is this acceptable as a recovery mechanism, or is it too intrusive because
+    it changes Adam/AMSGrad's native state evolution?
+
+
+3. Adam terminal stop after rejected update
+
+Status:
+
+    Manual outer training-flow logic.
+
+Meaning:
+
+    If the Adam step is still not accepted after the retry/reset logic, the run
+    stops rather than consuming more epochs with unchanged parameters.
+
+Reason for adding it:
+
+    We did not want later epochs to silently repeat the same old parameter
+    state after an unaccepted update.
+
+Audit question:
+
+    Should this remain as a safety rule, or should native Adam be allowed to
+    continue after a failed outer controller event?
+
+
+4. Epoch retry
+
+Status:
+
+    Manual outer logic.
+
+Meaning:
+
+    If an epoch-level failure happens, the code can reduce the learning rate and
+    retry the epoch.
+
+Main settings:
+
+    epoch_retry_max = 8
+    epoch_retry_lr_factor = 0.3
+    epoch_retry_lr_floor = 1e-6
+
+Audit question:
+
+    Is this still needed now that Adam has Armijo/backtracking, or is it a
+    redundant second retry layer?
+
+
+5. Adaptive learning-rate controller
+
+Status:
+
+    Manual outer logic.
+
+Meaning:
+
+    The code can update the Adam learning rate based on gradient-norm EMA.
+
+Important current behavior:
+
+    In stage2light and KFT, lr_adapt_active is disabled when
+    step_controller == armijo_backtracking.
+
+Therefore:
+
+    With current default Armijo/backtracking, this adaptive LR logic should not
+    actively control Adam steps.
+
+Audit question:
+
+    Should this stay as a dormant option, or should it be removed to simplify
+    the optimizer stack?
+
+
+6. Legacy step guard
+
+Status:
+
+    Old manual outer logic, still present as an optional branch.
+
+Meaning:
+
+    This is the older accept/retry/rollback mechanism before the current
+    Armijo/backtracking controller.
+
+Audit question:
+
+    Should this be kept as a historical fallback, or removed to prevent future
+    confusion?
+
+
+7. Manual early stopping during Adam
+
+Status:
+
+    Manual outer training-flow logic.
+
+Relevant settings:
+
+    good_enough_loss = 1e-10
+    plateau_early_stop
+    recent_val_early_stop
+
+Current formal intent:
+
+    Early-stop options should default to off where possible, so optimizer
+    behavior is not confused with external stopping rules.
+
+Audit question:
+
+    Should good_enough_loss remain active, or should every formal comparison run
+    consume the planned epochs unless a true numerical/runtime failure occurs?
+
+
+III. LBFGS native / near-native part
+-----------------------------------
+
+Current implementation:
+
+    AFM04/stage2light/optim/stage2_lbfgs.py
+    AFM04/KAN_full_test/optim/kft_lbfgs.py
+
+These files are local copies of PyTorch LBFGS with minimal explicit changes.
+
+Native / near-native behavior:
+
+    L-BFGS memory update
+    L-BFGS search direction
+    strong Wolfe line search
+    tolerance_grad
+    tolerance_change
+    max_iter
+    max_eval
+    history_size
+
+Current main settings:
+
+    lbfgs_enabled = True
+    lbfgs_strong_wolfe = True
+    lbfgs_lr = 1.0
+    lbfgs_max_iter = 1
+    lbfgs_max_eval = 10
+    lbfgs_history_size = 100
+    lbfgs_tolerance_grad = 1e-12
+    lbfgs_tolerance_change = 1e-15
+    lbfgs_ys_threshold = 1e-15
+
+
+IV. Manual / modified logic around LBFGS
+---------------------------------------
+
+1. Custom LBFGS copy
+
+Status:
+
+    Manual implementation choice.
+
+Meaning:
+
+    We copied PyTorch LBFGS into the AFM04/KFT codebase instead of directly
+    calling torch.optim.LBFGS.
+
+Reason:
+
+    We wanted explicit access to curvature-update threshold behavior.
+
+Audit question:
+
+    Is maintaining a local PyTorch LBFGS copy acceptable, or should we return to
+    torch.optim.LBFGS and accept its hidden constants?
+
+
+2. Exposed ys_threshold
+
+Status:
+
+    Manual modification to PyTorch LBFGS behavior.
+
+Meaning:
+
+    The curvature pair update is controlled by:
+
+        ys > ys_threshold
+
+Current setting:
+
+    ys_threshold = 1e-15
+
+Reason:
+
+    The default PyTorch threshold was too coarse for our very small-loss,
+    high-precision setting.
+
+Audit question:
+
+    Is 1e-15 justified, or should we document a more systematic way to choose
+    this threshold?
+
+
+3. LBFGS outer schedule
+
+Status:
+
+    Manual training schedule.
+
+Current formal schedule:
+
+    total epochs = 200
+    Adam epochs = 20
+    LBFGS epochs = 180
+
+Interpretation:
+
+    Adam and LBFGS epoch counts are explicit. Total epochs are the sum of the two.
+
+Audit question:
+
+    Is this fixed switch point acceptable, or should the Adam-to-LBFGS switch be
+    determined by a criterion later?
+
+
+4. LBFGS safety wrapper
+
+Status:
+
+    Manual outer safety logic.
+
+Current allowed safety stops:
+
+    closure exception
+    LBFGS step exception
+    post-step train evaluation exception
+    NaN/Inf train loss
+    NaN/Inf validation loss
+    validation exception
+
+Current removed logic:
+
+    no-op threshold control
+    lbfgs_no_loss_progress
+    LBFGS state reset
+    rejecting a finite step because loss_drop is too small
+    rejecting a finite step because parameter delta is zero/small
+    stopping with "no further LBFGS steps attempted" due to no-op
+
+Audit question:
+
+    Is the current safety wrapper narrow enough, or should even more of it be
+    delegated to native LBFGS/strong Wolfe?
+
+
+5. LBFGS diagnostics
+
+Status:
+
+    Manual logging only.
+
+Logged diagnostics include:
+
+    closure_calls
+    returned_loss
+    loss_before
+    loss_after
+    loss_drop
+    param_delta_l2
+    param_delta_max_abs
+    grad_norm
+
+These should be read as diagnostics only, not as accept/reject rules.
+
+Audit question:
+
+    Are these fields sufficient for debugging, or do we need more native LBFGS
+    internals such as curvature update accepted/rejected, ys values, or Wolfe
+    bracket information?
+
+
+V. Prestage2 / prest2 relation to optimizer logic
+-------------------------------------------------
+
+prest2 does not implement its own optimizer.
+
+It launches child stage2light runs with environment settings.
+
+Therefore prest2 inherits:
+
+    Adam/AMSGrad
+    Adam Armijo/backtracking
+    Adam state reset
+    LBFGS strong Wolfe
+    custom ys_threshold
+    Adam/LBFGS schedule
+
+Current prest2 optimizer-related child settings include:
+
+    HNODECB_AFM04_STAGE2LIGHT_STEP_CONTROLLER = armijo_backtracking
+    HNODECB_AFM04_STAGE2LIGHT_BACKTRACK_MAX = 10
+    HNODECB_AFM04_STAGE2LIGHT_LBFGS_ENABLED = 1
+    HNODECB_AFM04_STAGE2LIGHT_LBFGS_STRONG_WOLFE = 1
+    HNODECB_AFM04_STAGE2LIGHT_LBFGS_MAX_ITER = 1
+    HNODECB_AFM04_STAGE2LIGHT_LBFGS_MAX_EVAL = 10
+    HNODECB_AFM04_STAGE2LIGHT_LBFGS_TOLERANCE_GRAD = 1e-12
+    HNODECB_AFM04_STAGE2LIGHT_LBFGS_TOLERANCE_CHANGE = 1e-15
+    HNODECB_AFM04_STAGE2LIGHT_LBFGS_YS_THRESHOLD = 1e-15
+
+Important:
+
+    The old LBFGS no-op logic has been removed from stage2light source, so new
+    prest2 runs should not inherit LBFGS no-op behavior.
+
+Audit question:
+
+    Should prest2 keep forcing optimizer settings through env variables, or
+    should it read one shared formal stage2light optimizer profile to avoid
+    drift?
+
+
+VI. Current audit status
+------------------------
+
+Confirmed removed from source:
+
+    noop
+    no_loss_progress
+    lbfgs_no_loss_progress
+    LBFGS state reset
+    loss_noop_tol
+    lbfgs_loss_noop_tol
+    "no further LBFGS steps attempted"
+
+Remaining major manual optimizer controls:
+
+    Adam Armijo/backtracking
+    Adam state reset
+    Adam terminal stop after rejected update
+    epoch retry
+    optional adaptive LR
+    optional legacy step guard
+    manual early-stop settings
+    custom LBFGS copy
+    exposed ys_threshold
+    fixed Adam -> LBFGS schedule
+    LBFGS safety wrapper for numerical/runtime failures
+

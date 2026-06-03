@@ -13,7 +13,7 @@ from AFM04.stage2light.runner.visualization._common import (
     REPO_ROOT,
     discover_log_paths,
     finalize_and_save,
-    load_result_payloads,
+    load_available_payloads,
     out_path,
     stage_title,
     window_title,
@@ -22,7 +22,7 @@ from AFM04.stage2light.runner.visualization._common import (
 
 ROLE_RE = re.compile(r"role=([^|]+)")
 LABEL_RE = re.compile(r"label=([^|]+)")
-EPOCH_RE = re.compile(r"KAN epoch (\d+) train=([0-9eE+\-.]+)")
+EPOCH_RE = re.compile(r"KAN (?:LBFGS step \d+ epoch|epoch) (\d+) train=([0-9eE+\-.]+)")
 MECH_INIT_RE = re.compile(
     r"mech init:\s*ks0=([0-9eE+\-.]+)\s+cs0=([0-9eE+\-.]+)\s+\|\s+truth_ks=([0-9eE+\-.]+)\s+truth_cs=([0-9eE+\-.]+)"
 )
@@ -88,6 +88,8 @@ def _annotate_err_points(
 def _role_sort_key(role: str) -> tuple[int, str]:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
+        return (0, role_norm)
+    if role_norm == "middle":
         return (1, role_norm)
     if role_norm == "max_x1_pp_change":
         return (2, role_norm)
@@ -105,7 +107,9 @@ def _series_key(role: str, label: str) -> str:
 def shard_title(role: str, label: str) -> str:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
-        return "W1: window1: right after first contact"
+        return "W0: first-contact window"
+    if role_norm == "middle":
+        return "W1: middle window"
     if role_norm == "max_x1_pp_change":
         return "W2: window2: the most drastic region"
     if role_norm == "tail_stable":
@@ -179,7 +183,7 @@ def load_merged_series(log_dir: Path = DEFAULT_LOG_DIR) -> list[dict]:
         merged[_series_key(str(payload.get("role", "")), str(payload.get("label", "")))] = payload
 
     try:
-        result_payloads = load_result_payloads()
+        result_payloads = load_available_payloads()
     except FileNotFoundError:
         result_payloads = []
     for payload in result_payloads:

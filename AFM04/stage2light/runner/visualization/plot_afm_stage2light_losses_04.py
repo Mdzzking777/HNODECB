@@ -8,11 +8,17 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from AFM04.stage2light.runner.visualization._common import discover_log_paths, finalize_and_save, out_path
+from AFM04.stage2light.runner.visualization._common import (
+    discover_log_paths,
+    finalize_and_save,
+    out_path,
+    plot_phase_series,
+)
 
 
 EPOCH_RE = re.compile(r"KAN epoch (\d+) train=([0-9eE+\-.]+)")
-VAL_EPOCH_RE = re.compile(r"KAN val epoch (\d+) val=([0-9eE+\-.]+|NaN|Inf|-Inf)")
+LBFGS_EPOCH_RE = re.compile(r"KAN LBFGS step \d+ epoch (\d+) train=([0-9eE+\-.]+)")
+VAL_EPOCH_RE = re.compile(r"KAN (?:final )?val epoch (\d+) val=([0-9eE+\-.]+|NaN|Inf|-Inf)")
 SANITY_RE = re.compile(r"sanity loss=([0-9eE+\-.]+)")
 ROLE_RE = re.compile(r"role=([^|]+)")
 LABEL_RE = re.compile(r"label=([^|]+)")
@@ -32,7 +38,7 @@ REPO_ROOT = find_repo_root(__file__)
 DEFAULT_LOG_DIR = REPO_ROOT / "AFM04" / "stage2light" / "logs" / "window_per_shard"
 DEFAULT_OUT_DIR = REPO_ROOT / "AFM04" / "stage2light" / "logs" / "visualization"
 DEFAULT_OUT_FILE = "afm_param_stage2light_04_loss_triptych.png"
-DEFAULT_SAMPLE_EVERY = 25
+DEFAULT_SAMPLE_EVERY = 1
 
 
 def parse_float(text: str) -> float:
@@ -42,26 +48,45 @@ def parse_float(text: str) -> float:
         return float("nan")
 
 
-def sample_points(epochs: list[int], losses: list[float], sample_every: int) -> tuple[list[int], list[float]]:
+def is_finite(value: float) -> bool:
+    return value == value and value not in (float("inf"), float("-inf"))
+
+
+def sample_points(
+    epochs: list[int],
+    losses: list[float],
+    sample_every: int,
+    phases: list[str] | None = None,
+) -> tuple[list[int], list[float], list[str]]:
     sample_epoch: list[int] = []
     sample_loss: list[float] = []
-    for epoch, loss in zip(epochs, losses):
-        if (epoch - 1) % sample_every == 0:
+    sample_phase: list[str] = []
+    if phases is None or len(phases) != len(epochs):
+        phases = ["adam"] * len(epochs)
+    for idx, (epoch, loss, phase) in enumerate(zip(epochs, losses, phases)):
+        phase_changed = idx > 0 and phase != phases[idx - 1]
+        phase_will_change = idx + 1 < len(phases) and phase != phases[idx + 1]
+        if idx == 0 or (epoch - 1) % sample_every == 0 or phase_changed or phase_will_change:
             sample_epoch.append(epoch)
             sample_loss.append(loss)
+            sample_phase.append(phase)
     if not sample_epoch and epochs:
         sample_epoch.append(epochs[-1])
         sample_loss.append(losses[-1])
+        sample_phase.append(phases[-1])
     elif epochs and sample_epoch[-1] != epochs[-1]:
         sample_epoch.append(epochs[-1])
         sample_loss.append(losses[-1])
-    return sample_epoch, sample_loss
+        sample_phase.append(phases[-1])
+    return sample_epoch, sample_loss, sample_phase
 
 
 def shard_title(role: str, label: str) -> str:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
-        return "W1: window1: right after first contact"
+        return "W0: first-contact window"
+    if role_norm == "middle":
+        return "W1: middle window"
     if role_norm == "max_x1_pp_change":
         return "W2: window2: the most drastic region"
     if role_norm == "tail_stable":
@@ -72,10 +97,13 @@ def shard_title(role: str, label: str) -> str:
 def parse_epoch_losses(log_path: Path) -> dict:
     train_losses_by_epoch: dict[int, float] = {}
     val_losses_by_epoch: dict[int, float] = {}
+    train_phases_by_epoch: dict[int, str] = {}
+    val_phases_by_epoch: dict[int, str] = {}
     role = ""
     label = log_path.name
     final_val = float("nan")
     sanity_loss = float("nan")
+    current_phase = "adam"
 
     for line in log_path.read_text(encoding="utf-8").splitlines():
         if not role:
@@ -89,15 +117,27 @@ def parse_epoch_losses(log_path: Path) -> dict:
 
         match = EPOCH_RE.search(line)
         if match is not None:
-            train_losses_by_epoch[int(match.group(1))] = parse_float(match.group(2))
+            epoch = int(match.group(1))
+            current_phase = "adam"
+            train_losses_by_epoch[epoch] = parse_float(match.group(2))
+            train_phases_by_epoch[epoch] = current_phase
+            continue
+
+        match = LBFGS_EPOCH_RE.search(line)
+        if match is not None:
+            epoch = int(match.group(1))
+            current_phase = "lbfgs"
+            train_losses_by_epoch[epoch] = parse_float(match.group(2))
+            train_phases_by_epoch[epoch] = current_phase
             continue
 
         match = VAL_EPOCH_RE.search(line)
         if match is not None:
             val_epoch = int(match.group(1))
             val_loss = parse_float(match.group(2))
-            if val_loss == val_loss and val_loss not in (float("inf"), float("-inf")):
+            if is_finite(val_loss):
                 val_losses_by_epoch[val_epoch] = val_loss
+                val_phases_by_epoch[val_epoch] = train_phases_by_epoch.get(val_epoch, current_phase)
             continue
 
         match = SANITY_RE.search(line)
@@ -116,16 +156,20 @@ def parse_epoch_losses(log_path: Path) -> dict:
 
     epochs = sorted(train_losses_by_epoch)
     train_losses = [train_losses_by_epoch[e] for e in epochs]
+    train_phases = [train_phases_by_epoch.get(e, "adam") for e in epochs]
     val_epochs = sorted(val_losses_by_epoch)
     val_losses = [val_losses_by_epoch[e] for e in val_epochs]
+    val_phases = [val_phases_by_epoch.get(e, train_phases_by_epoch.get(e, "adam")) for e in val_epochs]
     return {
         "path": str(log_path),
         "label": label,
         "role": role if role else label,
         "epochs": epochs,
         "train_losses": train_losses,
+        "train_phases": train_phases,
         "val_epochs": val_epochs,
         "val_losses": val_losses,
+        "val_phases": val_phases,
         "final_val": final_val,
         "sanity_loss": sanity_loss,
     }
@@ -143,8 +187,18 @@ def build_subplot(ax, rec: dict, *, sample_every: int) -> None:
         ax.text(0.5, 0.5, "no epoch data", transform=ax.transAxes, ha="center", va="center", color="darkred")
         return
 
-    sample_epoch, sample_loss = sample_points(epochs, losses, sample_every)
-    sample_val_epoch, sample_val_loss = sample_points(rec["val_epochs"], rec["val_losses"], sample_every)
+    sample_epoch, sample_loss, sample_phase = sample_points(
+        epochs,
+        losses,
+        sample_every,
+        rec.get("train_phases"),
+    )
+    sample_val_epoch, sample_val_loss, sample_val_phase = sample_points(
+        rec["val_epochs"],
+        rec["val_losses"],
+        sample_every,
+        rec.get("val_phases"),
+    )
 
     y_values = [v for v in sample_loss if v > 0]
     y_values.extend(v for v in sample_val_loss if v > 0)
@@ -156,11 +210,23 @@ def build_subplot(ax, rec: dict, *, sample_every: int) -> None:
     y_min = min(y_values) / 1.8 if y_values else 1e-12
     y_max = max(y_values) * 1.8 if y_values else 1e-6
 
-    ax.plot(sample_epoch, sample_loss, label="train", color="steelblue", linewidth=2, marker="o", markersize=3)
+    plot_phase_series(
+        ax,
+        sample_epoch,
+        sample_loss,
+        sample_phase,
+        label="train",
+        color="steelblue",
+        linewidth=2,
+        marker="o",
+        markersize=3,
+    )
     if sample_val_epoch:
-        ax.plot(
+        plot_phase_series(
+            ax,
             sample_val_epoch,
             sample_val_loss,
+            sample_val_phase,
             label="validation",
             color="firebrick",
             linewidth=2,
@@ -173,6 +239,18 @@ def build_subplot(ax, rec: dict, *, sample_every: int) -> None:
 
     if rec["sanity_loss"] == rec["sanity_loss"] and rec["sanity_loss"] > 0:
         ax.axhline(rec["sanity_loss"], label="sanity", color="blue", linestyle="--", linewidth=2)
+
+    lbfgs_epochs = [epoch for epoch, phase in zip(epochs, rec.get("train_phases", [])) if phase == "lbfgs"]
+    if lbfgs_epochs:
+        lbfgs_handoff_epoch = min(lbfgs_epochs) - 0.5
+        ax.axvline(
+            lbfgs_handoff_epoch,
+            label="LBFGS starts",
+            color="0.35",
+            linestyle=":",
+            linewidth=1.8,
+            alpha=0.85,
+        )
 
     ax.set_yscale("log")
     ax.set_ylim(y_min, y_max)
@@ -193,7 +271,7 @@ def run_one(log_dir: Path, out_dir: Path, sample_every: int) -> Path:
     out_file = out_path(DEFAULT_OUT_FILE, out_dir)
     finalize_and_save(fig, out_file)
 
-    print(f"Sampled every {sample_every} epochs.")
+    print(f"Plotted every {sample_every} epoch(s).")
     for rec in recs:
         title = shard_title(rec["role"], rec["label"])
         if not rec["epochs"]:

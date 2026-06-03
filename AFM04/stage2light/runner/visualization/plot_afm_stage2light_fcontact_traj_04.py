@@ -24,9 +24,23 @@ DEFAULT_CHECKPOINT_DIR = REPO_ROOT / "AFM04" / "stage2light" / "checkpoints"
 _BEST_VIZ_RE = re.compile(r"stage2light_best_p(\d+)\.viz\.pkl$")
 
 
+def _true_based_ylim(f_true: np.ndarray) -> tuple[float, float]:
+    lo = float(np.nanmin(f_true))
+    hi = float(np.nanmax(f_true))
+    span = hi - lo
+    if not np.isfinite(span) or span <= 0.0:
+        scale = max(abs(lo), abs(hi), 1.0e-12)
+        pad = 0.1 * scale
+    else:
+        pad = 0.12 * span
+    return lo - pad, hi + pad
+
+
 def _role_sort_key(role: str) -> tuple[int, str]:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
+        return (0, role_norm)
+    if role_norm == "middle":
         return (1, role_norm)
     if role_norm == "max_x1_pp_change":
         return (2, role_norm)
@@ -80,21 +94,33 @@ def load_available_payloads() -> list[dict]:
     )
 
 
+def _select_snapshot(payload: dict) -> dict:
+    final_snapshot = payload.get("final_snapshot")
+    if isinstance(final_snapshot, dict):
+        snap = final_snapshot.get("full") or final_snapshot.get("val")
+        if isinstance(snap, dict):
+            return snap
+
+    best_snapshot = payload["best"]["best_snapshot"]
+    snap = best_snapshot.get("full") or best_snapshot.get("val")
+    if snap is None:
+        raise KeyError("Neither final nor best snapshot contains 'full'/'val' data")
+    return snap
+
+
 def main() -> None:
     payloads = load_available_payloads()
     fig, axes = plt.subplots(1, len(payloads), figsize=(6 * len(payloads), 5.2), sharex=False, squeeze=False)
     axes = axes[0]
     for ax, payload in zip(axes, payloads):
-        best_snapshot = payload["best"]["best_snapshot"]
-        snap = best_snapshot.get("full") or best_snapshot.get("val")
-        if snap is None:
-            raise KeyError("Neither 'full' nor 'val' snapshot found in payload['best']['best_snapshot']")
+        snap = _select_snapshot(payload)
         times_us = 1.0e6 * np.asarray(snap["times"], dtype=float)
         f_true = np.asarray(snap["fts_teacher_true"], dtype=float)
-        f_pred = np.asarray(snap["fts_teacher_pred"], dtype=float)
+        f_pred = np.asarray(snap["fts_rollout_pred"], dtype=float)
         title = f"{stage_title(payload)}: {window_title(payload)}"
-        ax.plot(times_us, f_true, color="black", linewidth=2, label="Fts true")
-        ax.plot(times_us, f_pred, color="crimson", linewidth=2, linestyle="--", label="Fts pred")
+        ax.plot(times_us, f_true, color="black", linewidth=2.4, label="Fts teacher true", zorder=2)
+        ax.plot(times_us, f_pred, color="crimson", linewidth=2, linestyle="--", label="Fts rollout pred", zorder=3)
+        ax.set_ylim(*_true_based_ylim(f_true))
         ax.set_title(title)
         ax.set_xlabel("time (μs)")
         ax.set_ylabel("force (N)")

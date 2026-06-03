@@ -15,10 +15,21 @@ from typing import Any
 import numpy as np
 import torch
 
+from AFM04.rng_state import capture_rng_state, restore_rng_state
 from AFM04.stage2light.config import default_config
-from AFM04.stage2light.data import PreparedData, Stage1WarmstartCandidate, WindowSplit, prepare_data, select_stage1_candidate
-from AFM04.stage2light.kan_backend import KANForceModule, summarize_wpred_from_states
+from AFM04.stage2light.data import (
+    PreparedData,
+    Prestage2WarmstartCandidate,
+    Stage1WarmstartCandidate,
+    WindowSplit,
+    prepare_data,
+    select_prestage2_candidate,
+    select_stage1_candidate,
+    select_stage1_candidate_by_trial_id,
+)
+from AFM04.stage2light.kan_backend import KANForceModule
 from AFM04.stage2light.losses import TorchLossParts, evaluate_split
+from AFM04.stage2light.optim.stage2_lbfgs import LBFGS as Stage2LBFGS
 from AFM04.stage2light.rollout import LearnableMechModule, fts_truth_from_states_torch, x2dot_rhs_torch
 
 
@@ -41,39 +52,55 @@ def _grid_update_due(epoch: int, update_num: int, start_step: int, stop_step: in
 def _recent_val_plateau_stats(
     history: list[dict[str, float]],
     *,
-    window: int,
+    min_epochs: int,
+    compare_gap: int,
 ) -> dict[str, float] | None:
-    if len(history) < window + 1:
+    if len(history) < max(int(min_epochs), int(compare_gap) + 1):
         return None
-    recent = history[-(window + 1) :]
-    prev_vals = [float(row["val_loss"]) for row in recent[:-1]]
-    cur = float(recent[-1]["val_loss"])
+    prev = float(history[-(int(compare_gap) + 1)]["val_loss"])
+    cur = float(history[-1]["val_loss"])
+    if not np.isfinite(prev) or prev <= 0.0:
+        return None
     if not np.isfinite(cur) or cur <= 0.0:
         return None
-    if any((not np.isfinite(v)) for v in prev_vals):
-        return None
-    best_window = min(prev_vals + [cur])
-    if cur > best_window:
-        return None
-    max_prev = max(prev_vals)
-    rel_gap_to_current = (max_prev - cur) / cur
+    rel_gap_to_prev = abs(cur - prev) / prev
     return {
+        "previous": prev,
         "current": cur,
-        "max_prev": max_prev,
-        "best_window": best_window,
-        "rel_gap_to_current": rel_gap_to_current,
+        "compare_gap": float(compare_gap),
+        "rel_gap_to_prev": rel_gap_to_prev,
     }
 
 
-def _window_title(role: str) -> str:
+def _is_w0_window_mode(window_mode: str | None) -> bool:
+    mode = str(window_mode or "").strip().lower()
+    return mode in ("w0", "stage2_w0", "stage2-w0", "first_contact", "first-contact")
+
+
+def _window_title(role: str, window_mode: str | None = None) -> str:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
-        return "window1: right after first contact"
+        return "W0: first-contact window"
+    if role_norm == "middle":
+        return "W1: middle window"
     if role_norm == "max_x1_pp_change":
         return "window2: the most drastic region"
     if role_norm == "tail_stable":
         return "window3: stable region at the end"
     return role
+
+
+def _window_meta_dict(split: WindowSplit, window_mode: str | None = None) -> dict[str, Any]:
+    return {
+        "role": str(split.role),
+        "label": str(split.label),
+        "title": _window_title(split.role, window_mode),
+        "start_idx": int(split.start_idx),
+        "stop_idx": int(split.stop_idx),
+        "length": int(split.stop_idx) - int(split.start_idx) + 1,
+        "t_start": float(split.t_start),
+        "t_stop": float(split.t_stop),
+    }
 
 
 def _timestamp_human() -> str:
@@ -100,7 +127,31 @@ def _window_to_torch(split: WindowSplit, *, dtype: torch.dtype, device: str) -> 
         "times_full": torch.as_tensor(split.times_full, dtype=dtype, device=device),
         "times_train": torch.as_tensor(split.times_train, dtype=dtype, device=device),
         "times_val": torch.as_tensor(split.times_val, dtype=dtype, device=device),
+        "train_idx": torch.as_tensor(split.train_idx, dtype=torch.long, device=device),
+        "val_idx": torch.as_tensor(split.val_idx, dtype=torch.long, device=device),
     }
+
+
+def _split_loss_indices(tensors: dict[str, torch.Tensor], part_name: str) -> torch.Tensor | None:
+    if part_name == "full":
+        return None
+    if part_name == "train":
+        return tensors["train_idx"]
+    if part_name == "val":
+        return tensors["val_idx"]
+    raise ValueError(f"unsupported split part: {part_name!r}")
+
+
+def _select_from_full(tensors: dict[str, torch.Tensor], part_name: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    loss_indices = _split_loss_indices(tensors, part_name)
+    if loss_indices is None:
+        return tensors["ode_full"], tensors["x2dot_full"], tensors["contact_full"], tensors["times_full"]
+    return (
+        tensors["ode_full"][:, loss_indices],
+        tensors["x2dot_full"][loss_indices],
+        tensors["contact_full"][loss_indices],
+        tensors["times_full"][loss_indices],
+    )
 
 
 def _metrics_row(total: torch.Tensor, parts: TorchLossParts) -> dict[str, float]:
@@ -115,8 +166,37 @@ def _metrics_row(total: torch.Tensor, parts: TorchLossParts) -> dict[str, float]
         "cont": float(parts.cont),
         "x1_rec": float(parts.x1_rec),
         "x3_rec": float(parts.x3_rec),
-        "fts_teacher_rec": float(parts.fts_teacher_rec),
+        "fts_rollout_rec": float(parts.fts_rollout_rec),
     }
+
+
+def _validation_final_only(cfg) -> bool:
+    return str(getattr(cfg, "val_eval_mode", "per_epoch")).strip().lower() == "final_only"
+
+
+def _should_eval_validation(cfg, epoch_number: int) -> bool:
+    _ = epoch_number
+    return not _validation_final_only(cfg)
+
+
+def _nan_loss_parts() -> TorchLossParts:
+    nan = float("nan")
+    return TorchLossParts(
+        state=nan,
+        x1_state=nan,
+        x2_state=nan,
+        x2dot=nan,
+        x3_range=nan,
+        fts_range=nan,
+        cont=nan,
+        x1_rec=nan,
+        x3_rec=nan,
+        fts_rollout_rec=nan,
+    )
+
+
+def _nan_loss_tensor(*, dtype: torch.dtype, device: str) -> torch.Tensor:
+    return torch.as_tensor(float("nan"), dtype=dtype, device=device)
 
 
 def _iter_named_params(*modules: tuple[str, torch.nn.Module]):
@@ -148,9 +228,54 @@ def _restore_grads(grads: dict[str, torch.Tensor | None], *modules: tuple[str, t
             param.grad = grad.detach().clone().to(device=param.device, dtype=param.dtype)
 
 
+def _capture_params(*modules: tuple[str, torch.nn.Module]) -> dict[str, torch.Tensor]:
+    return {
+        name: param.detach().clone()
+        for name, param in _iter_named_params(*modules)
+    }
+
+
+def _param_delta_stats(
+    base_params: dict[str, torch.Tensor],
+    *modules: tuple[str, torch.nn.Module],
+) -> tuple[float, float]:
+    sq = 0.0
+    max_abs = 0.0
+    for name, param in _iter_named_params(*modules):
+        base = base_params.get(name)
+        if base is None:
+            continue
+        delta = param.detach() - base.to(device=param.device, dtype=param.dtype)
+        sq += float(torch.sum(delta * delta))
+        if delta.numel() > 0:
+            max_abs = max(max_abs, float(torch.max(torch.abs(delta))))
+    return float(np.sqrt(max(sq, 0.0))), float(max_abs)
+
+
+def _grad_dot_delta(
+    base_params: dict[str, torch.Tensor],
+    grads: dict[str, torch.Tensor | None],
+    *modules: tuple[str, torch.nn.Module],
+) -> float:
+    total = 0.0
+    for name, param in _iter_named_params(*modules):
+        grad = grads.get(name)
+        base = base_params.get(name)
+        if grad is None or base is None:
+            continue
+        delta = param.detach() - base.to(device=param.device, dtype=param.dtype)
+        total += float(torch.sum(grad.to(device=param.device, dtype=param.dtype) * delta))
+    return total
+
+
 def _set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
     for group in optimizer.param_groups:
         group["lr"] = float(lr)
+
+
+def _reset_optimizer_state(optimizer: torch.optim.Optimizer) -> None:
+    """Clear Adam/AMSGrad momentum buffers while preserving param groups."""
+    optimizer.state.clear()
 
 
 def _make_optimizer(cfg, model: torch.nn.Module, mech_module: LearnableMechModule) -> tuple[torch.optim.Optimizer, str]:
@@ -168,8 +293,22 @@ def _make_optimizer(cfg, model: torch.nn.Module, mech_module: LearnableMechModul
     return optimizer, optimizer_name
 
 
-def _terminal_step_failure(reason: str) -> bool:
-    return reason == "step_trial_loss_nonfinite" or reason.startswith("step_trial_exception:")
+def _make_lbfgs_optimizer(cfg, model: torch.nn.Module, mech_module: LearnableMechModule) -> tuple[torch.optim.Optimizer, str]:
+    line_search_fn = "strong_wolfe" if bool(cfg.lbfgs_strong_wolfe) else None
+    max_iter = max(1, int(cfg.lbfgs_max_iter))
+    max_eval = max(max_iter, int(cfg.lbfgs_max_eval))
+    optimizer = Stage2LBFGS(
+        list(model.parameters()) + list(mech_module.parameters()),
+        lr=float(cfg.lbfgs_lr),
+        max_iter=max_iter,
+        max_eval=max_eval,
+        history_size=max(1, int(cfg.lbfgs_history_size)),
+        tolerance_grad=float(cfg.lbfgs_tolerance_grad),
+        tolerance_change=float(cfg.lbfgs_tolerance_change),
+        line_search_fn=line_search_fn,
+        ys_threshold=float(cfg.lbfgs_ys_threshold),
+    )
+    return optimizer, ("strong_wolfe" if line_search_fn == "strong_wolfe" else "none")
 
 
 def _json_default(obj: Any) -> Any:
@@ -184,9 +323,16 @@ def _json_default(obj: Any) -> Any:
     raise TypeError(f"not JSON serializable: {type(obj)!r}")
 
 
-def _role_short(role: str) -> str:
+def _write_event(event_log, event: dict[str, Any]) -> None:
+    event_log.write(json.dumps(event, ensure_ascii=False, default=_json_default) + "\n")
+    event_log.flush()
+
+
+def _role_short(role: str, window_mode: str | None = None) -> str:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
+        return "W0"
+    if role_norm == "middle":
         return "W1"
     if role_norm == "max_x1_pp_change":
         return "W2"
@@ -202,11 +348,11 @@ def _selected_window_indices(cfg, splits: tuple[WindowSplit, ...]) -> list[int]:
     if requested > 0:
         return [requested]
 
-    # Default stage2light behavior trains only on W1 when the standard
-    # stage2 window manifest is available. If that canonical role is missing,
-    # fall back to all available windows.
+    # Default to the canonical single window for the selected manifest:
+    # W0 for first-contact mode, W1 for the legacy stage2 three-window mode.
     role_to_index = {split.role.strip().lower(): idx for idx, split in enumerate(splits, start=1)}
-    preferred = [role_to_index[role] for role in ("first_contact",) if role in role_to_index]
+    preferred_roles = ("first_contact",) if _is_w0_window_mode(getattr(cfg, "window_mode", None)) else ("middle", "first_contact")
+    preferred = [role_to_index[role] for role in preferred_roles if role in role_to_index]
     if len(preferred) == 1:
         return preferred
     return list(range(1, len(splits) + 1))
@@ -225,42 +371,41 @@ def _mech_err_pct(est: float, truth: float) -> float:
     return 100.0 * abs(float(est) - float(truth)) / max(abs(float(truth)), 1.0e-30)
 
 
-def _make_grid_update_states(
+def _observable_grid_inputs_from_ode(
     *,
+    ode_train: torch.Tensor,
     cfg,
-    traj_pred: torch.Tensor,
-    known_pars: tuple[float, ...],
+) -> torch.Tensor:
+    """Build AGU inputs in raw physical coordinates.
+
+    x1/x2 come from observed data.  x3 is a neutral raw-domain axis only; it
+    does not encode true/predicted x3 and therefore does not guide AGU.
+    """
+
+    n = int(ode_train.shape[1])
+    inputs = torch.empty((n, 3), dtype=ode_train.dtype, device=ode_train.device)
+    inputs[:, 0:2] = ode_train[0:2, :].transpose(0, 1)
+    if n <= 1:
+        inputs[:, 2] = 0.0
+    else:
+        x1_abs = float(torch.max(torch.abs(ode_train[0, :])).detach().cpu()) if n > 0 else 0.0
+        x3_amp = max(0.1 * x1_abs, 1.0e-12)
+        inputs[:, 2] = torch.linspace(-x3_amp, x3_amp, n, dtype=ode_train.dtype, device=ode_train.device)
+    return inputs
+
+
+def _make_grid_update_inputs(
+    *,
+    base_inputs: torch.Tensor,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    train_wpred_enabled = bool(getattr(cfg, "train_wpred_enabled", getattr(cfg, "wpred_enabled", False)))
-    pred_states = traj_pred.transpose(0, 1).detach()
-    n = float(pred_states.shape[0])
+    grid_inputs = base_inputs.detach()
+    n = float(grid_inputs.shape[0])
     meta = {
         "base_samples": n,
         "extra_samples": 0.0,
         "total_samples": n,
-        "mean_w_pred": float("nan"),
-        "max_w_pred": float("nan"),
-        "q50_w_pred": float("nan"),
-        "q90_w_pred": float("nan"),
-        "q99_w_pred": float("nan"),
-        "frac_s_le_a0": float("nan"),
-        "frac_s_le_1p5a0": float("nan"),
-        "frac_wpred_ge_05": float("nan"),
-        "frac_wpred_ge_08": float("nan"),
     }
-    if not train_wpred_enabled:
-        return pred_states, meta
-    dist = float(known_pars[6])
-    a0 = float(known_pars[9])
-    meta.update(
-        summarize_wpred_from_states(
-            pred_states,
-            dist=dist,
-            a0=a0,
-            eps=float(cfg.wpred_eps),
-        )
-    )
-    return pred_states, meta
+    return grid_inputs, meta
 
 
 class _OracleForceModule(torch.nn.Module):
@@ -324,6 +469,7 @@ def _run_oracle_sanity(
     *,
     log,
     split: WindowSplit,
+    window_mode: str | None,
     tensors: dict[str, torch.Tensor],
     known_pars: tuple[float, ...],
     eta_star_true: float,
@@ -357,15 +503,16 @@ def _run_oracle_sanity(
             force_module=oracle,
             known_pars=known_pars,
             mech_module=mech_oracle,
-            ode_true=tensors["ode_train"],
-            x2dot_true=tensors["x2dot_train"],
-            contact_mask=tensors["contact_train"],
-            times=tensors["times_train"],
+            ode_true=tensors["ode_full"],
+            x2dot_true=tensors["x2dot_full"],
+            contact_mask=tensors["contact_full"],
+            times=tensors["times_full"],
             ode_method=ode_method,
             ode_rtol=ode_rtol,
             ode_atol=ode_atol,
             mech_true=mech_true,
             eta_star_true=eta_star_true,
+            loss_indices=tensors["train_idx"],
         )
         nn_metrics = _oracle_nn_metrics(
             known_pars=known_pars,
@@ -398,18 +545,10 @@ def _run_oracle_sanity(
             "cont": float(sanity_parts.cont),
             "x1_rec": float(sanity_parts.x1_rec),
             "x3_rec": float(sanity_parts.x3_rec),
-            "fts_teacher_rec": float(sanity_parts.fts_teacher_rec),
+            "fts_rollout_rec": float(sanity_parts.fts_rollout_rec),
         },
         "nn": nn_metrics,
-        "window_meta": {
-            "role": split.role,
-            "label": split.label,
-            "title": _window_title(split.role),
-            "start_idx": split.start_idx,
-            "stop_idx": split.stop_idx,
-            "t_start": split.t_start,
-            "t_stop": split.t_stop,
-        },
+        "window_meta": _window_meta_dict(split, window_mode),
     }
 
 
@@ -421,6 +560,7 @@ def _snapshot_split(
     mech_module: LearnableMechModule,
     mech_true: torch.Tensor,
     split: WindowSplit,
+    window_mode: str | None,
     tensors: dict[str, torch.Tensor],
     dtype: torch.dtype,
     device: str,
@@ -431,8 +571,8 @@ def _snapshot_split(
     out: dict[str, Any] = {
         "role": split.role,
         "label": split.label,
-        "title": _window_title(split.role),
-        "window_short": _role_short(split.role),
+        "title": _window_title(split.role, window_mode),
+        "window_short": _role_short(split.role, window_mode),
         "start_idx": split.start_idx,
         "stop_idx": split.stop_idx,
         "t_start": split.t_start,
@@ -441,24 +581,25 @@ def _snapshot_split(
 
     with torch.no_grad():
         for part_name in ("full", "train", "val"):
-            ode_true = tensors[f"ode_{part_name}"]
-            x2dot_true = tensors[f"x2dot_{part_name}"]
-            contact_mask = tensors[f"contact_{part_name}"]
-            times = tensors[f"times_{part_name}"]
+            loss_indices = _split_loss_indices(tensors, part_name)
             total, parts, traj = evaluate_split(
                 force_module=force_module,
                 known_pars=known_pars,
                 mech_module=mech_module,
-                ode_true=ode_true,
-                x2dot_true=x2dot_true,
-                contact_mask=contact_mask,
-                times=times,
+                ode_true=tensors["ode_full"],
+                x2dot_true=tensors["x2dot_full"],
+                contact_mask=tensors["contact_full"],
+                times=tensors["times_full"],
                 ode_method=ode_method,
                 ode_rtol=ode_rtol,
                 ode_atol=ode_atol,
                 mech_true=mech_true,
                 eta_star_true=eta_star_true,
+                loss_indices=loss_indices,
             )
+            ode_true, x2dot_true, contact_mask, times = _select_from_full(tensors, part_name)
+            if loss_indices is not None:
+                traj = traj[:, loss_indices]
             x2dot_pred = x2dot_rhs_torch(traj, times, force_module, known_pars)
             teacher_states = ode_true.transpose(0, 1)
             fts_teacher_true = fts_truth_from_states_torch(
@@ -467,18 +608,11 @@ def _snapshot_split(
                 eta_star=eta_star_true,
                 mech_true=mech_true,
             )
-            fts_teacher_pred = force_module(teacher_states)
             rollout_states = traj.transpose(0, 1)
-            fts_rollout_true = fts_truth_from_states_torch(
-                rollout_states,
-                known_pars,
-                eta_star=eta_star_true,
-                mech_true=mech_true,
-            )
             fts_rollout_pred = force_module(rollout_states)
             nn_raw_rollout = force_module.raw_output(rollout_states)
-            w_pred_rollout = force_module.w_pred(rollout_states)
-            nn_weighted_rollout = force_module.weighted_raw_output(rollout_states)
+            soft_mask_rollout = force_module.soft_mask(rollout_states)
+            fts_unmasked_rollout = force_module.gain() * nn_raw_rollout
             out[part_name] = {
                 "metrics": _metrics_row(total, parts),
                 "times": times.detach().cpu().numpy(),
@@ -488,14 +622,13 @@ def _snapshot_split(
                 "x2dot_pred": x2dot_pred.detach().cpu().numpy(),
                 "contact_mask": contact_mask.detach().cpu().numpy(),
                 "fts_teacher_true": fts_teacher_true.detach().cpu().numpy(),
-                "fts_teacher_pred": fts_teacher_pred.detach().cpu().numpy(),
-                "fts_rollout_true": fts_rollout_true.detach().cpu().numpy(),
                 "fts_rollout_pred": fts_rollout_pred.detach().cpu().numpy(),
+                "fts_unmasked_rollout": fts_unmasked_rollout.detach().cpu().numpy(),
                 "nn_raw_rollout": nn_raw_rollout.detach().cpu().numpy(),
-                "w_pred_rollout": w_pred_rollout.detach().cpu().numpy(),
-                "nn_weighted_rollout": nn_weighted_rollout.detach().cpu().numpy(),
+                "soft_mask_rollout": soft_mask_rollout.detach().cpu().numpy(),
             }
         out["g_nn"] = float(force_module.gain().detach().cpu().item())
+        out["soft_mask"] = force_module.soft_mask_summary()
         mech_pred = mech_module().detach().cpu().numpy()
         out["mech_pred"] = mech_pred
         out["mech_true"] = mech_true.detach().cpu().numpy()
@@ -517,30 +650,386 @@ def _save_pickle(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _maybe_load_stage1_warmstart(
+def _warmstart_payload(candidate: Stage1WarmstartCandidate | Prestage2WarmstartCandidate | None) -> dict[str, Any] | None:
+    if candidate is None:
+        return None
+    if isinstance(candidate, Prestage2WarmstartCandidate):
+        return {
+            "source": "prest2",
+            "path": str(candidate.path),
+            "candidate": int(candidate.candidate),
+            "candidate_b": int(candidate.candidate),
+            "original_rank": int(candidate.original_rank),
+            "source_stage1_rank": int(candidate.original_rank),
+            "source_mech_winner": int(candidate.source_mech_winner),
+            "label": (
+                f"candidate B {int(candidate.candidate)} from mech winner {int(candidate.source_mech_winner)} "
+                f"(rank {int(candidate.original_rank)})"
+            ),
+            "trial_id": int(candidate.trial_id),
+            "loss": float(candidate.ranking_loss),
+            "seed": int(candidate.init_seed),
+            "ks0": float(candidate.ks0),
+            "cs0": float(candidate.cs0),
+            "result_path": str(candidate.result_path),
+            "st2l_start_policy": "restart_from_stage1_initial_state",
+            "prest2_final_state_used": False,
+        }
+    return {
+        "source": "stage1",
+        "path": str(candidate.path),
+        "rank": int(candidate.rank),
+        "mech_winner": int(candidate.mech_winner),
+        "label": str(candidate.warmstart_label),
+        "trial_id": int(candidate.trial_id),
+        "loss": float(candidate.ranking_loss),
+        "seed": int(candidate.init_seed),
+        "ks0": float(candidate.ks0),
+        "cs0": float(candidate.cs0),
+    }
+
+
+def _best_from_history(history: list[dict[str, Any]]) -> tuple[int, float]:
+    best_epoch = -1
+    best_val = float("inf")
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        try:
+            val = float(row.get("val_loss", float("inf")))
+            epoch = int(float(row.get("epoch", -1)))
+        except Exception:
+            continue
+        if np.isfinite(val) and val < best_val:
+            best_val = val
+            best_epoch = epoch
+    return best_epoch, best_val
+
+
+def _resume_identity(
+    *,
+    shard_index: int,
+    window_index: int,
+    split: WindowSplit,
+    warmstart_meta: dict[str, Any] | None,
+) -> dict[str, Any]:
+    identity: dict[str, Any] = {
+        "shard_index": int(shard_index),
+        "window_index": int(window_index),
+        "window_role": str(split.role),
+        "window_label": str(split.label),
+        "window_start_idx": int(split.start_idx),
+        "window_stop_idx": int(split.stop_idx),
+        "window_t_start": float(split.t_start),
+        "window_t_stop": float(split.t_stop),
+    }
+    if isinstance(warmstart_meta, dict):
+        source = str(warmstart_meta.get("source", "")).strip().lower()
+        identity["warmstart_source"] = source
+        if source == "stage1":
+            if "rank" in warmstart_meta:
+                identity["stage1_rank"] = int(warmstart_meta["rank"])
+            if "mech_winner" in warmstart_meta:
+                identity["stage1_mech_winner"] = int(warmstart_meta["mech_winner"])
+            if "trial_id" in warmstart_meta:
+                identity["stage1_trial_id"] = int(warmstart_meta["trial_id"])
+        elif source == "prest2":
+            if "candidate" in warmstart_meta:
+                identity["prestage2_candidate"] = int(warmstart_meta["candidate"])
+            if "trial_id" in warmstart_meta:
+                identity["prestage2_trial_id"] = int(warmstart_meta["trial_id"])
+    return identity
+
+
+def _resume_metadata_matches(
+    payload: dict[str, Any],
+    *,
+    split: WindowSplit,
+    identity: dict[str, Any],
+) -> tuple[bool, str]:
+    def _float_match(old: Any, cur: Any) -> bool:
+        try:
+            old_f = float(old)
+            cur_f = float(cur)
+        except Exception:
+            return False
+        return abs(old_f - cur_f) <= max(1.0e-15, 1.0e-9 * max(abs(old_f), abs(cur_f), 1.0))
+
+    def _identity_match(key: str, old_value: Any, cur_value: Any) -> bool:
+        if key in ("window_t_start", "window_t_stop"):
+            return _float_match(old_value, cur_value)
+        if key in ("window_start_idx", "window_stop_idx", "shard_index", "window_index"):
+            try:
+                return int(old_value) == int(cur_value)
+            except Exception:
+                return False
+        return str(old_value) == str(cur_value)
+
+    window_meta = payload.get("window_meta", {})
+    if not isinstance(window_meta, dict):
+        return False, "window_meta missing in checkpoint"
+    role = str(window_meta.get("role", "")).strip().lower()
+    label = str(window_meta.get("label", "")).strip()
+    if role != "" and role != str(split.role).strip().lower():
+        return False, f"window role mismatch: checkpoint={role} current={split.role}"
+    if label != "" and label != str(split.label):
+        return False, f"window label mismatch: checkpoint={label} current={split.label}"
+    for key, cur_value in (
+        ("start_idx", int(split.start_idx)),
+        ("stop_idx", int(split.stop_idx)),
+        ("t_start", float(split.t_start)),
+        ("t_stop", float(split.t_stop)),
+    ):
+        old_value = window_meta.get(key)
+        if old_value is None:
+            return False, f"window {key} missing in checkpoint metadata"
+        if key in ("t_start", "t_stop"):
+            if not _float_match(old_value, cur_value):
+                return False, f"window {key} mismatch: checkpoint={old_value} current={cur_value}"
+        else:
+            try:
+                if int(old_value) != int(cur_value):
+                    return False, f"window {key} mismatch: checkpoint={old_value} current={cur_value}"
+            except Exception:
+                return False, f"window {key} invalid in checkpoint metadata: {old_value}"
+
+    resume_identity = payload.get("resume_identity")
+    warmstart = payload.get("warmstart")
+    if isinstance(resume_identity, dict):
+        for key, cur_value in identity.items():
+            old_value = resume_identity.get(key)
+            if old_value is None:
+                return False, f"resume identity missing {key}"
+            if not _identity_match(key, old_value, cur_value):
+                return False, f"resume identity mismatch on {key}: checkpoint={old_value} current={cur_value}"
+        return True, "identity match"
+
+    if isinstance(warmstart, dict):
+        source = str(warmstart.get("source", "")).strip().lower()
+        cur_source = str(identity.get("warmstart_source", "")).strip().lower()
+        if source != "" and cur_source != "" and source != cur_source:
+            return False, f"warmstart source mismatch: checkpoint={source} current={cur_source}"
+        if source == "stage1" and "stage1_rank" in identity and "rank" in warmstart:
+            if int(warmstart["rank"]) != int(identity["stage1_rank"]):
+                return False, f"stage1 rank mismatch: checkpoint={warmstart['rank']} current={identity['stage1_rank']}"
+        if source == "stage1" and "stage1_trial_id" in identity and "trial_id" in warmstart:
+            if int(warmstart["trial_id"]) != int(identity["stage1_trial_id"]):
+                return False, (
+                    f"stage1 trial_id mismatch: checkpoint={warmstart['trial_id']} "
+                    f"current={identity['stage1_trial_id']}"
+                )
+        if source == "stage1" and "stage1_mech_winner" in identity and "mech_winner" in warmstart:
+            if int(warmstart["mech_winner"]) != int(identity["stage1_mech_winner"]):
+                return False, (
+                    f"stage1 mech winner mismatch: checkpoint={warmstart['mech_winner']} "
+                    f"current={identity['stage1_mech_winner']}"
+                )
+        if source == "prest2" and "prestage2_candidate" in identity and "candidate" in warmstart:
+            if int(warmstart["candidate"]) != int(identity["prestage2_candidate"]):
+                return False, (
+                    f"prest2 candidate mismatch: checkpoint={warmstart['candidate']} "
+                    f"current={identity['prestage2_candidate']}"
+                )
+        return True, "warmstart match"
+
+    return True, "legacy checkpoint (no identity metadata)"
+
+
+def _maybe_resume_from_running_checkpoint(
+    *,
+    cfg,
+    running_checkpoint_path: Path,
+    best_checkpoint_path: Path,
+    result_path: Path,
+    shard_index: int,
+    window_index: int,
+    split: WindowSplit,
+    warmstart_meta: dict[str, Any] | None,
+    model: torch.nn.Module,
+    mech_module: LearnableMechModule,
+    optimizer: torch.optim.Optimizer,
+    log,
+) -> dict[str, Any] | None:
+    if not getattr(cfg, "resume_from_checkpoint", False):
+        return None
+    if result_path.is_file():
+        if log is not None:
+            _log_line(log, f"resume skipped: completed result already exists | path={result_path}")
+        return None
+    if not running_checkpoint_path.is_file():
+        return None
+
+    payload = torch.load(running_checkpoint_path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict):
+        if log is not None:
+            _log_line(log, f"resume skipped: checkpoint payload is not a dict | path={running_checkpoint_path}")
+        return None
+
+    identity = _resume_identity(
+        shard_index=shard_index,
+        window_index=window_index,
+        split=split,
+        warmstart_meta=warmstart_meta,
+    )
+    matches, reason = _resume_metadata_matches(payload, split=split, identity=identity)
+    if not matches:
+        if log is not None:
+            _log_line(log, f"resume skipped: {reason} | checkpoint={running_checkpoint_path}")
+        return None
+
+    state_dict = payload.get("state_dict")
+    mech_state_dict = payload.get("mech_state_dict")
+    if not isinstance(state_dict, dict) or not isinstance(mech_state_dict, dict):
+        if log is not None:
+            _log_line(log, f"resume skipped: checkpoint missing state dicts | checkpoint={running_checkpoint_path}")
+        return None
+
+    model.load_state_dict(state_dict)
+    mech_module.load_state_dict(mech_state_dict)
+
+    optimizer_phase = str(payload.get("optimizer_phase", "adam")).strip().lower() or "adam"
+    restored_rng = restore_rng_state(payload.get("rng_state"))
+    rng_status = ",".join(restored_rng) if restored_rng else (
+        "legacy_checkpoint_no_rng_state" if "rng_state" not in payload else "rng_restore_failed"
+    )
+    optimizer_restored = False
+    deferred_optimizer_state = None
+    opt_state = payload.get("optimizer_state_dict")
+    if isinstance(opt_state, dict):
+        if optimizer_phase == "lbfgs":
+            deferred_optimizer_state = opt_state
+        else:
+            optimizer.load_state_dict(opt_state)
+            optimizer_restored = True
+
+    history_raw = payload.get("history", [])
+    history = [row for row in history_raw if isinstance(row, dict)]
+    start_epoch = max(int(payload.get("epoch", 0)), len(history))
+    lr = float(payload.get("lr", float(cfg.lr)))
+    grad_ema = float(payload.get("grad_ema", float(cfg.lr_target_init)))
+    grad_target = float(payload.get("grad_target", float(cfg.lr_target_init)))
+    recent_losses_raw = payload.get("recent_losses", [])
+    recent_losses = [float(x) for x in recent_losses_raw] if isinstance(recent_losses_raw, list) else []
+    if getattr(cfg, "plateau_early_stop", False) and not recent_losses:
+        recent_losses = [float(row["train_loss"]) for row in history[-int(cfg.plateau_window):] if "train_loss" in row]
+    train_loss_last = float(history[-1]["train_loss"]) if history else float("inf")
+
+    best_payload = None
+    best_epoch = int(payload.get("best_epoch", -1))
+    best_val = float(payload.get("best_val_loss", float("inf")))
+    final_val_epoch = int(payload.get("final_val_epoch", -1))
+    final_val_loss = float(payload.get("final_val_loss", float("nan")))
+    if best_checkpoint_path.is_file():
+        best_payload = torch.load(best_checkpoint_path, map_location="cpu", weights_only=False)
+        if isinstance(best_payload, dict):
+            best_epoch = int(best_payload.get("epoch", best_epoch))
+            best_hist = best_payload.get("history", [])
+            if isinstance(best_hist, list) and best_hist:
+                try:
+                    best_val = float(best_hist[-1].get("val_loss", best_val))
+                except Exception:
+                    pass
+    if not np.isfinite(best_val) or best_epoch < 0:
+        best_epoch_hist, best_val_hist = _best_from_history(history)
+        if best_epoch < 0:
+            best_epoch = best_epoch_hist
+        if not np.isfinite(best_val):
+            best_val = best_val_hist
+
+    if log is not None and _validation_final_only(cfg):
+        _log_line(
+            log,
+            "resume from checkpoint: "
+            f"epoch={start_epoch} | {reason} | optimizer={'restored' if optimizer_restored else 'fresh'} | "
+            f"checkpoint_optimizer_phase={optimizer_phase} | "
+            f"rng_restored={rng_status} | "
+            f"final_val_epoch={final_val_epoch} final_val={final_val_loss:.6e} | checkpoint={running_checkpoint_path}",
+        )
+    elif log is not None:
+        _log_line(
+            log,
+            "resume from checkpoint: "
+            f"epoch={start_epoch} | {reason} | optimizer={'restored' if optimizer_restored else 'fresh'} | "
+            f"checkpoint_optimizer_phase={optimizer_phase} | "
+            f"rng_restored={rng_status} | "
+            f"best_epoch={best_epoch} best_val={best_val:.6e} | checkpoint={running_checkpoint_path}",
+        )
+
+    return {
+        "start_epoch": start_epoch,
+        "history": history,
+        "lr": lr,
+        "grad_ema": grad_ema,
+        "grad_target": grad_target,
+        "recent_losses": recent_losses,
+        "train_loss_last": train_loss_last,
+        "best_epoch": best_epoch,
+        "best_val_loss": best_val,
+        "final_val_epoch": final_val_epoch,
+        "final_val_loss": final_val_loss,
+        "best_payload": best_payload if isinstance(best_payload, dict) else None,
+        "sanity": payload.get("sanity"),
+        "optimizer_phase": optimizer_phase,
+        "deferred_optimizer_state_dict": deferred_optimizer_state,
+    }
+
+
+def _maybe_load_warmstart(
     *,
     cfg,
     log,
-) -> Stage1WarmstartCandidate | None:
+) -> Stage1WarmstartCandidate | Prestage2WarmstartCandidate | None:
     if not getattr(cfg, "warmstart_from_stage1", False):
         return None
-    best_path = cfg.stage1_input_path
+    source = str(getattr(cfg, "warmstart_source", "stage1")).strip().lower()
+    if source == "prest2":
+        best_path = cfg.prestage2_input_path
+    else:
+        source = "stage1"
+        best_path = cfg.stage1_input_path
     if not best_path.is_file():
         if getattr(cfg, "warmstart_fallback_random", False):
             if log is not None:
                 _log_line(
                     log,
-                    "warmstart from stage1pluslight: missing input, fallback to random init | "
+                    f"warmstart from {source}: missing input, fallback to random init | "
                     f"path={best_path}",
                 )
             return None
-        raise FileNotFoundError(f"Missing stage1pluslight warmstart file: {best_path}")
-    candidate = select_stage1_candidate(best_path, rank=int(cfg.stage1_input_rank))
+        raise FileNotFoundError(f"Missing {source} warmstart file: {best_path}")
+    if source == "prest2":
+        candidate = select_prestage2_candidate(best_path, candidate=int(cfg.prestage2_input_candidate))
+        if log is not None:
+            _log_line(
+                log,
+                "select prest2 trial-run candidate; formal stage2light starts from stage1 initial state: "
+                f"path={best_path} candidate B={candidate.candidate} "
+                f"source_mech_winner={candidate.source_mech_winner} "
+                f"(rank={candidate.original_rank}) "
+                f"trial={candidate.trial_id} "
+                f"loss={candidate.ranking_loss:.6e} "
+                f"seed={candidate.init_seed} "
+                f"ks0={candidate.ks0:.6e} cs0={candidate.cs0:.6e} "
+                f"prest2_result_for_audit={candidate.result_path}",
+            )
+        return candidate
+
+    if int(getattr(cfg, "stage1_input_trial_id", 0)) > 0:
+        candidate = select_stage1_candidate_by_trial_id(
+            best_path,
+            trial_id=int(cfg.stage1_input_trial_id),
+            mech_winner=int(getattr(cfg, "stage1_input_mech_winner", 0)),
+        )
+    else:
+        candidate = select_stage1_candidate(best_path, rank=int(cfg.stage1_input_rank))
     if log is not None:
+        label = candidate.warmstart_label or (
+            f"mech winner {candidate.mech_winner}" if candidate.mech_winner > 0 else f"rank {candidate.rank}"
+        )
         _log_line(
             log,
             "warmstart from stage1pluslight: "
-            f"path={best_path} rank={candidate.rank} "
+            f"path={best_path} {label} "
             f"trial={candidate.trial_id} "
             f"loss={candidate.ranking_loss:.6e} "
             f"seed={candidate.init_seed} "
@@ -549,12 +1038,45 @@ def _maybe_load_stage1_warmstart(
     return candidate
 
 
+def _log_prestage2_selection_policy(
+    *,
+    candidate: Stage1WarmstartCandidate | Prestage2WarmstartCandidate | None,
+    log,
+) -> bool:
+    if not isinstance(candidate, Prestage2WarmstartCandidate):
+        return False
+    if log is not None:
+        _log_line(
+            log,
+            "prest2 candidate selected for screening identity only; "
+            "stage2light restarts from the original stage1 initial state: "
+            f"candidate B={candidate.candidate} source_mech_winner={candidate.source_mech_winner} "
+            f"(rank={candidate.original_rank}) trial={candidate.trial_id} "
+            f"seed={candidate.init_seed} ks0={candidate.ks0:.6e} cs0={candidate.cs0:.6e}",
+        )
+    return True
+
+
 def _make_viz_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    validation_eval_mode = str(payload.get("validation_eval_mode", "")).strip().lower()
+    final_only_validation = validation_eval_mode == "final_only"
+    final_viz = None
+    final_val_epoch = payload.get("final_val_epoch")
+    final_val_loss = payload.get("final_val_loss")
+    if final_only_validation:
+        final_viz = {
+            "epoch": final_val_epoch,
+            "final_snapshot": payload.get("final_snapshot"),
+        }
     best = payload.get("best")
     best_viz = None
     best_epoch = payload.get("best_epoch")
     best_val_loss = payload.get("best_val_loss")
-    if isinstance(best, dict):
+    if final_only_validation:
+        best_viz = None
+        best_epoch = None
+        best_val_loss = None
+    elif isinstance(best, dict):
         best_viz = {key: value for key, value in best.items() if key not in ("state_dict", "mech_state_dict")}
     elif isinstance(payload.get("best_snapshot"), dict):
         best_epoch = payload.get("epoch", best_epoch)
@@ -567,27 +1089,39 @@ def _make_viz_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "epoch": best_epoch,
             "best_snapshot": payload.get("best_snapshot"),
         }
-    return {
-        "best": best_viz,
+    viz_payload = {
+        "final": final_viz,
         "history": payload.get("history", []),
         "state_mean": payload.get("state_mean"),
         "state_scale": payload.get("state_scale"),
         "known_pars": payload.get("known_pars"),
         "eta_star_true": payload.get("eta_star_true"),
         "mech_true": payload.get("mech_true"),
+        "warmstart": payload.get("warmstart"),
         "stage1_warmstart": payload.get("stage1_warmstart"),
+        "prestage2_warmstart": payload.get("prestage2_warmstart"),
+        "warmstart_source": payload.get("warmstart_source"),
         "sanity": payload.get("sanity"),
         "window_meta": payload.get("window_meta"),
         "final_snapshot": payload.get("final_snapshot"),
         "config": payload.get("config"),
-        "best_epoch": best_epoch,
-        "best_val_loss": best_val_loss,
+        "validation_eval_mode": payload.get("validation_eval_mode"),
+        "final_val_epoch": final_val_epoch,
+        "final_val_loss": final_val_loss,
     }
+    if not final_only_validation:
+        viz_payload.update(
+            {
+                "best": best_viz,
+                "best_epoch": best_epoch,
+                "best_val_loss": best_val_loss,
+            }
+        )
+    return viz_payload
 
 
 def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path: Path | None = None) -> dict[str, object]:
     cfg = default_config() if cfg is None else cfg
-    train_wpred_enabled = bool(getattr(cfg, "train_wpred_enabled", getattr(cfg, "wpred_enabled", False)))
     shard_index = int(cfg.shard_index if shard_index is None else shard_index)
     dtype = _torch_dtype(cfg.dtype)
     torch.manual_seed(cfg.seed)
@@ -606,13 +1140,19 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
     split = prepared.splits[window_index - 1]
     mech_true_t = torch.as_tensor(prepared.mech_true, dtype=dtype, device=cfg.device)
     tensors = _window_to_torch(split, dtype=dtype, device=cfg.device)
+    observable_grid_inputs = _observable_grid_inputs_from_ode(
+        ode_train=tensors["ode_train"],
+        cfg=cfg,
+    )
 
     train_states = torch.as_tensor(split.ode_train.T, dtype=dtype, device=cfg.device)
     train_fts = torch.as_tensor(split.fts_train_true, dtype=dtype, device=cfg.device)
-    role_short = _role_short(split.role)
+    role_short = _role_short(split.role, cfg.window_mode)
+    final_only_validation = _validation_final_only(cfg)
+    best_or_final_stem = "stage2light_final" if final_only_validation else "stage2light_best"
     history_path = cfg.result_dir / f"stage2light_history_p{shard_index}.json"
-    checkpoint_path = cfg.checkpoint_dir / f"stage2light_best_p{shard_index}.pt"
-    checkpoint_viz_path = cfg.checkpoint_dir / f"stage2light_best_p{shard_index}.viz.pkl"
+    checkpoint_path = cfg.checkpoint_dir / f"{best_or_final_stem}_p{shard_index}.pt"
+    checkpoint_viz_path = cfg.checkpoint_dir / f"{best_or_final_stem}_p{shard_index}.viz.pkl"
     running_checkpoint_path = cfg.checkpoint_dir / f"stage2light_checkpoint_p{shard_index}.pt"
     result_path = cfg.result_dir / f"stage2light_result_p{shard_index}.pt"
     viz_result_path = cfg.result_dir / f"stage2light_result_p{shard_index}.viz.pkl"
@@ -623,20 +1163,44 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
     best_val = float("inf")
     best_epoch = -1
     best_payload: dict[str, Any] | None = None
+    final_val_loss = float("nan")
+    final_val_epoch = -1
     sanity_payload: dict[str, Any] | None = None
     grad_ema = float(cfg.lr_target_init)
     grad_target = float(cfg.lr_target_init)
     recent_losses: list[float] = []
     failure_reason = ""
     failure_epoch = 0
+    stop_reason = ""
+    stop_kind = ""
+    stop_epoch = 0
     train_loss_last = float("inf")
     cached_grid_traj: torch.Tensor | None = None
+    start_epoch = 0
+    good_enough_reached = False
+    resume_optimizer_phase = ""
+    deferred_optimizer_state_dict = None
 
-    with log_path.open("w", encoding="utf-8") as log:
-        stage1_warmstart = _maybe_load_stage1_warmstart(cfg=cfg, log=log)
-        model_seed = int(stage1_warmstart.init_seed) if stage1_warmstart is not None else int(cfg.seed)
-        ks_init = float(stage1_warmstart.ks0) if stage1_warmstart is not None else _geometric_midpoint(cfg.ks_lo, cfg.ks_hi)
-        cs_init = float(stage1_warmstart.cs0) if stage1_warmstart is not None else _geometric_midpoint(cfg.cs_lo, cfg.cs_hi)
+    step_controller = str(getattr(cfg, "step_controller", "armijo_backtracking")).strip().lower().replace("-", "_")
+    if step_controller not in ("armijo_backtracking", "legacy_guard", "off"):
+        step_controller = "off"
+    lr_adapt_active = bool(cfg.lr_adapt) and step_controller != "armijo_backtracking"
+    event_log_dir = cfg.log_dir / "optimizer_events"
+    event_log_dir.mkdir(parents=True, exist_ok=True)
+    event_log_path = event_log_dir / f"stage2light_optimizer_events_p{shard_index}.jsonl"
+    log_mode = "a" if log_path.exists() else "w"
+    with log_path.open(log_mode, encoding="utf-8") as log, event_log_path.open("a", encoding="utf-8") as event_log:
+        if log_mode == "a":
+            log.write("\n")
+            log.flush()
+            _log_line(log, "----- append existing shard log; preserve previous session -----")
+        warmstart = _maybe_load_warmstart(cfg=cfg, log=log)
+        warmstart_meta = _warmstart_payload(warmstart)
+        stage1_warmstart_meta = warmstart_meta if isinstance(warmstart, Stage1WarmstartCandidate) else None
+        prestage2_warmstart_meta = warmstart_meta if isinstance(warmstart, Prestage2WarmstartCandidate) else None
+        model_seed = int(warmstart.init_seed) if warmstart is not None else int(cfg.seed)
+        ks_init = float(warmstart.ks0) if warmstart is not None else _geometric_midpoint(cfg.ks_lo, cfg.ks_hi)
+        cs_init = float(warmstart.cs0) if warmstart is not None else _geometric_midpoint(cfg.cs_lo, cfg.cs_hi)
         model = KANForceModule(
             pykan_root=cfg.pykan_root,
             state_mean=prepared.state_mean,
@@ -654,9 +1218,15 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             grid_range=(cfg.grid_range_lo, cfg.grid_range_hi),
             dist=float(prepared.known_pars[6]),
             a0=float(prepared.known_pars[9]),
-            wpred_enabled=train_wpred_enabled,
-            wpred_eps=cfg.wpred_eps,
             gnn_learnable=cfg.gnn_learnable,
+            soft_mask_enabled=cfg.soft_mask_enabled,
+            soft_mask_trainable=cfg.soft_mask_trainable,
+            soft_mask_s0_a0=cfg.soft_mask_s0_a0,
+            soft_mask_s0_min_a0=cfg.soft_mask_s0_min_a0,
+            soft_mask_s0_max_a0=cfg.soft_mask_s0_max_a0,
+            soft_mask_alpha_a0=cfg.soft_mask_alpha_a0,
+            soft_mask_alpha_min_a0=cfg.soft_mask_alpha_min_a0,
+            soft_mask_alpha_max_a0=cfg.soft_mask_alpha_max_a0,
             device=cfg.device,
             dtype=dtype,
         ).to(cfg.device)
@@ -668,10 +1238,48 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             dtype=dtype,
             device=cfg.device,
         ).to(cfg.device)
-        init_gain = model.initialize_gain_from_truth(train_states, train_fts)
+        prest2_candidate_selected = _log_prestage2_selection_policy(
+            candidate=warmstart,
+            log=log,
+        )
+        _ = prest2_candidate_selected
         optimizer, optimizer_name = _make_optimizer(cfg, model, mech_module)
         lr = float(cfg.lr)
         _set_optimizer_lr(optimizer, lr)
+        resume_state = _maybe_resume_from_running_checkpoint(
+            cfg=cfg,
+            running_checkpoint_path=running_checkpoint_path,
+            best_checkpoint_path=checkpoint_path,
+            result_path=result_path,
+            shard_index=shard_index,
+            window_index=window_index,
+            split=split,
+            warmstart_meta=warmstart_meta,
+            model=model,
+            mech_module=mech_module,
+            optimizer=optimizer,
+            log=log,
+        )
+        if resume_state is not None:
+            start_epoch = int(resume_state["start_epoch"])
+            history = list(resume_state["history"])
+            best_val = float(resume_state["best_val_loss"])
+            best_epoch = int(resume_state["best_epoch"])
+            final_val_loss = float(resume_state.get("final_val_loss", final_val_loss))
+            final_val_epoch = int(resume_state.get("final_val_epoch", final_val_epoch))
+            best_payload = resume_state["best_payload"]
+            sanity_payload = resume_state["sanity"]
+            grad_ema = float(resume_state["grad_ema"])
+            grad_target = float(resume_state["grad_target"])
+            recent_losses = list(resume_state["recent_losses"])
+            train_loss_last = float(resume_state["train_loss_last"])
+            lr = float(resume_state["lr"])
+            resume_optimizer_phase = str(resume_state.get("optimizer_phase", "")).strip().lower()
+            deferred_optimizer_state_dict = resume_state.get("deferred_optimizer_state_dict")
+            _set_optimizer_lr(optimizer, lr)
+            init_gain = float(model.gain().detach().cpu()) if hasattr(model, "gain") else float("nan")
+        else:
+            init_gain = model.initialize_gain_from_truth(train_states, train_fts)
 
         _log_line(
             log,
@@ -690,7 +1298,8 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             log,
             "Switches: "
             f"adaptive_grid={str(cfg.adaptive_grid_enabled).upper()} | "
-            f"warmstart_from_stage1={'ON' if cfg.warmstart_from_stage1 else 'OFF'} | "
+            f"warmstart={'ON' if cfg.warmstart_from_stage1 else 'OFF'} | "
+            f"warmstart_source={getattr(cfg, 'warmstart_source', 'stage1')} | "
             f"warmstart_fallback_random={'ON' if cfg.warmstart_fallback_random else 'OFF'} | "
             "random_init=ON | "
             f"symbolic={str(cfg.symbolic_enabled).upper()} | auto_save={str(cfg.auto_save).upper()}",
@@ -709,10 +1318,7 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
         )
         _log_line(
             log,
-            "contact gate: "
-            f"w_pred={'ON' if train_wpred_enabled else 'OFF'} "
-            f"eps={cfg.wpred_eps:.2e} "
-            "target=(g_nn * w_pred * nn_raw)",
+            "force chain: target=(soft_mask * g_nn * nn_raw) | legacy contact multiplier removed",
         )
         _log_line(
             log,
@@ -727,43 +1333,111 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
         )
         _log_line(
             log,
+            "training horizon: "
+            f"total_epochs={cfg.epochs} adam_epochs={cfg.adam_epochs} lbfgs_epochs={cfg.lbfgs_steps}",
+        )
+        _log_line(
+            log,
+            "validation evaluation: "
+            f"mode={cfg.val_eval_mode} "
+            f"| checkpoint_semantics={'final' if final_only_validation else 'best_val'}",
+        )
+        _log_line(
+            log,
             "optimizer controls: "
-            f"lr_adapt={'ON' if cfg.lr_adapt else 'OFF'} "
-            f"step_guard={'ON' if cfg.step_guard_enabled else 'OFF'} "
+            f"step_controller={step_controller} "
+            f"lr_adapt={'UP_ONLY' if (lr_adapt_active and cfg.lr_adapt_up_only) else ('ON' if lr_adapt_active else 'OFF')} "
+            f"legacy_step_guard_switch={'ON' if (step_controller == 'legacy_guard' and cfg.step_guard_enabled) else 'OFF'} "
+            f"step_retry_reset={'INITIAL_LR' if cfg.step_retry_reset_lr_each_epoch else 'OFF'} "
             f"plateau_early_stop={'ON' if cfg.plateau_early_stop else 'OFF'} "
             f"recent_val_early_stop={'ON' if cfg.recent_val_early_stop else 'OFF'} "
             f"good_enough={cfg.good_enough_loss:.1e}",
         )
+        step_retry_label = "inf" if cfg.step_retry_max < 0 else str(cfg.step_retry_max)
+        if step_controller == "off":
+            _log_line(
+                log,
+                "optimizer bounds: "
+                f"lr=[{cfg.lr_min:.2e}, {cfg.lr_max:.2e}] "
+                f"epoch_retry={cfg.epoch_retry_max} | step_retry=OFF",
+            )
+        else:
+            _log_line(
+                log,
+                "optimizer bounds: "
+                f"lr=[{cfg.lr_min:.2e}, {cfg.lr_max:.2e}] "
+                f"retry(epoch={cfg.epoch_retry_max}, step={step_retry_label}) "
+                f"step_jump_frac={cfg.step_max_loss_increase_frac:.3f}",
+            )
+        if step_controller == "armijo_backtracking":
+            _log_line(
+                log,
+                "armijo/backtracking config: "
+                f"c1={cfg.armijo_c1:.2e} shrink={cfg.backtrack_shrink:.3f} "
+                f"max={cfg.backtrack_max} min_alpha={cfg.backtrack_min_alpha:.1e} "
+                f"event_log={event_log_path}",
+            )
+        else:
+            _log_line(
+                log,
+                "Adam step controller: native optimizer.step() only; "
+                "epoch retry is reserved for nonfinite loss/grad or runtime exceptions.",
+            )
         _log_line(
             log,
-            "optimizer bounds: "
-            f"lr=[{cfg.lr_min:.2e}, {cfg.lr_max:.2e}] "
-            f"retry(epoch={cfg.epoch_retry_max}, step={cfg.step_retry_max}) "
-            f"step_jump_frac={cfg.step_max_loss_increase_frac:.3f}",
+            "LBFGS config: "
+            f"enabled={'ON' if cfg.lbfgs_enabled else 'OFF'} "
+            f"epochs={cfg.lbfgs_steps} lr={cfg.lbfgs_lr:.3e} "
+            f"max_iter={cfg.lbfgs_max_iter} max_eval={cfg.lbfgs_max_eval} "
+            f"history_size={cfg.lbfgs_history_size} "
+            f"tol_grad={cfg.lbfgs_tolerance_grad:.1e} "
+            f"tol_change={cfg.lbfgs_tolerance_change:.1e} "
+            f"ys_threshold={cfg.lbfgs_ys_threshold:.1e} "
+            f"strong_wolfe={'ON' if cfg.lbfgs_strong_wolfe else 'OFF'} "
+            "AGU_frozen_in_lbfgs=ON",
         )
         _log_line(
             log,
             "early-stop config: "
-            f"recent_val_window={cfg.recent_val_window} "
+            f"recent_val_min_epochs={cfg.recent_val_window} "
+            f"recent_val_compare_gap={cfg.recent_val_compare_gap} "
             f"recent_val_rel_current_frac={cfg.recent_val_rel_current_frac:.4f}",
         )
         _log_line(log, "optimizer grouping: single_group=ON | group_adapt=OFF | mech_joint=ON")
         _log_line(log, f"g_nn init={init_gain:.6e} | learnable={'ON' if cfg.gnn_learnable else 'OFF'}")
-        sanity_payload = _run_oracle_sanity(
-            log=log,
-            split=split,
-            tensors=tensors,
-            known_pars=prepared.known_pars,
-            eta_star_true=prepared.eta_star_true,
-            mech_true=mech_true_t,
-            dtype=dtype,
-            device=cfg.device,
-            ode_method=cfg.ode_method,
-            ode_rtol=cfg.ode_rtol,
-            ode_atol=cfg.ode_atol,
+        soft_mask_meta = model.soft_mask_summary()
+        _log_line(
+            log,
+            "soft mask: "
+            f"enabled={'ON' if soft_mask_meta['enabled'] else 'OFF'} "
+            f"trainable={'ON' if soft_mask_meta['trainable'] else 'OFF'} "
+            "scope=hard_noncontact_only "
+            f"s0={soft_mask_meta['s0']:.6e} ({soft_mask_meta['s0_a0']:.3f} a0) "
+            f"alpha={soft_mask_meta['alpha']:.6e} (alpha*a0={soft_mask_meta['alpha_a0']:.3f}) "
+            "m_min=0",
         )
+        if sanity_payload is None:
+            sanity_payload = _run_oracle_sanity(
+                log=log,
+                split=split,
+                window_mode=cfg.window_mode,
+                tensors=tensors,
+                known_pars=prepared.known_pars,
+                eta_star_true=prepared.eta_star_true,
+                mech_true=mech_true_t,
+                dtype=dtype,
+                device=cfg.device,
+                ode_method=cfg.ode_method,
+                ode_rtol=cfg.ode_rtol,
+                ode_atol=cfg.ode_atol,
+            )
+        else:
+            _log_line(log, f"resume sanity: reused saved sanity payload | start_epoch={start_epoch}")
 
-        for epoch in range(cfg.epochs):
+        for epoch in range(start_epoch, cfg.adam_epochs):
+            if cfg.step_retry_reset_lr_each_epoch:
+                lr = float(cfg.lr)
+                _set_optimizer_lr(optimizer, lr)
             epoch_wall_start = perf_counter()
             grid_update_sec_epoch = 0.0
             grid_update_runs_epoch = 0
@@ -771,15 +1445,6 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 "base_samples": float("nan"),
                 "extra_samples": 0.0,
                 "total_samples": float("nan"),
-                "mean_w_pred": float("nan"),
-                "max_w_pred": float("nan"),
-                "q50_w_pred": float("nan"),
-                "q90_w_pred": float("nan"),
-                "q99_w_pred": float("nan"),
-                "frac_s_le_a0": float("nan"),
-                "frac_s_le_1p5a0": float("nan"),
-                "frac_wpred_ge_05": float("nan"),
-                "frac_wpred_ge_08": float("nan"),
             }
             epoch_start_state = copy.deepcopy(model.state_dict())
             epoch_start_mech_state = copy.deepcopy(mech_module.state_dict())
@@ -793,8 +1458,12 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             val_parts: TorchLossParts | None = None
             grad_norm = float("nan")
             grad_norm_raw = float("nan")
+            grad_norm_nn = float("nan")
+            grad_norm_mech = float("nan")
             step_retry_count = 0
             step_accept_reason = ""
+            step_effective_lr = float(lr)
+            step_next_lr = float(lr)
             epoch_fail_reason = ""
 
             while epoch_attempt < epoch_attempt_max:
@@ -809,32 +1478,11 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     try:
                         grid_update_t0 = perf_counter()
                         with torch.no_grad():
-                            grid_source = "cached_pred"
-                            grid_traj = cached_grid_traj
-                            if grid_traj is None:
-                                model.eval()
-                                _, _, grid_traj = evaluate_split(
-                                    force_module=model,
-                                    known_pars=prepared.known_pars,
-                                    mech_module=mech_module,
-                                    ode_true=tensors["ode_train"],
-                                    x2dot_true=tensors["x2dot_train"],
-                                    contact_mask=tensors["contact_train"],
-                                    times=tensors["times_train"],
-                                    ode_method=cfg.ode_method,
-                                    ode_rtol=cfg.ode_rtol,
-                                    ode_atol=cfg.ode_atol,
-                                    mech_true=mech_true_t,
-                                    eta_star_true=prepared.eta_star_true,
-                                )
-                                model.train()
-                                grid_source = "warmup_pred"
-                            grid_states, grid_meta = _make_grid_update_states(
-                                cfg=cfg,
-                                traj_pred=grid_traj,
-                                known_pars=prepared.known_pars,
+                            grid_source = "raw_observed_x1x2_neutral_x3_axis"
+                            grid_inputs, grid_meta = _make_grid_update_inputs(
+                                base_inputs=observable_grid_inputs,
                             )
-                            model.update_grid_from_states(grid_states)
+                            model.update_grid_from_normalized_inputs(grid_inputs)
                         grid_update_dt = perf_counter() - grid_update_t0
                         grid_update_sec_epoch += float(grid_update_dt)
                         grid_update_runs_epoch += 1
@@ -843,9 +1491,7 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                             log,
                             "grid update | "
                             f"epoch={epoch + 1} | source={grid_source} | "
-                            f"samples={int(grid_meta['total_samples'])} | "
-                            f"mean_w_pred={grid_meta['mean_w_pred']:.3f} "
-                            f"max_w_pred={grid_meta['max_w_pred']:.3f}",
+                            f"samples={int(grid_meta['total_samples'])}",
                         )
                     except Exception as err:
                         epoch_fail_reason = f"grid_update_exception:{err}"
@@ -871,20 +1517,23 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                         force_module=model,
                         known_pars=prepared.known_pars,
                         mech_module=mech_module,
-                        ode_true=tensors["ode_train"],
-                        x2dot_true=tensors["x2dot_train"],
-                        contact_mask=tensors["contact_train"],
-                        times=tensors["times_train"],
+                        ode_true=tensors["ode_full"],
+                        x2dot_true=tensors["x2dot_full"],
+                        contact_mask=tensors["contact_full"],
+                        times=tensors["times_full"],
                         ode_method=cfg.ode_method,
                         ode_rtol=cfg.ode_rtol,
                         ode_atol=cfg.ode_atol,
                         mech_true=mech_true_t,
                         eta_star_true=prepared.eta_star_true,
+                        loss_indices=tensors["train_idx"],
                     )
                     if not torch.isfinite(train_total):
                         epoch_fail_reason = "train_loss_nonfinite"
                     else:
                         train_total.backward()
+                        grad_norm_nn = _grad_norm(("model", model))
+                        grad_norm_mech = _grad_norm(("mech", mech_module))
                         grad_norm_raw = _grad_norm(("model", model), ("mech", mech_module))
                         if not np.isfinite(grad_norm_raw):
                             epoch_fail_reason = "grad_norm_nonfinite"
@@ -909,23 +1558,318 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     failure_epoch = epoch + 1
                     break
 
-                prev_loss_ref = train_loss_last if np.isfinite(train_loss_last) else float("nan")
-                train_loss_before = float(train_total.detach())
-                model_base_state = copy.deepcopy(model.state_dict())
-                mech_base_state = copy.deepcopy(mech_module.state_dict())
-                opt_base_state = copy.deepcopy(optimizer.state_dict())
-                grad_cache = _capture_grads(("model", model), ("mech", mech_module))
                 step_retry_count = 0
                 step_accept_reason = "accepted"
                 step_accepted = False
+                step_update_accepted = False
+                step_reject_reason = ""
+                train_loss_before = float(train_total.detach())
+                step_candidate_loss = float("nan")
+                step_alpha = 1.0
+                step_base_lr = float(lr)
+                step_grad_dot_p = float("nan")
+                step_armijo_rhs = float("nan")
+                accepted_val_total: torch.Tensor | None = None
+                accepted_val_parts: TorchLossParts | None = None
+                adam_state_reset_attempted = False
+                adam_state_reset_accepted = False
+                adam_state_reset_trigger_retries = 0
+                adam_state_reset_retries = 0
 
-                attempts_total = 1 if not cfg.step_guard_enabled else max(1, int(cfg.step_retry_max) + 1)
-                for step_attempt in range(1, attempts_total + 1):
-                    model.load_state_dict(copy.deepcopy(model_base_state))
-                    mech_module.load_state_dict(copy.deepcopy(mech_base_state))
-                    optimizer.load_state_dict(copy.deepcopy(opt_base_state))
+                if step_controller == "armijo_backtracking":
+                    step_base_model_state = copy.deepcopy(model.state_dict())
+                    step_base_mech_state = copy.deepcopy(mech_module.state_dict())
+                    step_base_opt_state = copy.deepcopy(optimizer.state_dict())
+                    base_params = _capture_params(("model", model), ("mech", mech_module))
+                    grad_cache = _capture_grads(("model", model), ("mech", mech_module))
+                    c1 = float(cfg.armijo_c1)
+                    if not np.isfinite(c1) or c1 <= 0.0:
+                        c1 = 1.0e-4
+                    shrink = float(cfg.backtrack_shrink)
+                    if not np.isfinite(shrink) or not (0.0 < shrink < 1.0):
+                        shrink = 0.5
+                    min_alpha = float(cfg.backtrack_min_alpha)
+                    if not np.isfinite(min_alpha) or min_alpha <= 0.0:
+                        min_alpha = 1.0e-8
+                    attempts_total = max(1, int(cfg.backtrack_max) + 1)
+                    last_reason = "armijo_no_trial"
+                    trials_run = 0
+
+                    for step_attempt in range(1, attempts_total + 1):
+                        alpha = float(shrink ** (step_attempt - 1))
+                        if alpha < min_alpha:
+                            last_reason = "armijo_min_alpha_reached"
+                            break
+                        trials_run = step_attempt
+                        trial_lr = float(step_base_lr * alpha)
+                        model.load_state_dict(copy.deepcopy(step_base_model_state))
+                        mech_module.load_state_dict(copy.deepcopy(step_base_mech_state))
+                        optimizer.load_state_dict(copy.deepcopy(step_base_opt_state))
+                        _set_optimizer_lr(optimizer, trial_lr)
+                        _restore_grads(grad_cache, ("model", model), ("mech", mech_module))
+                        optimizer.step()
+                        model.train()
+                        grad_dot_delta = _grad_dot_delta(base_params, grad_cache, ("model", model), ("mech", mech_module))
+                        armijo_rhs = float(train_loss_before + c1 * grad_dot_delta)
+                        try:
+                            trial_total, trial_parts, trial_traj = evaluate_split(
+                                force_module=model,
+                                known_pars=prepared.known_pars,
+                                mech_module=mech_module,
+                                ode_true=tensors["ode_full"],
+                                x2dot_true=tensors["x2dot_full"],
+                                contact_mask=tensors["contact_full"],
+                                times=tensors["times_full"],
+                                ode_method=cfg.ode_method,
+                                ode_rtol=cfg.ode_rtol,
+                                ode_atol=cfg.ode_atol,
+                                mech_true=mech_true_t,
+                                eta_star_true=prepared.eta_star_true,
+                                loss_indices=tensors["train_idx"],
+                            )
+                            trial_loss = float(trial_total.detach())
+                        except Exception as err:
+                            step_accept_reason = f"step_trial_exception:{err}"
+                            trial_total = None
+                            trial_parts = None
+                            trial_traj = None
+                            trial_loss = float("inf")
+
+                        accepted_trial = False
+                        reject_reason = ""
+                        if step_accept_reason != "accepted":
+                            reject_reason = step_accept_reason
+                        elif not np.isfinite(trial_loss):
+                            reject_reason = "step_trial_loss_nonfinite"
+                        elif not np.isfinite(grad_dot_delta):
+                            reject_reason = "armijo_grad_dot_delta_nonfinite"
+                        elif grad_dot_delta >= 0.0:
+                            reject_reason = "armijo_not_descent"
+                        elif trial_loss > train_loss_before:
+                            reject_reason = "armijo_loss_increase"
+                        elif trial_loss > armijo_rhs:
+                            reject_reason = "armijo_insufficient_decrease"
+                        else:
+                            accepted_trial = True
+
+                        _write_event(
+                            event_log,
+                            {
+                                "event": "armijo_trial",
+                                "epoch": int(epoch + 1),
+                                "trial_index": int(step_attempt),
+                                "alpha": float(alpha),
+                                "base_lr": float(step_base_lr),
+                                "effective_lr": float(trial_lr),
+                                "loss_before": float(train_loss_before),
+                                "candidate_loss": float(trial_loss),
+                                "grad_dot_p": float(grad_dot_delta),
+                                "armijo_rhs": float(armijo_rhs),
+                                "accepted": bool(accepted_trial),
+                                "reject_reason": reject_reason,
+                                "armijo_pass": "base",
+                            },
+                        )
+
+                        step_candidate_loss = float(trial_loss)
+                        step_alpha = float(alpha)
+                        step_effective_lr = float(trial_lr)
+                        step_grad_dot_p = float(grad_dot_delta)
+                        step_armijo_rhs = float(armijo_rhs)
+
+                        if accepted_trial:
+                            train_total = trial_total
+                            train_parts = trial_parts
+                            accepted_train_traj = trial_traj
+                            step_retry_count = step_attempt - 1
+                            step_accept_reason = "accepted"
+                            step_reject_reason = ""
+                            step_accepted = True
+                            step_update_accepted = True
+                            _set_optimizer_lr(optimizer, step_base_lr)
+                            break
+
+                        last_reason = reject_reason
+                        step_accept_reason = "accepted"
+
+                    resettable_armijo_reasons = {
+                        "armijo_not_descent",
+                        "armijo_loss_increase",
+                        "armijo_insufficient_decrease",
+                    }
+                    if (
+                        not step_accepted
+                        and last_reason in resettable_armijo_reasons
+                        and max(0, trials_run - 1) >= int(cfg.backtrack_max)
+                    ):
+                        adam_state_reset_attempted = True
+                        adam_state_reset_trigger_retries = max(0, trials_run - 1)
+                        _write_event(
+                            event_log,
+                            {
+                                "event": "adam_state_reset_after_armijo_cap",
+                                "epoch": int(epoch + 1),
+                                "loss_before": float(train_loss_before),
+                                "trigger_retries": int(adam_state_reset_trigger_retries),
+                                "trigger_reason": last_reason,
+                            },
+                        )
+
+                        model.load_state_dict(copy.deepcopy(step_base_model_state))
+                        mech_module.load_state_dict(copy.deepcopy(step_base_mech_state))
+                        optimizer.load_state_dict(copy.deepcopy(step_base_opt_state))
+                        _reset_optimizer_state(optimizer)
+                        _set_optimizer_lr(optimizer, step_base_lr)
+                        reset_opt_base_state = copy.deepcopy(optimizer.state_dict())
+                        reset_last_reason = "armijo_no_trial"
+                        reset_trials_run = 0
+
+                        for step_attempt in range(1, attempts_total + 1):
+                            alpha = float(shrink ** (step_attempt - 1))
+                            if alpha < min_alpha:
+                                reset_last_reason = "armijo_min_alpha_reached"
+                                break
+                            reset_trials_run = step_attempt
+                            trial_lr = float(step_base_lr * alpha)
+                            model.load_state_dict(copy.deepcopy(step_base_model_state))
+                            mech_module.load_state_dict(copy.deepcopy(step_base_mech_state))
+                            optimizer.load_state_dict(copy.deepcopy(reset_opt_base_state))
+                            _set_optimizer_lr(optimizer, trial_lr)
+                            _restore_grads(grad_cache, ("model", model), ("mech", mech_module))
+                            optimizer.step()
+                            model.train()
+                            grad_dot_delta = _grad_dot_delta(base_params, grad_cache, ("model", model), ("mech", mech_module))
+                            armijo_rhs = float(train_loss_before + c1 * grad_dot_delta)
+                            try:
+                                trial_total, trial_parts, trial_traj = evaluate_split(
+                                    force_module=model,
+                                    known_pars=prepared.known_pars,
+                                    mech_module=mech_module,
+                                    ode_true=tensors["ode_full"],
+                                    x2dot_true=tensors["x2dot_full"],
+                                    contact_mask=tensors["contact_full"],
+                                    times=tensors["times_full"],
+                                    ode_method=cfg.ode_method,
+                                    ode_rtol=cfg.ode_rtol,
+                                    ode_atol=cfg.ode_atol,
+                                    mech_true=mech_true_t,
+                                    eta_star_true=prepared.eta_star_true,
+                                    loss_indices=tensors["train_idx"],
+                                )
+                                trial_loss = float(trial_total.detach())
+                            except Exception as err:
+                                step_accept_reason = f"step_trial_exception:{err}"
+                                trial_total = None
+                                trial_parts = None
+                                trial_traj = None
+                                trial_loss = float("inf")
+
+                            accepted_trial = False
+                            reject_reason = ""
+                            if step_accept_reason != "accepted":
+                                reject_reason = step_accept_reason
+                            elif not np.isfinite(trial_loss):
+                                reject_reason = "step_trial_loss_nonfinite"
+                            elif not np.isfinite(grad_dot_delta):
+                                reject_reason = "armijo_grad_dot_delta_nonfinite"
+                            elif grad_dot_delta >= 0.0:
+                                reject_reason = "armijo_not_descent"
+                            elif trial_loss > train_loss_before:
+                                reject_reason = "armijo_loss_increase"
+                            elif trial_loss > armijo_rhs:
+                                reject_reason = "armijo_insufficient_decrease"
+                            else:
+                                accepted_trial = True
+
+                            _write_event(
+                                event_log,
+                                {
+                                    "event": "armijo_trial",
+                                    "epoch": int(epoch + 1),
+                                    "trial_index": int(step_attempt),
+                                    "alpha": float(alpha),
+                                    "base_lr": float(step_base_lr),
+                                    "effective_lr": float(trial_lr),
+                                    "loss_before": float(train_loss_before),
+                                    "candidate_loss": float(trial_loss),
+                                    "grad_dot_p": float(grad_dot_delta),
+                                    "armijo_rhs": float(armijo_rhs),
+                                    "accepted": bool(accepted_trial),
+                                    "reject_reason": reject_reason,
+                                    "armijo_pass": "adam_state_reset",
+                                },
+                            )
+
+                            step_candidate_loss = float(trial_loss)
+                            step_alpha = float(alpha)
+                            step_effective_lr = float(trial_lr)
+                            step_grad_dot_p = float(grad_dot_delta)
+                            step_armijo_rhs = float(armijo_rhs)
+
+                            if accepted_trial:
+                                train_total = trial_total
+                                train_parts = trial_parts
+                                accepted_train_traj = trial_traj
+                                step_retry_count = step_attempt - 1
+                                adam_state_reset_retries = step_retry_count
+                                step_accept_reason = "accepted"
+                                step_reject_reason = ""
+                                step_accepted = True
+                                step_update_accepted = True
+                                adam_state_reset_accepted = True
+                                _set_optimizer_lr(optimizer, step_base_lr)
+                                break
+
+                            reset_last_reason = reject_reason
+                            step_accept_reason = "accepted"
+
+                        if not step_accepted:
+                            last_reason = reset_last_reason
+                            trials_run = reset_trials_run
+                            adam_state_reset_retries = max(0, reset_trials_run - 1)
+                            _write_event(
+                                event_log,
+                                {
+                                    "event": "adam_state_reset_armijo_rejected",
+                                    "epoch": int(epoch + 1),
+                                    "loss_before": float(train_loss_before),
+                                    "candidate_loss": float(step_candidate_loss),
+                                    "trials_run": int(reset_trials_run),
+                                    "backtracking_retries": int(adam_state_reset_retries),
+                                    "reject_reason": reset_last_reason,
+                                },
+                            )
+
+                    if not step_accepted:
+                        step_retry_count = max(0, trials_run - 1)
+                        model.load_state_dict(copy.deepcopy(step_base_model_state))
+                        mech_module.load_state_dict(copy.deepcopy(step_base_mech_state))
+                        optimizer.load_state_dict(copy.deepcopy(step_base_opt_state))
+                        _set_optimizer_lr(optimizer, step_base_lr)
+                        train_total = torch.as_tensor(train_loss_before, dtype=dtype, device=cfg.device)
+                        accepted_train_traj = train_traj
+                        step_accept_reason = "armijo_rejected_keep_previous"
+                        step_reject_reason = last_reason
+                        step_accepted = True
+                        step_update_accepted = False
+                        _write_event(
+                            event_log,
+                            {
+                                "event": "armijo_reject_epoch",
+                                "epoch": int(epoch + 1),
+                                "loss_before": float(train_loss_before),
+                                "candidate_loss": float(step_candidate_loss),
+                                "trials_run": int(trials_run),
+                                "backtracking_retries": int(step_retry_count),
+                                "reject_reason": step_reject_reason,
+                            },
+                        )
+
+                elif step_controller == "off" or not cfg.step_guard_enabled:
+                    native_base_model_state = copy.deepcopy(model.state_dict())
+                    native_base_mech_state = copy.deepcopy(mech_module.state_dict())
+                    native_base_opt_state = copy.deepcopy(optimizer.state_dict())
                     _set_optimizer_lr(optimizer, lr)
-                    _restore_grads(grad_cache, ("model", model), ("mech", mech_module))
                     optimizer.step()
                     model.train()
                     try:
@@ -933,78 +1877,269 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                             force_module=model,
                             known_pars=prepared.known_pars,
                             mech_module=mech_module,
-                            ode_true=tensors["ode_train"],
-                            x2dot_true=tensors["x2dot_train"],
-                            contact_mask=tensors["contact_train"],
-                            times=tensors["times_train"],
+                            ode_true=tensors["ode_full"],
+                            x2dot_true=tensors["x2dot_full"],
+                            contact_mask=tensors["contact_full"],
+                            times=tensors["times_full"],
                             ode_method=cfg.ode_method,
                             ode_rtol=cfg.ode_rtol,
                             ode_atol=cfg.ode_atol,
                             mech_true=mech_true_t,
                             eta_star_true=prepared.eta_star_true,
+                            loss_indices=tensors["train_idx"],
                         )
                         trial_loss = float(trial_total.detach())
                     except Exception as err:
-                        step_accept_reason = f"step_trial_exception:{err}"
+                        epoch_fail_reason = f"step_trial_exception:{err}"
                         trial_total = None
                         trial_parts = None
                         trial_traj = None
                         trial_loss = float("inf")
 
-                    if step_accept_reason == "accepted":
-                        if not np.isfinite(trial_loss):
-                            step_accept_reason = "step_trial_loss_nonfinite"
-                        elif np.isfinite(cfg.step_max_loss_increase_frac) and trial_loss > train_loss_before * (1.0 + cfg.step_max_loss_increase_frac):
-                            step_accept_reason = "step_trial_loss_jump"
-                        elif np.isfinite(prev_loss_ref) and trial_loss > prev_loss_ref * (1.0 + cfg.step_max_loss_increase_frac):
-                            step_accept_reason = "step_prev_epoch_loss_jump"
+                    step_candidate_loss = float(trial_loss)
+                    step_effective_lr = float(lr)
+                    step_next_lr = float(lr)
+                    if epoch_fail_reason == "" and not np.isfinite(trial_loss):
+                        epoch_fail_reason = "step_trial_loss_nonfinite"
 
-                    if step_accept_reason == "accepted":
+                    if epoch_fail_reason == "":
                         train_total = trial_total
                         train_parts = trial_parts
                         accepted_train_traj = trial_traj
                         step_accepted = True
-                        step_retry_count = step_attempt - 1
-                        if step_retry_count > 0:
+                        step_update_accepted = True
+                        break
+                    model.load_state_dict(copy.deepcopy(native_base_model_state))
+                    mech_module.load_state_dict(copy.deepcopy(native_base_mech_state))
+                    optimizer.load_state_dict(copy.deepcopy(native_base_opt_state))
+                    _set_optimizer_lr(optimizer, lr)
+                else:
+                    prev_loss_ref = train_loss_last if np.isfinite(train_loss_last) else float("nan")
+                    train_loss_before = float(train_total.detach())
+                    val_loss_before = float("nan")
+                    step_base_model_state = copy.deepcopy(model.state_dict())
+                    step_base_mech_state = copy.deepcopy(mech_module.state_dict())
+                    step_base_opt_state = copy.deepcopy(optimizer.state_dict())
+                    step_base_train_total = train_total
+                    step_base_train_parts = train_parts
+                    step_base_train_traj = train_traj
+
+                    if cfg.step_guard_validate_val:
+                        try:
+                            model.eval()
+                            with torch.no_grad():
+                                step_base_val_total, _step_base_val_parts, _ = evaluate_split(
+                                    force_module=model,
+                                    known_pars=prepared.known_pars,
+                                    mech_module=mech_module,
+                                    ode_true=tensors["ode_full"],
+                                    x2dot_true=tensors["x2dot_full"],
+                                    contact_mask=tensors["contact_full"],
+                                    times=tensors["times_full"],
+                                    ode_method=cfg.ode_method,
+                                    ode_rtol=cfg.ode_rtol,
+                                    ode_atol=cfg.ode_atol,
+                                    mech_true=mech_true_t,
+                                    eta_star_true=prepared.eta_star_true,
+                                    loss_indices=tensors["val_idx"],
+                                )
+                            val_loss_before = float(step_base_val_total.detach())
+                            model.train()
+                            if not np.isfinite(val_loss_before):
+                                epoch_fail_reason = "step_base_val_loss_nonfinite"
+                        except Exception as err:
+                            model.train()
+                            epoch_fail_reason = f"step_base_val_exception:{err}"
+
+                    step_retry_infinite = int(cfg.step_retry_max) < 0
+                    attempts_total = max(1, int(cfg.step_retry_max) + 1)
+                    step_attempt = 1
+                    step_trial_lr = float(lr)
+                    while epoch_fail_reason == "":
+                        _set_optimizer_lr(optimizer, step_trial_lr)
+                        optimizer.step()
+                        model.train()
+                        try:
+                            trial_total, trial_parts, trial_traj = evaluate_split(
+                                force_module=model,
+                                known_pars=prepared.known_pars,
+                                mech_module=mech_module,
+                                ode_true=tensors["ode_full"],
+                                x2dot_true=tensors["x2dot_full"],
+                                contact_mask=tensors["contact_full"],
+                                times=tensors["times_full"],
+                                ode_method=cfg.ode_method,
+                                ode_rtol=cfg.ode_rtol,
+                                ode_atol=cfg.ode_atol,
+                                mech_true=mech_true_t,
+                                eta_star_true=prepared.eta_star_true,
+                                loss_indices=tensors["train_idx"],
+                            )
+                            trial_loss = float(trial_total.detach())
+                        except Exception as err:
+                            step_accept_reason = f"step_trial_exception:{err}"
+                            trial_total = None
+                            trial_parts = None
+                            trial_traj = None
+                            trial_loss = float("inf")
+
+                        if step_accept_reason == "accepted":
+                            if not np.isfinite(trial_loss):
+                                step_accept_reason = "step_trial_loss_nonfinite"
+                            elif np.isfinite(cfg.step_max_loss_increase_frac) and trial_loss > train_loss_before * (1.0 + cfg.step_max_loss_increase_frac):
+                                step_accept_reason = "step_trial_loss_jump"
+                            elif np.isfinite(prev_loss_ref) and trial_loss > prev_loss_ref * (1.0 + cfg.step_max_loss_increase_frac):
+                                step_accept_reason = "step_prev_epoch_loss_jump"
+
+                        trial_val_loss = float("nan")
+                        trial_val_total = None
+                        trial_val_parts = None
+                        if step_accept_reason == "accepted" and cfg.step_guard_validate_val:
+                            try:
+                                model.eval()
+                                with torch.no_grad():
+                                    trial_val_total, trial_val_parts, _ = evaluate_split(
+                                        force_module=model,
+                                        known_pars=prepared.known_pars,
+                                        mech_module=mech_module,
+                                        ode_true=tensors["ode_full"],
+                                        x2dot_true=tensors["x2dot_full"],
+                                        contact_mask=tensors["contact_full"],
+                                        times=tensors["times_full"],
+                                        ode_method=cfg.ode_method,
+                                        ode_rtol=cfg.ode_rtol,
+                                        ode_atol=cfg.ode_atol,
+                                        mech_true=mech_true_t,
+                                        eta_star_true=prepared.eta_star_true,
+                                        loss_indices=tensors["val_idx"],
+                                    )
+                                trial_val_loss = float(trial_val_total.detach())
+                                model.train()
+                            except Exception as err:
+                                model.train()
+                                step_accept_reason = f"step_trial_val_exception:{err}"
+
+                            if step_accept_reason == "accepted":
+                                if not np.isfinite(trial_val_loss):
+                                    step_accept_reason = "step_trial_val_loss_nonfinite"
+                                elif (
+                                    np.isfinite(cfg.step_max_loss_increase_frac)
+                                    and np.isfinite(val_loss_before)
+                                    and trial_val_loss > val_loss_before * (1.0 + cfg.step_max_loss_increase_frac)
+                                ):
+                                    step_accept_reason = "step_trial_val_loss_jump"
+
+                        if step_accept_reason == "accepted":
+                            train_total = trial_total
+                            train_parts = trial_parts
+                            accepted_train_traj = trial_traj
+                            accepted_val_total = trial_val_total
+                            accepted_val_parts = trial_val_parts
+                            step_accepted = True
+                            step_update_accepted = True
+                            step_retry_count = step_attempt - 1
+                            step_effective_lr = float(step_trial_lr)
+                            if cfg.step_retry_reset_lr_each_epoch:
+                                _set_optimizer_lr(optimizer, lr)
+                            else:
+                                lr = float(step_trial_lr)
+                            step_next_lr = float(lr)
+                            if step_retry_count > 0:
+                                _log_line(
+                                    log,
+                                    f"step-guard: accepted after {step_retry_count} retry/reduction(s) "
+                                    f"| trial_lr={step_effective_lr:.3e} | next_lr={step_next_lr:.3e} "
+                                    f"| train={trial_loss:.6e} "
+                                    f"| val={trial_val_loss:.6e}",
+                                )
+                            break
+
+                        if (not step_retry_infinite) and step_attempt >= attempts_total:
+                            step_retry_count = max(0, attempts_total - 1)
+                            model.load_state_dict(copy.deepcopy(step_base_model_state))
+                            mech_module.load_state_dict(copy.deepcopy(step_base_mech_state))
+                            optimizer.load_state_dict(copy.deepcopy(step_base_opt_state))
+                            train_total = step_base_train_total
+                            train_parts = step_base_train_parts
+                            accepted_train_traj = step_base_train_traj
+                            step_accept_reason = "step_retries_exhausted_keep_base"
+                            step_effective_lr = float(step_trial_lr)
+                            if cfg.step_retry_reset_lr_each_epoch:
+                                _set_optimizer_lr(optimizer, lr)
+                            else:
+                                lr = float(step_trial_lr)
+                            step_next_lr = float(lr)
                             _log_line(
                                 log,
-                                f"step-guard: accepted after {step_retry_count} retry/reduction(s) "
-                                f"| lr={lr:.3e} | train={trial_loss:.6e}",
+                                f"step-guard: retries exhausted after {step_retry_count} retries; keep base parameters "
+                                f"| reason={step_accept_reason} | trial_lr={step_effective_lr:.3e} | next_lr={step_next_lr:.3e}",
                             )
-                        break
+                            step_accepted = True
+                            step_reject_reason = step_accept_reason
+                            step_update_accepted = False
+                            break
 
-                    if step_attempt >= attempts_total:
-                        step_retry_count = max(0, attempts_total - 1)
-                        if _terminal_step_failure(step_accept_reason):
-                            model.load_state_dict(copy.deepcopy(model_base_state))
-                            mech_module.load_state_dict(copy.deepcopy(mech_base_state))
-                            optimizer.load_state_dict(copy.deepcopy(opt_base_state))
-                            _set_optimizer_lr(optimizer, lr)
-                            failure_reason = f"trial_failed:{step_accept_reason}"
+                        step_trial_lr = step_trial_lr * cfg.step_retry_lr_factor
+                        step_retry_count = step_attempt
+                        step_retry_limit_label = "inf" if step_retry_infinite else str(cfg.step_retry_max)
+                        _log_line(
+                                log,
+                                f"step-guard retry {step_attempt}/{step_retry_limit_label} -- reason={step_accept_reason} | trial_lr={step_trial_lr:.3e} | next_lr={lr:.3e}",
+                            )
+                        model.load_state_dict(copy.deepcopy(step_base_model_state))
+                        mech_module.load_state_dict(copy.deepcopy(step_base_mech_state))
+                        optimizer.load_state_dict(copy.deepcopy(step_base_opt_state))
+                        optimizer.zero_grad(set_to_none=True)
+                        model.train()
+                        try:
+                            train_total, train_parts, train_traj = evaluate_split(
+                                force_module=model,
+                                known_pars=prepared.known_pars,
+                                mech_module=mech_module,
+                                ode_true=tensors["ode_full"],
+                                x2dot_true=tensors["x2dot_full"],
+                                contact_mask=tensors["contact_full"],
+                                times=tensors["times_full"],
+                                ode_method=cfg.ode_method,
+                                ode_rtol=cfg.ode_rtol,
+                                ode_atol=cfg.ode_atol,
+                                mech_true=mech_true_t,
+                                eta_star_true=prepared.eta_star_true,
+                                loss_indices=tensors["train_idx"],
+                            )
+                            if not torch.isfinite(train_total):
+                                failure_reason = "trial_failed:retry_base_train_loss_nonfinite"
+                                failure_epoch = epoch + 1
+                                break
+                            train_total.backward()
+                            grad_norm_nn = _grad_norm(("model", model))
+                            grad_norm_mech = _grad_norm(("mech", mech_module))
+                            grad_norm_raw = _grad_norm(("model", model), ("mech", mech_module))
+                        except Exception as err:
+                            failure_reason = f"trial_failed:retry_base_exception:{err}"
                             failure_epoch = epoch + 1
                             break
-                        model.load_state_dict(copy.deepcopy(model_base_state))
-                        mech_module.load_state_dict(copy.deepcopy(mech_base_state))
-                        optimizer.load_state_dict(copy.deepcopy(opt_base_state))
-                        _set_optimizer_lr(optimizer, lr)
-                        train_total = torch.as_tensor(train_loss_before, dtype=dtype, device=cfg.device)
-                        accepted_train_traj = train_traj
-                        step_accept_reason = "step_rejected_keep_previous"
+                        accepted_train_traj = None
+                        if not np.isfinite(grad_norm_raw):
+                            failure_reason = "trial_failed:retry_base_grad_norm_nonfinite"
+                            failure_epoch = epoch + 1
+                            break
+                        grad_norm = grad_norm_raw
+                        step_accept_reason = "accepted"
+                        step_attempt += 1
+
+                if epoch_fail_reason != "":
+                    if epoch_attempt < epoch_attempt_max:
+                        lr = max(lr * cfg.epoch_retry_lr_factor, cfg.epoch_retry_lr_floor)
                         _log_line(
                             log,
-                            f"step-guard: rejected update after {step_retry_count} retries; keep previous parameters "
-                            f"| reason={step_accept_reason} | lr={lr:.3e}",
+                            f"retry epoch {epoch + 1} attempt {epoch_attempt}/{epoch_attempt_max} "
+                            f"-- reason={epoch_fail_reason} | lr={lr:.3e}",
                         )
-                        step_accepted = True
-                        break
-
-                    lr = max(lr * cfg.step_retry_lr_factor, cfg.epoch_retry_lr_floor)
-                    step_retry_count = step_attempt
-                    _log_line(
-                        log,
-                        f"step-guard retry {step_attempt}/{cfg.step_retry_max} -- reason={step_accept_reason} | lr={lr:.3e}",
-                    )
-                    step_accept_reason = "accepted"
+                        continue
+                    failure_reason = f"epoch_retry_exhausted:{epoch_fail_reason}"
+                    failure_epoch = epoch + 1
+                    break
 
                 if failure_reason != "":
                     break
@@ -1015,36 +2150,49 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             if failure_reason != "":
                 break
 
+            eval_val_this_epoch = _should_eval_validation(cfg, epoch + 1)
             model.eval()
             try:
-                with torch.no_grad():
-                    val_total, val_parts, _ = evaluate_split(
-                        force_module=model,
-                        known_pars=prepared.known_pars,
-                        mech_module=mech_module,
-                        ode_true=tensors["ode_val"],
-                        x2dot_true=tensors["x2dot_val"],
-                        contact_mask=tensors["contact_val"],
-                        times=tensors["times_val"],
-                        ode_method=cfg.ode_method,
-                        ode_rtol=cfg.ode_rtol,
-                        ode_atol=cfg.ode_atol,
-                        mech_true=mech_true_t,
-                        eta_star_true=prepared.eta_star_true,
-                    )
-                    if not torch.isfinite(val_total):
-                        failure_reason = "val_loss_nonfinite"
-                        failure_epoch = epoch + 1
-                        break
+                if not eval_val_this_epoch:
+                    val_total = _nan_loss_tensor(dtype=dtype, device=cfg.device)
+                    val_parts = _nan_loss_parts()
+                elif accepted_val_total is not None and accepted_val_parts is not None:
+                    val_total = accepted_val_total
+                    val_parts = accepted_val_parts
+                else:
+                    with torch.no_grad():
+                        val_total, val_parts, _ = evaluate_split(
+                            force_module=model,
+                            known_pars=prepared.known_pars,
+                            mech_module=mech_module,
+                            ode_true=tensors["ode_full"],
+                            x2dot_true=tensors["x2dot_full"],
+                            contact_mask=tensors["contact_full"],
+                            times=tensors["times_full"],
+                            ode_method=cfg.ode_method,
+                            ode_rtol=cfg.ode_rtol,
+                            ode_atol=cfg.ode_atol,
+                            mech_true=mech_true_t,
+                            eta_star_true=prepared.eta_star_true,
+                            loss_indices=tensors["val_idx"],
+                        )
+                if eval_val_this_epoch and not torch.isfinite(val_total):
+                    failure_reason = "val_loss_nonfinite"
+                    failure_epoch = epoch + 1
+                    break
             except Exception as err:
                 failure_reason = f"val_exception:{err}"
                 failure_epoch = epoch + 1
                 break
 
+            soft_mask_meta = model.soft_mask_summary()
             row = {
                 "epoch": float(epoch + 1),
                 "train_loss": float(train_total.detach()),
                 "val_loss": float(val_total.detach()),
+                "validation_eval_mode": str(cfg.val_eval_mode),
+                "validation_evaluated": bool(eval_val_this_epoch),
+                "validation_is_final": bool(final_only_validation and eval_val_this_epoch),
                 "epoch_sec": float(perf_counter() - epoch_wall_start),
                 "grid_update_sec": float(grid_update_sec_epoch),
                 "grid_update_runs": float(grid_update_runs_epoch),
@@ -1064,26 +2212,56 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 "val_x1_rec": float(val_parts.x1_rec),
                 "train_x3_rec": float(train_parts.x3_rec),
                 "val_x3_rec": float(val_parts.x3_rec),
-                "train_fts_teacher_rec": float(train_parts.fts_teacher_rec),
-                "val_fts_teacher_rec": float(val_parts.fts_teacher_rec),
+                "train_fts_rollout_rec": float(train_parts.fts_rollout_rec),
+                "val_fts_rollout_rec": float(val_parts.fts_rollout_rec),
                 "g_nn": float(model.gain().detach().cpu().item()),
+                "soft_mask_enabled": bool(soft_mask_meta["enabled"]),
+                "soft_mask_trainable": bool(soft_mask_meta["trainable"]),
+                "soft_mask_s0": float(soft_mask_meta["s0"]),
+                "soft_mask_s0_a0": float(soft_mask_meta["s0_a0"]),
+                "soft_mask_alpha": float(soft_mask_meta["alpha"]),
+                "soft_mask_alpha_a0": float(soft_mask_meta["alpha_a0"]),
+                "soft_mask_m_min": 0.0,
                 "grad_norm": float(grad_norm),
                 "grad_norm_raw": float(grad_norm_raw),
-                "lr": float(lr),
+                "grad_norm_nn": float(grad_norm_nn),
+                "grad_norm_mech": float(grad_norm_mech),
+                "lr": float(step_effective_lr),
+                "step_effective_lr": float(step_effective_lr),
+                "step_next_lr": float(step_next_lr),
+                "phase": "adam_backtracking" if step_controller == "armijo_backtracking" else (
+                    "adam_legacy_guard" if step_controller == "legacy_guard" else "adam_no_step_controller"
+                ),
+                "optimizer": optimizer_name,
+                "step_controller": step_controller,
+                "loss_before": float(train_loss_before),
+                "candidate_loss": float(step_candidate_loss),
+                "accepted_loss": float(train_total.detach()),
+                "base_lr": float(step_base_lr),
+                "alpha": float(step_alpha),
+                "effective_lr": float(step_effective_lr),
+                "grad_dot_p": float(step_grad_dot_p),
+                "armijo_rhs": float(step_armijo_rhs),
+                "backtracking_retries": float(step_retry_count if step_controller == "armijo_backtracking" else 0),
+                "step_update_accepted": bool(step_update_accepted),
+                "accepted": bool(step_update_accepted),
+                "reject_reason": step_reject_reason,
+                "lbfgs_outer_step": 0.0,
+                "lbfgs_closure_calls": 0.0,
+                "loss_before_lbfgs_step": float("nan"),
+                "loss_after_lbfgs_step": float("nan"),
+                "lbfgs_returned_loss": float("nan"),
+                "lbfgs_wall_time": float("nan"),
+                "lbfgs_line_search": "",
                 "epoch_retry_count": float(max(0, epoch_attempt - 1)),
                 "step_retry_count": float(step_retry_count),
+                "adam_state_reset_attempted": bool(adam_state_reset_attempted),
+                "adam_state_reset_accepted": bool(adam_state_reset_accepted),
+                "adam_state_reset_trigger_retries": float(adam_state_reset_trigger_retries),
+                "adam_state_reset_retries": float(adam_state_reset_retries),
                 "grid_base_samples": float(grid_update_meta_epoch["base_samples"]),
                 "grid_extra_samples": float(grid_update_meta_epoch["extra_samples"]),
                 "grid_total_samples": float(grid_update_meta_epoch["total_samples"]),
-                "wpred_mean": float(grid_update_meta_epoch["mean_w_pred"]),
-                "wpred_max": float(grid_update_meta_epoch["max_w_pred"]),
-                "wpred_q50": float(grid_update_meta_epoch["q50_w_pred"]),
-                "wpred_q90": float(grid_update_meta_epoch["q90_w_pred"]),
-                "wpred_q99": float(grid_update_meta_epoch["q99_w_pred"]),
-                "wpred_frac_s_le_a0": float(grid_update_meta_epoch["frac_s_le_a0"]),
-                "wpred_frac_s_le_1p5a0": float(grid_update_meta_epoch["frac_s_le_1p5a0"]),
-                "wpred_frac_ge_05": float(grid_update_meta_epoch["frac_wpred_ge_05"]),
-                "wpred_frac_ge_08": float(grid_update_meta_epoch["frac_wpred_ge_08"]),
             }
             ks_hat, cs_hat = _current_mech_numpy(mech_module)
             row["ks_hat"] = ks_hat
@@ -1095,7 +2273,56 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             if accepted_train_traj is not None:
                 cached_grid_traj = accepted_train_traj.detach().clone()
 
-            if float(val_total.detach()) < best_val:
+            if final_only_validation and eval_val_this_epoch:
+                final_val_loss = float(val_total.detach())
+                final_val_epoch = epoch + 1
+                final_checkpoint_snapshot = _snapshot_split(
+                    force_module=model,
+                    known_pars=prepared.known_pars,
+                    eta_star_true=prepared.eta_star_true,
+                    mech_module=mech_module,
+                    mech_true=mech_true_t,
+                    split=split,
+                    window_mode=cfg.window_mode,
+                    tensors=tensors,
+                    dtype=dtype,
+                    device=cfg.device,
+                    ode_method=cfg.ode_method,
+                    ode_rtol=cfg.ode_rtol,
+                    ode_atol=cfg.ode_atol,
+                )
+                final_checkpoint_payload = {
+                    "epoch": final_val_epoch,
+                    "state_dict": copy.deepcopy(model.state_dict()),
+                    "mech_state_dict": copy.deepcopy(mech_module.state_dict()),
+                    "config": asdict(cfg),
+                    "rng_state": capture_rng_state(),
+                    "state_mean": prepared.state_mean,
+                    "state_scale": prepared.state_scale,
+                    "known_pars": prepared.known_pars,
+                    "eta_star_true": prepared.eta_star_true,
+                    "mech_true": prepared.mech_true,
+                    "warmstart_source": None if warmstart_meta is None else str(warmstart_meta.get("source", "")),
+                    "warmstart": warmstart_meta,
+                    "stage1_warmstart": stage1_warmstart_meta,
+                    "prestage2_warmstart": prestage2_warmstart_meta,
+                    "sanity": sanity_payload,
+                    "resume_identity": _resume_identity(
+                        shard_index=shard_index,
+                        window_index=window_index,
+                        split=split,
+                        warmstart_meta=warmstart_meta,
+                    ),
+                    "window_meta": _window_meta_dict(split, cfg.window_mode),
+                    "history": history,
+                    "final_snapshot": final_checkpoint_snapshot,
+                    "final_val_loss": float(final_val_loss),
+                    "final_val_epoch": int(final_val_epoch),
+                    "validation_eval_mode": str(cfg.val_eval_mode),
+                }
+                _save_torch(checkpoint_path, final_checkpoint_payload)
+                _save_pickle(checkpoint_viz_path, _make_viz_payload(final_checkpoint_payload))
+            elif (not final_only_validation) and float(val_total.detach()) < best_val:
                 best_val = float(val_total.detach())
                 best_epoch = epoch + 1
                 best_snapshot = _snapshot_split(
@@ -1105,6 +2332,7 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     mech_module=mech_module,
                     mech_true=mech_true_t,
                     split=split,
+                    window_mode=cfg.window_mode,
                     tensors=tensors,
                     dtype=dtype,
                     device=cfg.device,
@@ -1117,44 +2345,71 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     "state_dict": copy.deepcopy(model.state_dict()),
                     "mech_state_dict": copy.deepcopy(mech_module.state_dict()),
                     "config": asdict(cfg),
+                    "rng_state": capture_rng_state(),
                     "state_mean": prepared.state_mean,
                     "state_scale": prepared.state_scale,
                     "known_pars": prepared.known_pars,
                     "eta_star_true": prepared.eta_star_true,
                     "mech_true": prepared.mech_true,
-                    "stage1_warmstart": None if stage1_warmstart is None else {
-                        "path": str(stage1_warmstart.path),
-                        "rank": int(stage1_warmstart.rank),
-                        "trial_id": int(stage1_warmstart.trial_id),
-                        "loss": float(stage1_warmstart.ranking_loss),
-                        "seed": int(stage1_warmstart.init_seed),
-                        "ks0": float(stage1_warmstart.ks0),
-                        "cs0": float(stage1_warmstart.cs0),
-                    },
+                    "warmstart_source": None if warmstart_meta is None else str(warmstart_meta.get("source", "")),
+                    "warmstart": warmstart_meta,
+                    "stage1_warmstart": stage1_warmstart_meta,
+                    "prestage2_warmstart": prestage2_warmstart_meta,
                     "sanity": sanity_payload,
-                    "window_meta": {
-                        "role": split.role,
-                        "label": split.label,
-                        "title": _window_title(split.role),
-                        "start_idx": split.start_idx,
-                        "stop_idx": split.stop_idx,
-                        "t_start": split.t_start,
-                        "t_stop": split.t_stop,
-                    },
+                    "resume_identity": _resume_identity(
+                        shard_index=shard_index,
+                        window_index=window_index,
+                        split=split,
+                        warmstart_meta=warmstart_meta,
+                    ),
+                    "window_meta": _window_meta_dict(split, cfg.window_mode),
                     "history": history,
                     "best_snapshot": best_snapshot,
                 }
                 _save_torch(checkpoint_path, best_payload)
                 _save_pickle(checkpoint_viz_path, _make_viz_payload(best_payload))
 
-            if ((epoch + 1) % cfg.log_every) == 0 or epoch == 0 or epoch + 1 == cfg.epochs:
+            if ((epoch + 1) % cfg.log_every) == 0 or epoch == 0 or epoch + 1 == cfg.adam_epochs:
                 _log_line(log, f"KAN epoch {epoch + 1} train={float(train_total.detach()):.6e}")
-                _log_line(log, f"  grad_norm={grad_norm:.3e} lr={lr:.6g}")
+                _log_line(
+                    log,
+                    "  optimizer summary: "
+                    f"phase={row['phase']} controller={step_controller} "
+                    f"loss={train_loss_before:.6e}->{float(train_total.detach()):.6e} "
+                    f"accepted={'YES' if step_update_accepted else 'NO'} "
+                    f"retries={step_retry_count} alpha={step_alpha:.3e} "
+                    f"effective_lr={step_effective_lr:.3e} "
+                    f"reason={step_reject_reason or step_accept_reason}",
+                )
+                _log_line(
+                    log,
+                    f"  grad_norm={grad_norm:.3e} lr={step_effective_lr:.6g} next_lr={step_next_lr:.6g}",
+                )
                 _log_line(log, f"  grad_norm_raw={grad_norm_raw:.3e} grad_norm_scaled={grad_norm:.3e}")
+                _log_line(log, f"  grad_norm_nn={grad_norm_nn:.3e} grad_norm_mech={grad_norm_mech:.3e}")
+                _log_line(
+                    log,
+                    "  soft_mask: "
+                    f"enabled={'ON' if row['soft_mask_enabled'] else 'OFF'} "
+                    f"trainable={'ON' if row['soft_mask_trainable'] else 'OFF'} "
+                    f"s0={row['soft_mask_s0']:.6e} "
+                    f"s0/a0={row['soft_mask_s0_a0']:.6g} "
+                    f"alpha={row['soft_mask_alpha']:.6e} "
+                    f"alpha*a0={row['soft_mask_alpha_a0']:.6g} "
+                    f"m_min={row['soft_mask_m_min']:.1f}",
+                )
                 if recovered:
-                    _log_line(log, f"  retry: recovered_after={epoch_attempt - 1} rollback(s)")
+                    _log_line(log, f"  retry: recovered_after={epoch_attempt - 1} retry/reduction(s)")
                 if step_retry_count > 0 and step_accept_reason == "accepted":
                     _log_line(log, f"  step-guard: accepted_after={step_retry_count} retry/reduction(s)")
+                if adam_state_reset_attempted:
+                    _log_line(
+                        log,
+                        "  adam state reset: "
+                        f"trigger_retries={adam_state_reset_trigger_retries} "
+                        f"accepted={'YES' if adam_state_reset_accepted else 'NO'} "
+                        f"post_reset_retries={adam_state_reset_retries}",
+                    )
                 epoch_sec = float(row["epoch_sec"])
                 grid_sec = float(row["grid_update_sec"])
                 grid_pct = 100.0 * grid_sec / epoch_sec if np.isfinite(epoch_sec) and epoch_sec > 0.0 else float("nan")
@@ -1164,22 +2419,7 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     f"({grid_pct:.1f}%) runs={grid_update_runs_epoch}",
                 )
                 if grid_update_runs_epoch > 0:
-                    _log_line(
-                        log,
-                        "  w_pred: "
-                        f"samples={int(row['grid_total_samples'])} "
-                        f"mean={row['wpred_mean']:.3f} q50={row['wpred_q50']:.3f} "
-                        f"q90={row['wpred_q90']:.3f} q99={row['wpred_q99']:.3f} "
-                        f"max={row['wpred_max']:.3f}",
-                    )
-                    _log_line(
-                        log,
-                        "  w_pred focus: "
-                        f"s<=a0={100.0 * row['wpred_frac_s_le_a0']:.1f}% "
-                        f"s<=1.5a0={100.0 * row['wpred_frac_s_le_1p5a0']:.1f}% "
-                        f"w>=0.5={100.0 * row['wpred_frac_ge_05']:.1f}% "
-                        f"w>=0.8={100.0 * row['wpred_frac_ge_08']:.1f}%",
-                    )
+                    _log_line(log, f"  AGU: samples={int(row['grid_total_samples'])} source=observed_x1x2_neutral_x3")
                 _log_line(
                     log,
                     "  parts: "
@@ -1191,57 +2431,29 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     f"ftsr={float(train_parts.fts_range):.3e}",
                 )
                 _log_line(log, f"  rec: x1={float(train_parts.x1_rec):.2f}% x3={float(train_parts.x3_rec):.2f}%")
-                _log_line(log, f"  nn: F_contact err={float(train_parts.fts_teacher_rec):.2f}%")
+                _log_line(log, f"  nn: F_contact err={float(train_parts.fts_rollout_rec):.2f}%")
                 _log_line(
                     log,
                     "  mech: "
                     f"ks={row['ks_hat']:.6e} ({row['ks_err_pct']:.2f}%) "
                     f"cs={row['cs_hat']:.6e} ({row['cs_err_pct']:.2f}%)",
                 )
-                _log_line(log, f"KAN val epoch {epoch + 1} val={float(val_total.detach()):.6e}")
-                _log_line(
-                    log,
-                    "  val parts: "
-                    f"state={float(val_parts.state):.3e} "
-                    f"x1_state={float(val_parts.x1_state):.3e} "
-                    f"x2_state={float(val_parts.x2_state):.3e} "
-                    f"x2dot={float(val_parts.x2dot):.3e} "
-                    f"x3r={float(val_parts.x3_range):.3e} "
-                    f"ftsr={float(val_parts.fts_range):.3e}",
-                )
-                _log_line(log, f"  val rec: x1={float(val_parts.x1_rec):.2f}% x3={float(val_parts.x3_rec):.2f}%")
-                _log_line(log, f"  val nn: F_contact err={float(val_parts.fts_teacher_rec):.2f}%")
+                if eval_val_this_epoch:
+                    _log_line(log, f"KAN final val epoch {epoch + 1} val={float(val_total.detach()):.6e}" if final_only_validation else f"KAN val epoch {epoch + 1} val={float(val_total.detach()):.6e}")
+                    _log_line(
+                        log,
+                        "  val parts: "
+                        f"state={float(val_parts.state):.3e} "
+                        f"x1_state={float(val_parts.x1_state):.3e} "
+                        f"x2_state={float(val_parts.x2_state):.3e} "
+                        f"x2dot={float(val_parts.x2dot):.3e} "
+                        f"x3r={float(val_parts.x3_range):.3e} "
+                        f"ftsr={float(val_parts.fts_range):.3e}",
+                    )
+                    _log_line(log, f"  val rec: x1={float(val_parts.x1_rec):.2f}% x3={float(val_parts.x3_rec):.2f}%")
+                    _log_line(log, f"  val nn: F_contact err={float(val_parts.fts_rollout_rec):.2f}%")
 
-            if ((epoch + 1) % cfg.checkpoint_every) == 0:
-                payload = {
-                    "epoch": int(epoch + 1),
-                    "history": history,
-                    "config": asdict(cfg),
-                    "state_dict": copy.deepcopy(model.state_dict()),
-                    "mech_state_dict": copy.deepcopy(mech_module.state_dict()),
-                    "state_mean": prepared.state_mean,
-                    "state_scale": prepared.state_scale,
-                    "known_pars": prepared.known_pars,
-                    "eta_star_true": prepared.eta_star_true,
-                    "mech_true": prepared.mech_true,
-                    "lr": float(lr),
-                    "grad_ema": float(grad_ema),
-                    "grad_target": float(grad_target),
-                    "recent_losses": list(recent_losses),
-                    "window_meta": {
-                        "role": split.role,
-                        "label": split.label,
-                        "title": _window_title(split.role),
-                        "start_idx": split.start_idx,
-                        "stop_idx": split.stop_idx,
-                        "t_start": split.t_start,
-                        "t_stop": split.t_stop,
-                    },
-                }
-                _save_torch(running_checkpoint_path, payload)
-                _log_line(log, f"checkpoint saved | epoch={epoch + 1} | path={running_checkpoint_path}")
-
-            if cfg.lr_adapt and np.isfinite(grad_norm) and grad_norm > 0.0:
+            if lr_adapt_active and np.isfinite(grad_norm) and grad_norm > 0.0:
                 if not np.isfinite(grad_ema):
                     grad_ema = grad_norm
                 else:
@@ -1249,7 +2461,11 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 if not np.isfinite(grad_target):
                     grad_target = grad_ema
                 ratio = grad_target / (grad_ema + cfg.lr_eps)
-                lr = max(cfg.lr_min, min(float(lr * (ratio ** cfg.lr_eta)), cfg.lr_max))
+                candidate_lr = max(cfg.lr_min, min(float(lr * (ratio ** cfg.lr_eta)), cfg.lr_max))
+                if cfg.lr_adapt_up_only:
+                    lr = max(lr, candidate_lr)
+                else:
+                    lr = candidate_lr
                 _set_optimizer_lr(optimizer, lr)
 
             if cfg.plateau_early_stop:
@@ -1257,8 +2473,87 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 if len(recent_losses) > int(cfg.plateau_window):
                     recent_losses.pop(0)
 
+            if ((epoch + 1) % cfg.checkpoint_every) == 0 or (epoch + 1) == int(cfg.epochs):
+                payload = {
+                    "epoch": int(epoch + 1),
+                    "history": history,
+                    "config": asdict(cfg),
+                    "state_dict": copy.deepcopy(model.state_dict()),
+                    "mech_state_dict": copy.deepcopy(mech_module.state_dict()),
+                    "optimizer_state_dict": copy.deepcopy(optimizer.state_dict()),
+                    "optimizer_phase": "adam",
+                    "rng_state": capture_rng_state(),
+                    "state_mean": prepared.state_mean,
+                    "state_scale": prepared.state_scale,
+                    "known_pars": prepared.known_pars,
+                    "eta_star_true": prepared.eta_star_true,
+                    "mech_true": prepared.mech_true,
+                    "warmstart_source": None if warmstart_meta is None else str(warmstart_meta.get("source", "")),
+                    "warmstart": warmstart_meta,
+                    "stage1_warmstart": stage1_warmstart_meta,
+                    "prestage2_warmstart": prestage2_warmstart_meta,
+                    "sanity": sanity_payload,
+                    "validation_eval_mode": str(cfg.val_eval_mode),
+                    "best_epoch": int(best_epoch),
+                    "best_val_loss": float(best_val),
+                    "final_val_epoch": int(final_val_epoch),
+                    "final_val_loss": float(final_val_loss),
+                    "lr": float(lr),
+                    "grad_ema": float(grad_ema),
+                    "grad_target": float(grad_target),
+                    "recent_losses": list(recent_losses),
+                    "resume_identity": _resume_identity(
+                        shard_index=shard_index,
+                        window_index=window_index,
+                        split=split,
+                        warmstart_meta=warmstart_meta,
+                    ),
+                    "window_meta": _window_meta_dict(split, cfg.window_mode),
+                }
+                _save_torch(running_checkpoint_path, payload)
+                _log_line(log, f"checkpoint saved | epoch={epoch + 1} | path={running_checkpoint_path}")
+
+            if not step_update_accepted:
+                if step_controller == "armijo_backtracking" and int(step_retry_count) >= int(cfg.backtrack_max):
+                    stop_reason = f"adam_retry_cap_hit:{step_reject_reason or step_accept_reason}"
+                    stop_kind = "adam_retry_cap_stop"
+                else:
+                    stop_reason = f"adam_step_rejected:{step_reject_reason or step_accept_reason}"
+                    stop_kind = "adam_reject_stop"
+                stop_epoch = int(epoch + 1)
+                _write_event(
+                    event_log,
+                    {
+                        "event": stop_kind,
+                        "epoch": int(stop_epoch),
+                        "loss_before": float(train_loss_before),
+                        "accepted_loss": float(train_total.detach()),
+                        "candidate_loss": float(step_candidate_loss),
+                        "backtracking_retries": int(step_retry_count),
+                        "retry_cap": int(cfg.backtrack_max if step_controller == "armijo_backtracking" else cfg.step_retry_max),
+                        "adam_state_reset_attempted": bool(adam_state_reset_attempted),
+                        "adam_state_reset_accepted": bool(adam_state_reset_accepted),
+                        "adam_state_reset_trigger_retries": int(adam_state_reset_trigger_retries),
+                        "adam_state_reset_retries": int(adam_state_reset_retries),
+                        "reject_reason": step_reject_reason or step_accept_reason,
+                    },
+                )
+                _log_line(
+                    log,
+                    "KAN Adam stop -- rejected update is terminal "
+                    f"| epoch={stop_epoch} "
+                    f"| reason={step_reject_reason or step_accept_reason} "
+                    f"| retries={step_retry_count} "
+                    f"| adam_state_reset_attempted={'YES' if adam_state_reset_attempted else 'NO'} "
+                    f"| adam_state_reset_accepted={'YES' if adam_state_reset_accepted else 'NO'} "
+                    f"| loss={train_loss_before:.6e}->{float(train_total.detach()):.6e}; "
+                    "no further epochs will be consumed",
+                )
+                break
+
             if float(train_total.detach()) < float(cfg.good_enough_loss):
                 _log_line(log, f"  early-stop: good_enough (loss < {cfg.good_enough_loss:.1e})")
+                good_enough_reached = True
                 break
             if (
                 cfg.plateau_early_stop
@@ -1271,20 +2566,670 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 )
                 break
             if cfg.recent_val_early_stop:
-                stats = _recent_val_plateau_stats(history, window=int(cfg.recent_val_window))
-                if stats is not None and stats["rel_gap_to_current"] < float(cfg.recent_val_rel_current_frac):
+                stats = _recent_val_plateau_stats(
+                    history,
+                    min_epochs=int(cfg.recent_val_window),
+                    compare_gap=int(cfg.recent_val_compare_gap),
+                )
+                if stats is not None and stats["rel_gap_to_prev"] < float(cfg.recent_val_rel_current_frac):
                     _log_line(
                         log,
                         "  early-stop: recent_val_plateau "
-                        f"(window={cfg.recent_val_window} | "
-                        f"(max_prev-current)/current={stats['rel_gap_to_current']:.6f} < "
+                        f"(min_epochs={cfg.recent_val_window}, gap={cfg.recent_val_compare_gap} | "
+                        f"|val_n+gap-val_n|/val_n={stats['rel_gap_to_prev']:.6f} < "
                         f"{cfg.recent_val_rel_current_frac:.6f}) "
-                        f"| current={stats['current']:.6e} max_prev={stats['max_prev']:.6e}",
+                        f"| val_n={stats['previous']:.6e} val_n+gap={stats['current']:.6e}",
                     )
                     break
 
+        if (
+            failure_reason == ""
+            and stop_reason == ""
+            and bool(cfg.lbfgs_enabled)
+            and int(cfg.lbfgs_steps) > 0
+            and not good_enough_reached
+        ):
+            planned_total_epochs = int(cfg.adam_epochs) + int(cfg.lbfgs_steps)
+            lbfgs_effective_steps = max(0, planned_total_epochs - len(history))
+            if lbfgs_effective_steps <= 0:
+                _log_line(
+                    log,
+                    "LBFGS phase skipped: "
+                    f"history already reached planned_total_epochs={planned_total_epochs}",
+                )
+                lbfgs_effective_steps = 0
+            lbfgs_optimizer, lbfgs_line_search = _make_lbfgs_optimizer(cfg, model, mech_module)
+            if resume_optimizer_phase == "lbfgs" and isinstance(deferred_optimizer_state_dict, dict):
+                lbfgs_optimizer.load_state_dict(deferred_optimizer_state_dict)
+                _log_line(log, "LBFGS phase resume: restored LBFGS optimizer state from checkpoint")
+            _log_line(
+                log,
+                "LBFGS phase start: "
+                f"after_adam_epochs={len(history)} "
+                f"planned_total_epochs={planned_total_epochs} "
+                f"lbfgs_epochs={lbfgs_effective_steps} lr={cfg.lbfgs_lr:.3e} "
+                f"line_search={lbfgs_line_search} "
+                f"max_iter={cfg.lbfgs_max_iter} max_eval={cfg.lbfgs_max_eval} "
+                f"tol_grad={cfg.lbfgs_tolerance_grad:.1e} "
+                f"tol_change={cfg.lbfgs_tolerance_change:.1e} "
+                f"ys_threshold={cfg.lbfgs_ys_threshold:.1e} "
+                "AGU=frozen",
+            )
+
+            lbfgs_outer_step = 1
+            lbfgs_zero_step_restart_used = False
+            while lbfgs_outer_step <= lbfgs_effective_steps:
+                lbfgs_wall_start = perf_counter()
+                outer_epoch = len(history) + 1
+                closure_calls = 0
+                closure_calls_total = 0
+                closure_last_loss = float("nan")
+                closure_last_grad_norm = float("nan")
+                closure_error = ""
+                lbfgs_attempt_index = 1
+                lbfgs_start_model_state = copy.deepcopy(model.state_dict())
+                lbfgs_start_mech_state = copy.deepcopy(mech_module.state_dict())
+                lbfgs_start_opt_state = copy.deepcopy(lbfgs_optimizer.state_dict())
+                lbfgs_start_params = _capture_params(("model", model), ("mech", mech_module))
+                lbfgs_param_delta_l2 = float("nan")
+                lbfgs_param_delta_max_abs = float("nan")
+                lbfgs_loss_drop = float("nan")
+
+                model.eval()
+                try:
+                    with torch.no_grad():
+                        loss_before_t, parts_before, traj_before = evaluate_split(
+                            force_module=model,
+                            known_pars=prepared.known_pars,
+                            mech_module=mech_module,
+                            ode_true=tensors["ode_full"],
+                            x2dot_true=tensors["x2dot_full"],
+                            contact_mask=tensors["contact_full"],
+                            times=tensors["times_full"],
+                            ode_method=cfg.ode_method,
+                            ode_rtol=cfg.ode_rtol,
+                            ode_atol=cfg.ode_atol,
+                            mech_true=mech_true_t,
+                            eta_star_true=prepared.eta_star_true,
+                            loss_indices=tensors["train_idx"],
+                        )
+                    lbfgs_loss_before = float(loss_before_t.detach())
+                except Exception as err:
+                    _log_line(log, f"LBFGS stop -- pre-step train eval failed at step {lbfgs_outer_step}: {err}")
+                    break
+
+                def closure() -> torch.Tensor:
+                    nonlocal closure_calls, closure_last_loss, closure_last_grad_norm, closure_error
+                    closure_calls += 1
+                    lbfgs_optimizer.zero_grad()
+                    try:
+                        closure_total, _, _ = evaluate_split(
+                            force_module=model,
+                            known_pars=prepared.known_pars,
+                            mech_module=mech_module,
+                            ode_true=tensors["ode_full"],
+                            x2dot_true=tensors["x2dot_full"],
+                            contact_mask=tensors["contact_full"],
+                            times=tensors["times_full"],
+                            ode_method=cfg.ode_method,
+                            ode_rtol=cfg.ode_rtol,
+                            ode_atol=cfg.ode_atol,
+                            mech_true=mech_true_t,
+                            eta_star_true=prepared.eta_star_true,
+                            loss_indices=tensors["train_idx"],
+                        )
+                        if not torch.isfinite(closure_total):
+                            closure_error = "lbfgs_closure_loss_nonfinite"
+                            _write_event(
+                                event_log,
+                                {
+                                    "event": "lbfgs_closure",
+                                    "epoch": int(outer_epoch),
+                                    "lbfgs_outer_step": int(lbfgs_outer_step),
+                                    "attempt": int(lbfgs_attempt_index),
+                                    "closure_call": int(closure_calls),
+                                    "loss": float(closure_total.detach()),
+                                    "grad_norm": float("nan"),
+                                    "accepted": False,
+                                    "reject_reason": closure_error,
+                                },
+                            )
+                            raise RuntimeError(closure_error)
+                        closure_total.backward()
+                        closure_last_loss = float(closure_total.detach())
+                        closure_last_grad_norm = _grad_norm(("model", model), ("mech", mech_module))
+                        _write_event(
+                            event_log,
+                            {
+                                "event": "lbfgs_closure",
+                                "epoch": int(outer_epoch),
+                                "lbfgs_outer_step": int(lbfgs_outer_step),
+                                "attempt": int(lbfgs_attempt_index),
+                                "closure_call": int(closure_calls),
+                                "loss": float(closure_last_loss),
+                                "grad_norm": float(closure_last_grad_norm),
+                                "line_search": lbfgs_line_search,
+                                "accepted": True,
+                                "reject_reason": "",
+                            },
+                        )
+                        return closure_total
+                    except Exception as err:
+                        if closure_error == "":
+                            closure_error = f"lbfgs_closure_exception:{err}"
+                        raise
+
+                model.train()
+                lbfgs_returned_loss = float("nan")
+                try:
+                    returned_loss = lbfgs_optimizer.step(closure)
+                    lbfgs_returned_loss = float(returned_loss.detach()) if isinstance(returned_loss, torch.Tensor) else float(returned_loss)
+                    closure_calls_total = int(closure_calls)
+                except Exception as err:
+                    lbfgs_stop_reason = closure_error or f"lbfgs_step_exception:{err}"
+                    model.load_state_dict(copy.deepcopy(lbfgs_start_model_state))
+                    mech_module.load_state_dict(copy.deepcopy(lbfgs_start_mech_state))
+                    lbfgs_optimizer.load_state_dict(copy.deepcopy(lbfgs_start_opt_state))
+                    _write_event(
+                        event_log,
+                        {
+                            "event": "lbfgs_step_exception",
+                            "epoch": int(outer_epoch),
+                            "lbfgs_outer_step": int(lbfgs_outer_step),
+                            "closure_calls": int(closure_calls),
+                            "loss_before": float(lbfgs_loss_before),
+                            "returned_loss": float(lbfgs_returned_loss),
+                            "reject_reason": lbfgs_stop_reason,
+                        },
+                    )
+                    _log_line(
+                        log,
+                        f"LBFGS stop -- step={lbfgs_outer_step} reason={lbfgs_stop_reason} "
+                        f"closure_calls={closure_calls}",
+                    )
+                    break
+
+                model.train()
+                lbfgs_reject_reason = ""
+                step_update_accepted = True
+                grad_norm_raw = float("nan")
+                grad_norm_nn = float("nan")
+                grad_norm_mech = float("nan")
+                try:
+                    lbfgs_optimizer.zero_grad()
+                    train_total, train_parts, accepted_train_traj = evaluate_split(
+                        force_module=model,
+                        known_pars=prepared.known_pars,
+                        mech_module=mech_module,
+                        ode_true=tensors["ode_full"],
+                        x2dot_true=tensors["x2dot_full"],
+                        contact_mask=tensors["contact_full"],
+                        times=tensors["times_full"],
+                        ode_method=cfg.ode_method,
+                        ode_rtol=cfg.ode_rtol,
+                        ode_atol=cfg.ode_atol,
+                        mech_true=mech_true_t,
+                        eta_star_true=prepared.eta_star_true,
+                        loss_indices=tensors["train_idx"],
+                    )
+                    train_loss_after = float(train_total.detach())
+                    lbfgs_loss_drop = float(lbfgs_loss_before - train_loss_after)
+                    lbfgs_param_delta_l2, lbfgs_param_delta_max_abs = _param_delta_stats(
+                        lbfgs_start_params,
+                        ("model", model),
+                        ("mech", mech_module),
+                    )
+                    if not torch.isfinite(train_total):
+                        lbfgs_reject_reason = "lbfgs_after_loss_nonfinite"
+                    else:
+                        train_total.backward()
+                        grad_norm_nn = _grad_norm(("model", model))
+                        grad_norm_mech = _grad_norm(("mech", mech_module))
+                        grad_norm_raw = _grad_norm(("model", model), ("mech", mech_module))
+                except Exception as err:
+                    train_loss_after = float("inf")
+                    train_parts = parts_before
+                    accepted_train_traj = traj_before
+                    lbfgs_loss_drop = float("-inf")
+                    lbfgs_reject_reason = f"lbfgs_after_eval_exception:{err}"
+
+                if lbfgs_reject_reason != "":
+                    model.load_state_dict(copy.deepcopy(lbfgs_start_model_state))
+                    mech_module.load_state_dict(copy.deepcopy(lbfgs_start_mech_state))
+                    lbfgs_optimizer.load_state_dict(copy.deepcopy(lbfgs_start_opt_state))
+                    _write_event(
+                        event_log,
+                        {
+                            "event": "lbfgs_safety_stop",
+                            "epoch": int(outer_epoch),
+                            "lbfgs_outer_step": int(lbfgs_outer_step),
+                            "closure_calls": int(closure_calls_total),
+                            "loss_before": float(lbfgs_loss_before),
+                            "loss_after": float(train_loss_after),
+                            "reject_reason": lbfgs_reject_reason,
+                            "action": "rollback_and_stop",
+                        },
+                    )
+                    stop_epoch = int(outer_epoch)
+                    stop_kind = "lbfgs_safety_stop"
+                    stop_reason = lbfgs_reject_reason
+                    _log_line(
+                        log,
+                        f"LBFGS stop -- safety reject at step={lbfgs_outer_step} epoch={outer_epoch} "
+                        f"reason={lbfgs_reject_reason}; rollback parameters and stop",
+                    )
+                    break
+
+                hard_zero_step = (
+                    math.isfinite(float(lbfgs_param_delta_max_abs))
+                    and float(lbfgs_param_delta_max_abs) <= float(cfg.lbfgs_tolerance_change)
+                )
+                if hard_zero_step:
+                    if not lbfgs_zero_step_restart_used:
+                        model.load_state_dict(copy.deepcopy(lbfgs_start_model_state))
+                        mech_module.load_state_dict(copy.deepcopy(lbfgs_start_mech_state))
+                        lbfgs_optimizer, lbfgs_line_search = _make_lbfgs_optimizer(cfg, model, mech_module)
+                        lbfgs_zero_step_restart_used = True
+                        _write_event(
+                            event_log,
+                            {
+                                "event": "lbfgs_hard_zero_step_restart",
+                                "epoch": int(outer_epoch),
+                                "lbfgs_outer_step": int(lbfgs_outer_step),
+                                "closure_calls": int(closure_calls_total),
+                                "loss_before": float(lbfgs_loss_before),
+                                "loss_after": float(train_loss_after),
+                                "loss_drop": float(lbfgs_loss_drop),
+                                "param_delta_l2": float(lbfgs_param_delta_l2),
+                                "param_delta_max_abs": float(lbfgs_param_delta_max_abs),
+                                "tolerance_change": float(cfg.lbfgs_tolerance_change),
+                                "action": "rollback_fresh_lbfgs_optimizer_and_retry_same_epoch",
+                            },
+                        )
+                        _log_line(
+                            log,
+                            "LBFGS hard zero-step detected -- "
+                            f"step={lbfgs_outer_step} epoch={outer_epoch} "
+                            f"param_delta_max_abs={lbfgs_param_delta_max_abs:.3e} "
+                            f"<= tol_change={cfg.lbfgs_tolerance_change:.1e}; "
+                            "rollback and fresh-restart LBFGS optimizer for same epoch",
+                        )
+                        continue
+
+                    model.load_state_dict(copy.deepcopy(lbfgs_start_model_state))
+                    mech_module.load_state_dict(copy.deepcopy(lbfgs_start_mech_state))
+                    stop_epoch = int(outer_epoch)
+                    stop_kind = "lbfgs_hard_zero_step_stop"
+                    stop_reason = "lbfgs_hard_zero_step_after_fresh_restart"
+                    _write_event(
+                        event_log,
+                        {
+                            "event": stop_kind,
+                            "epoch": int(outer_epoch),
+                            "lbfgs_outer_step": int(lbfgs_outer_step),
+                            "closure_calls": int(closure_calls_total),
+                            "loss_before": float(lbfgs_loss_before),
+                            "loss_after": float(train_loss_after),
+                            "loss_drop": float(lbfgs_loss_drop),
+                            "param_delta_l2": float(lbfgs_param_delta_l2),
+                            "param_delta_max_abs": float(lbfgs_param_delta_max_abs),
+                            "tolerance_change": float(cfg.lbfgs_tolerance_change),
+                            "reject_reason": stop_reason,
+                            "action": "rollback_and_stop",
+                        },
+                    )
+                    _log_line(
+                        log,
+                        "LBFGS stop -- hard zero-step persisted after fresh restart "
+                        f"| step={lbfgs_outer_step} epoch={outer_epoch} "
+                        f"| param_delta_max_abs={lbfgs_param_delta_max_abs:.3e} "
+                        f"<= tol_change={cfg.lbfgs_tolerance_change:.1e} "
+                        f"| reason={stop_reason}; rollback parameters and stop",
+                    )
+                    break
+
+                grad_norm = float(grad_norm_raw)
+                eval_val_this_epoch = _should_eval_validation(cfg, outer_epoch)
+                model.eval()
+                try:
+                    if not eval_val_this_epoch:
+                        val_total = _nan_loss_tensor(dtype=dtype, device=cfg.device)
+                        val_parts = _nan_loss_parts()
+                    else:
+                        with torch.no_grad():
+                            val_total, val_parts, _ = evaluate_split(
+                                force_module=model,
+                                known_pars=prepared.known_pars,
+                                mech_module=mech_module,
+                                ode_true=tensors["ode_full"],
+                                x2dot_true=tensors["x2dot_full"],
+                                contact_mask=tensors["contact_full"],
+                                times=tensors["times_full"],
+                                ode_method=cfg.ode_method,
+                                ode_rtol=cfg.ode_rtol,
+                                ode_atol=cfg.ode_atol,
+                                mech_true=mech_true_t,
+                                eta_star_true=prepared.eta_star_true,
+                                loss_indices=tensors["val_idx"],
+                            )
+                            if not torch.isfinite(val_total):
+                                _log_line(log, f"LBFGS stop -- val_loss_nonfinite at step {lbfgs_outer_step}")
+                                break
+                except Exception as err:
+                    _log_line(log, f"LBFGS stop -- val_exception at step {lbfgs_outer_step}: {err}")
+                    break
+
+                epoch_sec = float(perf_counter() - lbfgs_wall_start)
+                soft_mask_meta = model.soft_mask_summary()
+                row = {
+                    "epoch": float(outer_epoch),
+                    "train_loss": float(train_total.detach()),
+                    "val_loss": float(val_total.detach()),
+                    "validation_eval_mode": str(cfg.val_eval_mode),
+                    "validation_evaluated": bool(eval_val_this_epoch),
+                    "validation_is_final": bool(final_only_validation and eval_val_this_epoch),
+                    "epoch_sec": epoch_sec,
+                    "grid_update_sec": 0.0,
+                    "grid_update_runs": 0.0,
+                    "train_state": float(train_parts.state),
+                    "val_state": float(val_parts.state),
+                    "train_x1_state": float(train_parts.x1_state),
+                    "val_x1_state": float(val_parts.x1_state),
+                    "train_x2_state": float(train_parts.x2_state),
+                    "val_x2_state": float(val_parts.x2_state),
+                    "train_x2dot": float(train_parts.x2dot),
+                    "val_x2dot": float(val_parts.x2dot),
+                    "train_x3_range": float(train_parts.x3_range),
+                    "val_x3_range": float(val_parts.x3_range),
+                    "train_fts_range": float(train_parts.fts_range),
+                    "val_fts_range": float(val_parts.fts_range),
+                    "train_x1_rec": float(train_parts.x1_rec),
+                    "val_x1_rec": float(val_parts.x1_rec),
+                    "train_x3_rec": float(train_parts.x3_rec),
+                    "val_x3_rec": float(val_parts.x3_rec),
+                    "train_fts_rollout_rec": float(train_parts.fts_rollout_rec),
+                    "val_fts_rollout_rec": float(val_parts.fts_rollout_rec),
+                    "g_nn": float(model.gain().detach().cpu().item()),
+                    "soft_mask_enabled": bool(soft_mask_meta["enabled"]),
+                    "soft_mask_trainable": bool(soft_mask_meta["trainable"]),
+                    "soft_mask_s0": float(soft_mask_meta["s0"]),
+                    "soft_mask_s0_a0": float(soft_mask_meta["s0_a0"]),
+                    "soft_mask_alpha": float(soft_mask_meta["alpha"]),
+                    "soft_mask_alpha_a0": float(soft_mask_meta["alpha_a0"]),
+                    "soft_mask_m_min": 0.0,
+                    "grad_norm": float(grad_norm),
+                    "grad_norm_raw": float(grad_norm_raw),
+                    "grad_norm_nn": float(grad_norm_nn),
+                    "grad_norm_mech": float(grad_norm_mech),
+                    "lr": float(cfg.lbfgs_lr),
+                    "step_effective_lr": float(cfg.lbfgs_lr),
+                    "step_next_lr": float(cfg.lbfgs_lr),
+                    "phase": "lbfgs_strong_wolfe" if lbfgs_line_search == "strong_wolfe" else "lbfgs",
+                    "optimizer": "lbfgs",
+                    "step_controller": lbfgs_line_search,
+                    "loss_before": float(lbfgs_loss_before),
+                    "candidate_loss": float(train_loss_after),
+                    "accepted_loss": float(train_total.detach()),
+                    "base_lr": float(cfg.lbfgs_lr),
+                    "alpha": float("nan"),
+                    "effective_lr": float(cfg.lbfgs_lr),
+                    "grad_dot_p": float("nan"),
+                    "armijo_rhs": float("nan"),
+                    "backtracking_retries": 0.0,
+                    "step_update_accepted": bool(step_update_accepted),
+                    "accepted": bool(step_update_accepted),
+                    "reject_reason": lbfgs_reject_reason,
+                    "lbfgs_outer_step": float(lbfgs_outer_step),
+                    "lbfgs_closure_calls": float(closure_calls_total),
+                    "loss_before_lbfgs_step": float(lbfgs_loss_before),
+                    "loss_after_lbfgs_step": float(train_total.detach()),
+                    "lbfgs_returned_loss": float(lbfgs_returned_loss),
+                    "lbfgs_wall_time": float(epoch_sec),
+                    "lbfgs_line_search": lbfgs_line_search,
+                    "lbfgs_loss_drop": float(lbfgs_loss_drop),
+                    "lbfgs_param_delta_l2": float(lbfgs_param_delta_l2),
+                    "lbfgs_param_delta_max_abs": float(lbfgs_param_delta_max_abs),
+                    "epoch_retry_count": 0.0,
+                    "step_retry_count": 0.0,
+                    "grid_base_samples": float("nan"),
+                    "grid_extra_samples": 0.0,
+                    "grid_total_samples": float("nan"),
+                }
+                ks_hat, cs_hat = _current_mech_numpy(mech_module)
+                row["ks_hat"] = ks_hat
+                row["cs_hat"] = cs_hat
+                row["ks_err_pct"] = _mech_err_pct(ks_hat, float(prepared.mech_true[0]))
+                row["cs_err_pct"] = _mech_err_pct(cs_hat, float(prepared.mech_true[1]))
+                history.append(row)
+                train_loss_last = float(train_total.detach())
+
+                _write_event(
+                    event_log,
+                    {
+                        "event": "lbfgs_outer_step",
+                        "epoch": int(outer_epoch),
+                        "lbfgs_outer_step": int(lbfgs_outer_step),
+                        "closure_calls": int(closure_calls_total),
+                        "loss_before": float(lbfgs_loss_before),
+                        "loss_after": float(train_total.detach()),
+                        "returned_loss": float(lbfgs_returned_loss),
+                        "accepted": bool(step_update_accepted),
+                        "reject_reason": lbfgs_reject_reason,
+                        "loss_drop": float(lbfgs_loss_drop),
+                        "param_delta_l2": float(lbfgs_param_delta_l2),
+                        "param_delta_max_abs": float(lbfgs_param_delta_max_abs),
+                        "wall_time": float(epoch_sec),
+                        "line_search": lbfgs_line_search,
+                    },
+                )
+
+                if final_only_validation and eval_val_this_epoch:
+                    final_val_loss = float(val_total.detach())
+                    final_val_epoch = int(outer_epoch)
+                    final_checkpoint_snapshot = _snapshot_split(
+                        force_module=model,
+                        known_pars=prepared.known_pars,
+                        eta_star_true=prepared.eta_star_true,
+                        mech_module=mech_module,
+                        mech_true=mech_true_t,
+                        split=split,
+                        window_mode=cfg.window_mode,
+                        tensors=tensors,
+                        dtype=dtype,
+                        device=cfg.device,
+                        ode_method=cfg.ode_method,
+                        ode_rtol=cfg.ode_rtol,
+                        ode_atol=cfg.ode_atol,
+                    )
+                    final_checkpoint_payload = {
+                        "epoch": final_val_epoch,
+                        "state_dict": copy.deepcopy(model.state_dict()),
+                        "mech_state_dict": copy.deepcopy(mech_module.state_dict()),
+                        "config": asdict(cfg),
+                        "rng_state": capture_rng_state(),
+                        "state_mean": prepared.state_mean,
+                        "state_scale": prepared.state_scale,
+                        "known_pars": prepared.known_pars,
+                        "eta_star_true": prepared.eta_star_true,
+                        "mech_true": prepared.mech_true,
+                        "warmstart_source": None if warmstart_meta is None else str(warmstart_meta.get("source", "")),
+                        "warmstart": warmstart_meta,
+                        "stage1_warmstart": stage1_warmstart_meta,
+                        "prestage2_warmstart": prestage2_warmstart_meta,
+                        "sanity": sanity_payload,
+                        "resume_identity": _resume_identity(
+                            shard_index=shard_index,
+                            window_index=window_index,
+                            split=split,
+                            warmstart_meta=warmstart_meta,
+                        ),
+                        "window_meta": _window_meta_dict(split, cfg.window_mode),
+                        "history": history,
+                        "final_snapshot": final_checkpoint_snapshot,
+                        "final_val_loss": float(final_val_loss),
+                        "final_val_epoch": int(final_val_epoch),
+                        "validation_eval_mode": str(cfg.val_eval_mode),
+                    }
+                    _save_torch(checkpoint_path, final_checkpoint_payload)
+                    _save_pickle(checkpoint_viz_path, _make_viz_payload(final_checkpoint_payload))
+                elif (not final_only_validation) and float(val_total.detach()) < best_val:
+                    best_val = float(val_total.detach())
+                    best_epoch = int(outer_epoch)
+                    best_snapshot = _snapshot_split(
+                        force_module=model,
+                        known_pars=prepared.known_pars,
+                        eta_star_true=prepared.eta_star_true,
+                        mech_module=mech_module,
+                        mech_true=mech_true_t,
+                        split=split,
+                        window_mode=cfg.window_mode,
+                        tensors=tensors,
+                        dtype=dtype,
+                        device=cfg.device,
+                        ode_method=cfg.ode_method,
+                        ode_rtol=cfg.ode_rtol,
+                        ode_atol=cfg.ode_atol,
+                    )
+                    best_payload = {
+                        "epoch": best_epoch,
+                        "state_dict": copy.deepcopy(model.state_dict()),
+                        "mech_state_dict": copy.deepcopy(mech_module.state_dict()),
+                        "config": asdict(cfg),
+                        "rng_state": capture_rng_state(),
+                        "state_mean": prepared.state_mean,
+                        "state_scale": prepared.state_scale,
+                        "known_pars": prepared.known_pars,
+                        "eta_star_true": prepared.eta_star_true,
+                        "mech_true": prepared.mech_true,
+                        "warmstart_source": None if warmstart_meta is None else str(warmstart_meta.get("source", "")),
+                        "warmstart": warmstart_meta,
+                        "stage1_warmstart": stage1_warmstart_meta,
+                        "prestage2_warmstart": prestage2_warmstart_meta,
+                        "sanity": sanity_payload,
+                        "resume_identity": _resume_identity(
+                            shard_index=shard_index,
+                            window_index=window_index,
+                            split=split,
+                            warmstart_meta=warmstart_meta,
+                        ),
+                        "window_meta": _window_meta_dict(split, cfg.window_mode),
+                        "history": history,
+                        "best_snapshot": best_snapshot,
+                    }
+                    _save_torch(checkpoint_path, best_payload)
+                    _save_pickle(checkpoint_viz_path, _make_viz_payload(best_payload))
+
+                _log_line(log, f"KAN LBFGS step {lbfgs_outer_step} epoch {outer_epoch} train={float(train_total.detach()):.6e}")
+                _log_line(
+                    log,
+                    "  optimizer summary: "
+                    f"phase={row['phase']} line_search={lbfgs_line_search} "
+                    f"loss={lbfgs_loss_before:.6e}->{float(train_total.detach()):.6e} "
+                    f"accepted={'YES' if step_update_accepted else 'NO'} "
+                    f"closure_calls={closure_calls_total} "
+                    f"returned_loss={lbfgs_returned_loss:.6e} "
+                    f"reason={lbfgs_reject_reason or 'accepted'}",
+                )
+                _log_line(log, f"  grad_norm={grad_norm:.3e} lbfgs_lr={cfg.lbfgs_lr:.6g}")
+                _log_line(
+                    log,
+                    "  lbfgs progress: "
+                    f"loss_drop={lbfgs_loss_drop:.3e} "
+                    f"param_delta_l2={lbfgs_param_delta_l2:.3e} "
+                    f"param_delta_max_abs={lbfgs_param_delta_max_abs:.3e}",
+                )
+                _log_line(
+                    log,
+                    "  soft_mask: "
+                    f"enabled={'ON' if row['soft_mask_enabled'] else 'OFF'} "
+                    f"trainable={'ON' if row['soft_mask_trainable'] else 'OFF'} "
+                    f"s0={row['soft_mask_s0']:.6e} "
+                    f"s0/a0={row['soft_mask_s0_a0']:.6g} "
+                    f"alpha={row['soft_mask_alpha']:.6e} "
+                    f"alpha*a0={row['soft_mask_alpha_a0']:.6g} "
+                    f"m_min={row['soft_mask_m_min']:.1f}",
+                )
+                _log_line(log, f"  timing: lbfgs_outer_step={epoch_sec:.3f}s AGU=frozen closure_calls={closure_calls_total}")
+                _log_line(
+                    log,
+                    "  parts: "
+                    f"state={float(train_parts.state):.3e} "
+                    f"x1_state={float(train_parts.x1_state):.3e} "
+                    f"x2_state={float(train_parts.x2_state):.3e} "
+                    f"x2dot={float(train_parts.x2dot):.3e} "
+                    f"x3r={float(train_parts.x3_range):.3e} "
+                    f"ftsr={float(train_parts.fts_range):.3e}",
+                )
+                _log_line(log, f"  rec: x1={float(train_parts.x1_rec):.2f}% x3={float(train_parts.x3_rec):.2f}%")
+                _log_line(log, f"  nn: F_contact err={float(train_parts.fts_rollout_rec):.2f}%")
+                _log_line(
+                    log,
+                    "  mech: "
+                    f"ks={row['ks_hat']:.6e} ({_mech_err_pct(row['ks_hat'], prepared.mech_true[0]):.2f}%) "
+                    f"cs={row['cs_hat']:.6e} ({_mech_err_pct(row['cs_hat'], prepared.mech_true[1]):.2f}%)",
+                )
+                if eval_val_this_epoch:
+                    _log_line(log, f"KAN final val epoch {outer_epoch} val={float(val_total.detach()):.6e}" if final_only_validation else f"KAN val epoch {outer_epoch} val={float(val_total.detach()):.6e}")
+                    _log_line(
+                        log,
+                        "  val parts: "
+                        f"state={float(val_parts.state):.3e} "
+                        f"x1_state={float(val_parts.x1_state):.3e} "
+                        f"x2_state={float(val_parts.x2_state):.3e} "
+                        f"x2dot={float(val_parts.x2dot):.3e} "
+                        f"x3r={float(val_parts.x3_range):.3e} "
+                        f"ftsr={float(val_parts.fts_range):.3e}",
+                    )
+                    _log_line(log, f"  val rec: x1={float(val_parts.x1_rec):.2f}% x3={float(val_parts.x3_rec):.2f}%")
+                    _log_line(log, f"  val nn: F_contact err={float(val_parts.fts_rollout_rec):.2f}%")
+
+                if (int(outer_epoch) % cfg.checkpoint_every) == 0 or int(outer_epoch) == int(planned_total_epochs):
+                    payload = {
+                        "epoch": int(outer_epoch),
+                        "history": history,
+                        "config": asdict(cfg),
+                        "state_dict": copy.deepcopy(model.state_dict()),
+                        "mech_state_dict": copy.deepcopy(mech_module.state_dict()),
+                        "optimizer_state_dict": copy.deepcopy(lbfgs_optimizer.state_dict()),
+                        "optimizer_phase": "lbfgs",
+                        "rng_state": capture_rng_state(),
+                        "state_mean": prepared.state_mean,
+                        "state_scale": prepared.state_scale,
+                        "known_pars": prepared.known_pars,
+                        "eta_star_true": prepared.eta_star_true,
+                        "mech_true": prepared.mech_true,
+                        "warmstart_source": None if warmstart_meta is None else str(warmstart_meta.get("source", "")),
+                        "warmstart": warmstart_meta,
+                        "stage1_warmstart": stage1_warmstart_meta,
+                        "prestage2_warmstart": prestage2_warmstart_meta,
+                        "sanity": sanity_payload,
+                        "validation_eval_mode": str(cfg.val_eval_mode),
+                        "best_epoch": int(best_epoch),
+                        "best_val_loss": float(best_val),
+                        "final_val_epoch": int(final_val_epoch),
+                        "final_val_loss": float(final_val_loss),
+                        "lr": float(cfg.lbfgs_lr),
+                        "grad_ema": float(grad_ema),
+                        "grad_target": float(grad_target),
+                        "recent_losses": list(recent_losses),
+                        "resume_identity": _resume_identity(
+                            shard_index=shard_index,
+                            window_index=window_index,
+                            split=split,
+                            warmstart_meta=warmstart_meta,
+                        ),
+                        "window_meta": _window_meta_dict(split, cfg.window_mode),
+                    }
+                    _save_torch(running_checkpoint_path, payload)
+                    _log_line(log, f"checkpoint saved | epoch={outer_epoch} | path={running_checkpoint_path}")
+
+                lbfgs_zero_step_restart_used = False
+                lbfgs_outer_step += 1
+
         if failure_reason != "":
             _log_line(log, f"KAN shard failure -- epoch={failure_epoch} reason={failure_reason}")
+        if stop_reason != "":
+            _log_line(log, f"KAN shard stopped -- epoch={stop_epoch} kind={stop_kind} reason={stop_reason}")
 
         final_snapshot = _snapshot_split(
             force_module=model,
@@ -1293,6 +3238,7 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             mech_module=mech_module,
             mech_true=mech_true_t,
             split=split,
+            window_mode=cfg.window_mode,
             tensors=tensors,
             dtype=dtype,
             device=cfg.device,
@@ -1300,50 +3246,118 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             ode_rtol=cfg.ode_rtol,
             ode_atol=cfg.ode_atol,
         )
+        final_val_metrics = final_snapshot.get("val", {}).get("metrics", {})
+        if isinstance(final_val_metrics, dict):
+            final_val_loss = float(final_val_metrics.get("loss", final_val_loss))
+            final_val_epoch = int(history[-1].get("epoch", len(history))) if history else -1
+            if final_only_validation and history:
+                final_row = history[-1]
+                final_row["val_loss"] = float(final_val_loss)
+                final_row["validation_eval_mode"] = str(cfg.val_eval_mode)
+                final_row["validation_evaluated"] = True
+                final_row["validation_is_final"] = True
+                final_row["val_state"] = float(final_val_metrics.get("state", float("nan")))
+                final_row["val_x1_state"] = float(final_val_metrics.get("x1_state", float("nan")))
+                final_row["val_x2_state"] = float(final_val_metrics.get("x2_state", float("nan")))
+                final_row["val_x2dot"] = float(final_val_metrics.get("x2dot", float("nan")))
+                final_row["val_x3_range"] = float(final_val_metrics.get("x3_range", float("nan")))
+                final_row["val_fts_range"] = float(final_val_metrics.get("fts_range", float("nan")))
+                final_row["val_x1_rec"] = float(final_val_metrics.get("x1_rec", float("nan")))
+                final_row["val_x3_rec"] = float(final_val_metrics.get("x3_rec", float("nan")))
+                final_row["val_fts_rollout_rec"] = float(final_val_metrics.get("fts_rollout_rec", float("nan")))
+        if final_only_validation:
+            final_checkpoint_payload = {
+                "epoch": int(final_val_epoch),
+                "state_dict": copy.deepcopy(model.state_dict()),
+                "mech_state_dict": copy.deepcopy(mech_module.state_dict()),
+                "config": asdict(cfg),
+                "rng_state": capture_rng_state(),
+                "state_mean": prepared.state_mean,
+                "state_scale": prepared.state_scale,
+                "known_pars": prepared.known_pars,
+                "eta_star_true": prepared.eta_star_true,
+                "mech_true": prepared.mech_true,
+                "warmstart_source": None if warmstart_meta is None else str(warmstart_meta.get("source", "")),
+                "warmstart": warmstart_meta,
+                "stage1_warmstart": stage1_warmstart_meta,
+                "prestage2_warmstart": prestage2_warmstart_meta,
+                "sanity": sanity_payload,
+                "resume_identity": _resume_identity(
+                    shard_index=shard_index,
+                    window_index=window_index,
+                    split=split,
+                    warmstart_meta=warmstart_meta,
+                ),
+                "window_meta": _window_meta_dict(split, cfg.window_mode),
+                "history": history,
+                "final_snapshot": final_snapshot,
+                "final_val_loss": float(final_val_loss),
+                "final_val_epoch": int(final_val_epoch),
+                "validation_eval_mode": str(cfg.val_eval_mode),
+            }
+            _save_torch(checkpoint_path, final_checkpoint_payload)
+            _save_pickle(checkpoint_viz_path, _make_viz_payload(final_checkpoint_payload))
         final_payload = {
-            "best": best_payload,
             "history": history,
             "state_mean": prepared.state_mean,
             "state_scale": prepared.state_scale,
             "known_pars": prepared.known_pars,
             "eta_star_true": prepared.eta_star_true,
             "mech_true": prepared.mech_true,
-            "stage1_warmstart": None if stage1_warmstart is None else {
-                "path": str(stage1_warmstart.path),
-                "rank": int(stage1_warmstart.rank),
-                "trial_id": int(stage1_warmstart.trial_id),
-                "loss": float(stage1_warmstart.ranking_loss),
-                "seed": int(stage1_warmstart.init_seed),
-                "ks0": float(stage1_warmstart.ks0),
-                "cs0": float(stage1_warmstart.cs0),
-            },
+            "warmstart_source": None if warmstart_meta is None else str(warmstart_meta.get("source", "")),
+            "warmstart": warmstart_meta,
+            "stage1_warmstart": stage1_warmstart_meta,
+            "prestage2_warmstart": prestage2_warmstart_meta,
             "sanity": sanity_payload,
-            "window_meta": {
-                "role": split.role,
-                "label": split.label,
-                "title": _window_title(split.role),
-                "start_idx": split.start_idx,
-                "stop_idx": split.stop_idx,
-                "t_start": split.t_start,
-                "t_stop": split.t_stop,
-            },
+            "resume_identity": _resume_identity(
+                shard_index=shard_index,
+                window_index=window_index,
+                split=split,
+                warmstart_meta=warmstart_meta,
+            ),
+            "window_meta": _window_meta_dict(split, cfg.window_mode),
             "final_snapshot": final_snapshot,
             "config": asdict(cfg),
-            "best_epoch": best_epoch,
-            "best_val_loss": best_val,
+            "rng_state": capture_rng_state(),
+            "validation_eval_mode": str(cfg.val_eval_mode),
+            "final_val_epoch": int(final_val_epoch),
+            "final_val_loss": float(final_val_loss),
+            "final_state_dict": copy.deepcopy(model.state_dict()),
+            "final_mech_state_dict": copy.deepcopy(mech_module.state_dict()),
+            "optimizer_event_log_path": str(event_log_path),
+            "stop_kind": stop_kind,
+            "stop_epoch": int(stop_epoch),
+            "stop_reason": stop_reason,
+            "failure_reason": failure_reason,
+            "failure_epoch": int(failure_epoch),
         }
+        if not final_only_validation:
+            final_payload.update(
+                {
+                    "best": best_payload,
+                    "best_epoch": best_epoch,
+                    "best_val_loss": best_val,
+                }
+            )
         _save_torch(result_path, final_payload)
         _save_pickle(viz_result_path, _make_viz_payload(final_payload))
         with history_path.open("w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
 
-        _log_line(
-            log,
-            f"STAGE2LIGHT shard done -- train={history[-1]['train_loss']:.6e} val={history[-1]['val_loss']:.6e} "
-            f"| best_epoch={best_epoch} best_val={best_val:.6e}",
-        )
+        if final_only_validation:
+            _log_line(
+                log,
+                f"STAGE2LIGHT shard done -- train={history[-1]['train_loss']:.6e} final_val={final_val_loss:.6e} "
+                f"| final_val_epoch={final_val_epoch}",
+            )
+        else:
+            _log_line(
+                log,
+                f"STAGE2LIGHT shard done -- train={history[-1]['train_loss']:.6e} val={history[-1]['val_loss']:.6e} "
+                f"| best_epoch={best_epoch} best_val={best_val:.6e}",
+            )
 
-    return {
+    result_summary = {
         "shard_index": shard_index,
         "role": split.role,
         "label": split.label,
@@ -1351,9 +3365,18 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
         "history_path": str(history_path),
         "checkpoint_path": str(checkpoint_path),
         "result_path": str(result_path),
-        "best_epoch": best_epoch,
-        "best_val_loss": best_val,
+        "validation_eval_mode": str(cfg.val_eval_mode),
+        "final_val_epoch": int(final_val_epoch),
+        "final_val_loss": float(final_val_loss),
     }
+    if not final_only_validation:
+        result_summary.update(
+            {
+                "best_epoch": best_epoch,
+                "best_val_loss": best_val,
+            }
+        )
+    return result_summary
 
 
 def merge_stage2light_results(cfg=None) -> dict[str, Any]:

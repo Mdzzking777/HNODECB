@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from AFM04.KAN_full_test.data import WindowSplit, prepare_data
+from AFM04.KAN_full_test.data import WindowSplit, prepare_data, x3dot_init_from_split, x3dot_scale_from_split
 from AFM04.KAN_full_test.kan_backend import KANForceModule
 from AFM04.KAN_full_test.losses import evaluate_split
 from AFM04.KAN_full_test.rollout import StateGuardTriggered
@@ -30,7 +30,11 @@ def _torch_dtype(name: str) -> torch.dtype:
 
 def _role_short(role: str) -> str:
     role_norm = role.strip().lower()
+    if role_norm == "modified_w0":
+        return "modified W0"
     if role_norm == "first_contact":
+        return "W0"
+    if role_norm == "middle":
         return "W1"
     if role_norm == "max_x1_pp_change":
         return "W2"
@@ -41,13 +45,21 @@ def _role_short(role: str) -> str:
 
 def _window_title(role: str) -> str:
     role_norm = role.strip().lower()
+    if role_norm == "modified_w0":
+        return "modified W0"
     if role_norm == "first_contact":
-        return "window1: right after first contact"
+        return "W0: first-contact window"
+    if role_norm == "middle":
+        return "W1: middle window"
     if role_norm == "max_x1_pp_change":
         return "window2: the most drastic region"
     if role_norm == "tail_stable":
         return "window3: stable region at the end"
     return role
+
+
+def _window_file_tag(role: str) -> str:
+    return _role_short(role).strip().lower().replace(" ", "_")
 
 
 def _timestamp_human() -> str:
@@ -62,15 +74,66 @@ def _log_line(log, message: str) -> None:
 
 def _window_to_torch(split: WindowSplit, *, dtype: torch.dtype, device: str) -> dict[str, torch.Tensor]:
     return {
+        "ode_full": torch.as_tensor(split.ode_full, dtype=dtype, device=device),
         "ode_train": torch.as_tensor(split.ode_train, dtype=dtype, device=device),
         "ode_val": torch.as_tensor(split.ode_val, dtype=dtype, device=device),
+        "x2dot_full": torch.as_tensor(split.x2dot_full, dtype=dtype, device=device),
         "x2dot_train": torch.as_tensor(split.x2dot_train, dtype=dtype, device=device),
         "x2dot_val": torch.as_tensor(split.x2dot_val, dtype=dtype, device=device),
+        "contact_full": torch.as_tensor(split.contact_full.astype(float), dtype=dtype, device=device),
         "contact_train": torch.as_tensor(split.contact_train.astype(float), dtype=dtype, device=device),
         "contact_val": torch.as_tensor(split.contact_val.astype(float), dtype=dtype, device=device),
+        "times_full": torch.as_tensor(split.times_full, dtype=dtype, device=device),
         "times_train": torch.as_tensor(split.times_train, dtype=dtype, device=device),
         "times_val": torch.as_tensor(split.times_val, dtype=dtype, device=device),
+        "train_idx": torch.as_tensor(split.train_idx, dtype=torch.long, device=device),
+        "val_idx": torch.as_tensor(split.val_idx, dtype=torch.long, device=device),
     }
+
+
+def _rs_observable_grid_inputs(
+    *,
+    split: WindowSplit,
+    prepared,
+    cfg,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Build RS AGU samples in raw physical coordinates.
+
+    x1/x2 come from the observed training trajectory.  Hidden axes use fixed
+    neutral coordinates, not true/predicted x3 or true/predicted x3dot samples.
+    """
+    n = int(split.ode_train.shape[1])
+    input_dim = int(getattr(cfg, "width", (3, 7, 1))[0])
+    inputs = np.empty((n, input_dim), dtype=float)
+    inputs[:, 0:2] = np.asarray(split.ode_train[0:2, :], dtype=float).T
+
+    if input_dim >= 3:
+        x1_abs = float(np.max(np.abs(np.asarray(split.ode_train[0, :], dtype=float)))) if n > 0 else 0.0
+        x3_amp = max(0.1 * x1_abs, 1.0e-12)
+        if n <= 1:
+            inputs[:, 2] = 0.0
+        else:
+            frac = np.linspace(-1.0, 1.0, n, dtype=float)
+            inputs[:, 2] = x3_amp * frac
+
+    if input_dim >= 4:
+        x2_abs = float(np.max(np.abs(np.asarray(split.ode_train[1, :], dtype=float)))) if n > 0 else 0.0
+        q_amp = max(0.1 * x2_abs, 1.0e-12)
+        if n <= 1:
+            inputs[:, 3] = 0.0
+        else:
+            frac = np.mod((np.arange(n, dtype=float) + 0.5) * 0.6180339887498949, 1.0)
+            inputs[:, 3] = q_amp * (2.0 * frac - 1.0)
+
+    for axis in range(4, input_dim):
+        if n <= 1:
+            inputs[:, axis] = 0.0
+        else:
+            idx = np.arange(n, dtype=float)
+            frac = np.mod((idx + 0.5 + 0.137 * axis) * 0.6180339887498949, 1.0)
+            inputs[:, axis] = 2.0 * frac - 1.0
+    return torch.as_tensor(inputs, dtype=dtype, device=cfg.device)
 
 
 def _trial_seed(base_seed: int, trial_index: int) -> int:
@@ -183,6 +246,79 @@ def _min_finite_or_nan(values: list[float]) -> float:
     return float(min(finite)) if finite else float("nan")
 
 
+def _format_trial_failure(exc: Exception) -> str:
+    raw = f"{type(exc).__name__}: {exc}"
+    if "max_num_steps exceeded" in raw:
+        return f"ODE step-budget guard: {raw}"
+    return raw
+
+
+def _maxabs_scale_torch(values: torch.Tensor, mean: torch.Tensor, *, floor: float = 1.0e-12) -> float:
+    if values.numel() <= 0:
+        return float(floor)
+    scale = float(torch.max(torch.abs(values - mean)).detach().cpu())
+    if not np.isfinite(scale) or scale <= 0.0:
+        scale = float(floor)
+    return max(scale, float(floor))
+
+
+def _rs_rollout_hidden_normalizer_stats(
+    *,
+    traj: torch.Tensor | None,
+    train_idx: torch.Tensor,
+) -> dict[str, Any]:
+    """Summarize hidden input axes from the RS train rollout.
+
+    These are predicted-rollout statistics, not true hidden-state statistics.
+    They let later refit-rerank reuse the RS rollout information without
+    replaying the first rollout just to recover x3/q coordinates.
+    """
+
+    out: dict[str, Any] = {
+        "rs_rollout_stats_available": False,
+        "rs_rollout_stats_source": "unavailable",
+        "rs_rollout_stats_points": 0,
+        "rs_rollout_x3_mean": float("nan"),
+        "rs_rollout_x3_scale": float("nan"),
+        "rs_rollout_q_mean": float("nan"),
+        "rs_rollout_q_scale": float("nan"),
+        "rs_rollout_q_available": False,
+        "rs_rollout_accepted_history_count": 0,
+    }
+    if traj is None:
+        return out
+    idx = train_idx.to(device=traj.device, dtype=torch.long).reshape(-1)
+    if int(idx.numel()) <= 0:
+        return out
+    with torch.no_grad():
+        x3_train = traj[2, idx]
+        x3_mean_t = torch.mean(x3_train)
+        out.update(
+            {
+                "rs_rollout_stats_available": True,
+                "rs_rollout_stats_source": "rs_train_rollout_predicted",
+                "rs_rollout_stats_points": int(idx.numel()),
+                "rs_rollout_x3_mean": float(x3_mean_t.detach().cpu()),
+                "rs_rollout_x3_scale": _maxabs_scale_torch(x3_train, x3_mean_t),
+            }
+        )
+        q_pre = getattr(traj, "_plan_z_q_pre", None)
+        if q_pre is not None:
+            q_train = q_pre[idx]
+            q_mean_t = torch.mean(q_train)
+            out.update(
+                {
+                    "rs_rollout_q_available": True,
+                    "rs_rollout_q_mean": float(q_mean_t.detach().cpu()),
+                    "rs_rollout_q_scale": _maxabs_scale_torch(q_train, q_mean_t),
+                    "rs_rollout_accepted_history_count": int(
+                        getattr(traj, "_plan_z_accepted_history_count", 0)
+                    ),
+                }
+            )
+    return out
+
+
 def _row_ranking_loss(row: dict[str, Any]) -> float:
     return float(row.get("ranking_loss", row.get("val_loss", row.get("train_loss", float("inf")))))
 
@@ -246,14 +382,42 @@ def _rebuild_trial_state_dict(
         wpred_enabled=cfg.wpred_enabled,
         wpred_eps=cfg.wpred_eps,
         gnn_learnable=cfg.gnn_learnable,
+        soft_mask_enabled=cfg.soft_mask_enabled,
+        soft_mask_trainable=cfg.soft_mask_trainable,
+        soft_mask_s0_a0=cfg.soft_mask_s0_a0,
+        soft_mask_s0_min_a0=cfg.soft_mask_s0_min_a0,
+        soft_mask_s0_max_a0=cfg.soft_mask_s0_max_a0,
+        soft_mask_alpha_a0=cfg.soft_mask_alpha_a0,
+        soft_mask_alpha_min_a0=cfg.soft_mask_alpha_min_a0,
+        soft_mask_alpha_max_a0=cfg.soft_mask_alpha_max_a0,
+        x3dot_input_enabled=cfg.x3dot_input_enabled,
+        x3dot_init_trainable=False,
+        x3dot_init_value=(
+            x3dot_init_from_split(
+                split,
+                policy=cfg.x3dot_init_policy,
+                fallback=cfg.x3dot_init_value,
+            )
+            if cfg.x3dot_input_enabled
+            else cfg.x3dot_init_value
+        ),
+        x3dot_scale=x3dot_scale_from_split(
+            split,
+            configured_scale=cfg.x3dot_scale,
+            scale_mode=cfg.x3dot_scale_mode,
+            a0=float(prepared.known_pars[9]),
+            window_span=float(split.t_stop - split.t_start),
+        ),
+        x3dot_lag_detach=cfg.x3dot_lag_detach,
         device=cfg.device,
         dtype=dtype,
     ).to(cfg.device)
     train_states = torch.as_tensor(split.ode_train.T, dtype=dtype, device=cfg.device)
+    grid_inputs = _rs_observable_grid_inputs(split=split, prepared=prepared, cfg=cfg, dtype=dtype)
     train_fts = torch.as_tensor(split.fts_train_true, dtype=dtype, device=cfg.device)
     with torch.no_grad():
         if cfg.adaptive_grid_enabled:
-            model.update_grid_from_states(train_states)
+            model.update_grid_from_inputs(grid_inputs)
         model.initialize_gain_from_truth(train_states, train_fts)
     return {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
 
@@ -289,9 +453,10 @@ def run_random_search_shard(
         split = prepared.splits[window_index - 1]
         tensors = _window_to_torch(split, dtype=dtype, device=cfg.device)
         train_states = torch.as_tensor(split.ode_train.T, dtype=dtype, device=cfg.device)
+        grid_inputs = _rs_observable_grid_inputs(split=split, prepared=prepared, cfg=cfg, dtype=dtype)
         train_fts = torch.as_tensor(split.fts_train_true, dtype=dtype, device=cfg.device)
-        train_max_abs_x1 = float(torch.max(torch.abs(tensors["ode_train"][0, :])).detach().cpu())
-        train_max_abs_x2 = float(torch.max(torch.abs(tensors["ode_train"][1, :])).detach().cpu())
+        train_max_abs_x1 = float(torch.max(torch.abs(tensors["ode_full"][0, :])).detach().cpu())
+        train_max_abs_x2 = float(torch.max(torch.abs(tensors["ode_full"][1, :])).detach().cpu())
         x1_abs_guard = (
             float(cfg.random_search_x1_guard_mult) * train_max_abs_x1
             if cfg.random_search_fail_fast_enabled and np.isfinite(train_max_abs_x1) and train_max_abs_x1 > 0.0
@@ -304,8 +469,11 @@ def run_random_search_shard(
         )
         window_ctxs[window_index] = {
             "split": split,
+            "tag": _window_file_tag(split.role),
+            "label": _role_short(split.role),
             "tensors": tensors,
             "train_states": train_states,
+            "grid_inputs": grid_inputs,
             "train_fts": train_fts,
             "x1_abs_guard": x1_abs_guard,
             "x2_abs_guard": x2_abs_guard,
@@ -342,6 +510,16 @@ def run_random_search_shard(
             f"k={cfg.spline_k} base={cfg.base_fun} noise_scale={cfg.noise_scale} "
             f"adaptive_grid={'ON' if cfg.adaptive_grid_enabled else 'OFF'} "
             f"w_pred={'ON' if cfg.wpred_enabled else 'OFF'} eps={cfg.wpred_eps:.2e} "
+            f"soft_mask={'ON' if cfg.soft_mask_enabled else 'OFF'} "
+            f"soft_mask_trainable={'ON' if cfg.soft_mask_trainable else 'OFF'} "
+            f"s0={cfg.soft_mask_s0_a0:.3g}a0 alpha={cfg.soft_mask_alpha_a0:.3g}/a0 m_min=0 "
+            f"x3dot_input={'ON' if cfg.x3dot_input_enabled else 'OFF'} "
+            f"x3dot_mode={cfg.x3dot_input_mode} "
+            f"q_init_policy={cfg.x3dot_init_policy} "
+            f"q_init_trainable=OFF "
+            "q_coordinate=raw_physical "
+            f"q_lag_detach={'ON' if cfg.x3dot_lag_detach else 'OFF'} "
+            f"ode_step_budget_guard={cfg.random_search_ode_step_budget if cfg.random_search_ode_step_budget > 0 else 'OFF'} "
             f"val_eval={'ON' if cfg.random_search_use_val else 'OFF'} "
             f"ranking={ranking_metric} metrics={metric_split} "
             f"seed_mode={'true-random' if cfg.random_search_true_random else 'deterministic-bank'}",
@@ -351,9 +529,10 @@ def run_random_search_shard(
             split = ctx["split"]
             _log_line(
                 log,
-                f"W{window_index} meta: "
+                f"{ctx['label']} meta: "
                 f"label={split.label} | role={split.role} | "
                 f"t_us=[{split.t_start * 1.0e6:.9f}, {split.t_stop * 1.0e6:.9f}] | "
+                f"q_init={x3dot_init_from_split(split, policy=cfg.x3dot_init_policy, fallback=cfg.x3dot_init_value):.6e} | "
                 f"x1_guard={_fmt_optional_loss(ctx['x1_abs_guard'] if ctx['x1_abs_guard'] is not None else float('nan'))} "
                 f"x2_guard={_fmt_optional_loss(ctx['x2_abs_guard'] if ctx['x2_abs_guard'] is not None else float('nan'))}"
             )
@@ -366,8 +545,11 @@ def run_random_search_shard(
             window_index = int(selected_window_indices[zero_based % selected_count])
             ctx = window_ctxs[window_index]
             split = ctx["split"]
+            window_tag = str(ctx["tag"])
+            window_label = str(ctx["label"])
             tensors = ctx["tensors"]
             train_states = ctx["train_states"]
+            grid_inputs = ctx["grid_inputs"]
             train_fts = ctx["train_fts"]
             x1_abs_guard = ctx["x1_abs_guard"]
             x2_abs_guard = ctx["x2_abs_guard"]
@@ -394,35 +576,65 @@ def run_random_search_shard(
                 wpred_enabled=cfg.wpred_enabled,
                 wpred_eps=cfg.wpred_eps,
                 gnn_learnable=cfg.gnn_learnable,
+                soft_mask_enabled=cfg.soft_mask_enabled,
+                soft_mask_trainable=cfg.soft_mask_trainable,
+                soft_mask_s0_a0=cfg.soft_mask_s0_a0,
+                soft_mask_s0_min_a0=cfg.soft_mask_s0_min_a0,
+                soft_mask_s0_max_a0=cfg.soft_mask_s0_max_a0,
+                soft_mask_alpha_a0=cfg.soft_mask_alpha_a0,
+                soft_mask_alpha_min_a0=cfg.soft_mask_alpha_min_a0,
+                soft_mask_alpha_max_a0=cfg.soft_mask_alpha_max_a0,
+                x3dot_input_enabled=cfg.x3dot_input_enabled,
+                x3dot_init_trainable=False,
+                x3dot_init_value=(
+                    x3dot_init_from_split(
+                        split,
+                        policy=cfg.x3dot_init_policy,
+                        fallback=cfg.x3dot_init_value,
+                    )
+                    if cfg.x3dot_input_enabled
+                    else cfg.x3dot_init_value
+                ),
+                x3dot_scale=x3dot_scale_from_split(
+                    split,
+                    configured_scale=cfg.x3dot_scale,
+                    scale_mode=cfg.x3dot_scale_mode,
+                    a0=float(prepared.known_pars[9]),
+                    window_span=float(split.t_stop - split.t_start),
+                ),
+                x3dot_lag_detach=cfg.x3dot_lag_detach,
                 device=cfg.device,
                 dtype=dtype,
             ).to(cfg.device)
             t1 = perf_counter()
             with torch.no_grad():
                 if cfg.adaptive_grid_enabled:
-                    model.update_grid_from_states(train_states)
+                    model.update_grid_from_inputs(grid_inputs)
                 t2 = perf_counter()
                 init_gnn = model.initialize_gain_from_truth(train_states, train_fts)
                 t3 = perf_counter()
             t4 = t3
             t5 = t3
             failure_reason: str | None = None
+            train_traj = None
             try:
                 with torch.no_grad():
-                    train_total, train_parts, _ = evaluate_split(
+                    train_total, train_parts, train_traj = evaluate_split(
                         force_module=model,
                         known_pars=prepared.known_pars,
                         mech_true=mech_true_t,
-                        ode_true=tensors["ode_train"],
-                        x2dot_true=tensors["x2dot_train"],
-                        contact_mask=tensors["contact_train"],
-                        times=tensors["times_train"],
+                        ode_true=tensors["ode_full"],
+                        x2dot_true=tensors["x2dot_full"],
+                        contact_mask=tensors["contact_full"],
+                        times=tensors["times_full"],
                         ode_method=cfg.ode_method,
                         ode_rtol=cfg.ode_rtol,
                         ode_atol=cfg.ode_atol,
                         eta_star_true=prepared.eta_star_true,
                         x1_abs_guard=x1_abs_guard,
                         x2_abs_guard=x2_abs_guard,
+                        ode_step_budget=cfg.random_search_ode_step_budget,
+                        loss_indices=tensors["train_idx"],
                     )
                     t4 = perf_counter()
                     if cfg.random_search_use_val:
@@ -430,16 +642,18 @@ def run_random_search_shard(
                             force_module=model,
                             known_pars=prepared.known_pars,
                             mech_true=mech_true_t,
-                            ode_true=tensors["ode_val"],
-                            x2dot_true=tensors["x2dot_val"],
-                            contact_mask=tensors["contact_val"],
-                            times=tensors["times_val"],
+                            ode_true=tensors["ode_full"],
+                            x2dot_true=tensors["x2dot_full"],
+                            contact_mask=tensors["contact_full"],
+                            times=tensors["times_full"],
                             ode_method=cfg.ode_method,
                             ode_rtol=cfg.ode_rtol,
                             ode_atol=cfg.ode_atol,
                             eta_star_true=prepared.eta_star_true,
                             x1_abs_guard=x1_abs_guard,
                             x2_abs_guard=x2_abs_guard,
+                            ode_step_budget=cfg.random_search_ode_step_budget,
+                            loss_indices=tensors["val_idx"],
                         )
                     else:
                         val_total = None
@@ -464,7 +678,7 @@ def run_random_search_shard(
                     t5 = t_fail
                 else:
                     t5 = t_fail
-                failure_reason = f"{type(exc).__name__}: {exc}"
+                failure_reason = _format_trial_failure(exc)
                 train_total = None
                 train_parts = None
                 val_total = None
@@ -485,8 +699,12 @@ def run_random_search_shard(
             x3_rec = float(val_parts.x3_rec) if cfg.random_search_use_val and val_parts is not None else (
                 float(train_parts.x3_rec) if train_parts is not None else float("nan")
             )
-            nn_err = float(val_parts.fts_teacher_rec) if cfg.random_search_use_val and val_parts is not None else (
-                float(train_parts.fts_teacher_rec) if train_parts is not None else float("nan")
+            nn_err = float(val_parts.fts_rollout_rec) if cfg.random_search_use_val and val_parts is not None else (
+                float(train_parts.fts_rollout_rec) if train_parts is not None else float("nan")
+            )
+            rollout_hidden_stats = _rs_rollout_hidden_normalizer_stats(
+                traj=train_traj if train_parts is not None else None,
+                train_idx=tensors["train_idx"],
             )
 
             row = {
@@ -505,12 +723,18 @@ def run_random_search_shard(
                 "nn_err": nn_err,
                 "train_x1_rec": float(train_parts.x1_rec) if train_parts is not None else float("nan"),
                 "train_x3_rec": float(train_parts.x3_rec) if train_parts is not None else float("nan"),
-                "train_nn_err": float(train_parts.fts_teacher_rec) if train_parts is not None else float("nan"),
+                "train_nn_err": float(train_parts.fts_rollout_rec) if train_parts is not None else float("nan"),
                 "val_x1_rec": float(val_parts.x1_rec) if val_parts is not None else float("nan"),
                 "val_x3_rec": float(val_parts.x3_rec) if val_parts is not None else float("nan"),
-                "val_nn_err": float(val_parts.fts_teacher_rec) if val_parts is not None else float("nan"),
+                "val_nn_err": float(val_parts.fts_rollout_rec) if val_parts is not None else float("nan"),
                 "g_nn": float(model.gain().detach().cpu().item()),
                 "init_gnn": float(init_gnn),
+                "soft_mask_enabled": bool(model.soft_mask_enabled),
+                "soft_mask_trainable": bool(model.soft_mask_trainable),
+                "soft_mask_s0_a0": float(model.soft_mask_summary()["s0_a0"]),
+                "soft_mask_alpha_a0": float(model.soft_mask_summary()["alpha_a0"]),
+                "soft_mask_m_min": 0.0,
+                **rollout_hidden_stats,
                 "dt_total_sec": dt_total,
                 "dt_step1_model_init_sec": dt_init,
                 "dt_step2_grid_update_sec": dt_grid,
@@ -536,7 +760,7 @@ def run_random_search_shard(
                 best_row = dict(row)
                 best_row_by_window[window_index] = best_row
                 best_state_dict = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
-                best_path = cfg.random_search_checkpoint_dir / f"kan_full_test_random_search_best_w{window_index}_s{subshard_index}.pt"
+                best_path = cfg.random_search_checkpoint_dir / f"kan_full_test_random_search_best_{window_tag}_s{subshard_index}.pt"
                 best_payload = {
                     "best_trial": best_row,
                     "best_state_dict": best_state_dict,
@@ -559,7 +783,7 @@ def run_random_search_shard(
                 _save_torch(best_path, best_payload)
                 _log_line(
                     log,
-                    f"W{window_index} new best | trial={trial_index} seed={seed} rank({ranking_metric})={row['ranking_loss']:.6e} "
+                    f"{window_label} new best | trial={trial_index} seed={seed} rank({ranking_metric})={row['ranking_loss']:.6e} "
                     f"train={row['train_loss']:.6e} val={_fmt_optional_loss(row['val_loss'])} "
                     f"x1={_fmt_optional_pct(row['x1_rec'])} x3={_fmt_optional_pct(row['x3_rec'])} "
                     f"nn={_fmt_optional_pct(row['nn_err'])}",
@@ -569,7 +793,7 @@ def run_random_search_shard(
             if row["failed"]:
                 _log_line(
                     log,
-                    f"W{window_index} trial {trial_index}/{cfg.random_search_trials} | "
+                    f"{window_label} trial {trial_index}/{cfg.random_search_trials} | "
                     f"rank({ranking_metric})=inf train=inf val={_fmt_optional_loss(row['val_loss'])} "
                     f"status=FAIL reason={row['failure_reason']} "
                     f"best_rank={float(best_row['ranking_loss']) if best_row is not None else float('nan'):.6e} | "
@@ -583,7 +807,7 @@ def run_random_search_shard(
             else:
                 _log_line(
                     log,
-                    f"W{window_index} trial {trial_index}/{cfg.random_search_trials} | "
+                    f"{window_label} trial {trial_index}/{cfg.random_search_trials} | "
                     f"rank({ranking_metric})={row['ranking_loss']:.6e} "
                     f"train={row['train_loss']:.6e} val={_fmt_optional_loss(row['val_loss'])} "
                     f"x1={_fmt_optional_pct(row['x1_rec'])} x3={_fmt_optional_pct(row['x3_rec'])} "
@@ -600,7 +824,7 @@ def run_random_search_shard(
             if completed_trials_by_window[window_index] % cfg.random_search_checkpoint_every == 0:
                 ckpt_path = (
                     cfg.random_search_checkpoint_dir
-                    / f"kan_full_test_random_search_checkpoint_w{window_index}_s{subshard_index}.pt"
+                    / f"kan_full_test_random_search_checkpoint_{window_tag}_s{subshard_index}.pt"
                 )
                 with ckpt_path.with_suffix(".tmp").open("w", encoding="utf-8") as f:
                     json.dump(
@@ -617,23 +841,25 @@ def run_random_search_shard(
                         default=_json_default,
                     )
                 ckpt_path.with_suffix(".tmp").replace(ckpt_path)
-                _log_line(log, f"W{window_index} checkpoint saved | trial={trial_index} | path={ckpt_path}")
+                _log_line(log, f"{window_label} checkpoint saved | trial={trial_index} | path={ckpt_path}")
 
         worker_summary_windows: list[dict[str, Any]] = []
         for window_index in selected_window_indices:
             ctx = window_ctxs[window_index]
             split = ctx["split"]
+            window_tag = str(ctx["tag"])
+            window_label = str(ctx["label"])
             history_path = (
                 cfg.random_search_result_dir
-                / f"kan_full_test_random_search_trials_w{window_index}_s{subshard_index}.json"
+                / f"kan_full_test_random_search_trials_{window_tag}_s{subshard_index}.json"
             )
             summary_path = (
                 cfg.random_search_result_dir
-                / f"kan_full_test_random_search_summary_w{window_index}_s{subshard_index}.json"
+                / f"kan_full_test_random_search_summary_{window_tag}_s{subshard_index}.json"
             )
             best_path = (
                 cfg.random_search_checkpoint_dir
-                / f"kan_full_test_random_search_best_w{window_index}_s{subshard_index}.pt"
+                / f"kan_full_test_random_search_best_{window_tag}_s{subshard_index}.pt"
             )
             rows = sorted(trial_rows_by_window[window_index], key=lambda item: int(item["trial"]))
             with history_path.open("w", encoding="utf-8") as f:
@@ -664,7 +890,7 @@ def run_random_search_shard(
                 json.dump(summary, f, indent=2, ensure_ascii=False, default=_json_default)
             _log_line(
                 log,
-                f"W{window_index} random search done | completed_trials={completed_trials_by_window[window_index]} "
+                f"{window_label} random search done | completed_trials={completed_trials_by_window[window_index]} "
                 f"best_trial={int(best_row_by_window[window_index]['trial']) if best_row_by_window[window_index] else -1} "
                 f"best_rank({ranking_metric})="
                 f"{float(best_row_by_window[window_index]['ranking_loss']) if best_row_by_window[window_index] else float('nan'):.6e}",
@@ -696,9 +922,11 @@ def merge_random_search_results(cfg=None) -> dict[str, Any]:
     ranking_metric_global = ""
 
     for window_index in selected_window_indices:
-        canonical_history_path = cfg.random_search_result_dir / f"kan_full_test_random_search_trials_p{window_index}.json"
-        canonical_summary_path = cfg.random_search_result_dir / f"kan_full_test_random_search_summary_p{window_index}.json"
-        canonical_best_path = cfg.random_search_checkpoint_dir / f"kan_full_test_random_search_best_p{window_index}.pt"
+        split = prepared.splits[window_index - 1]
+        window_tag = _window_file_tag(split.role)
+        canonical_history_path = cfg.random_search_result_dir / f"kan_full_test_random_search_trials_{window_tag}.json"
+        canonical_summary_path = cfg.random_search_result_dir / f"kan_full_test_random_search_summary_{window_tag}.json"
+        canonical_best_path = cfg.random_search_checkpoint_dir / f"kan_full_test_random_search_best_{window_tag}.pt"
 
         partial_summaries: list[dict[str, Any]] = []
         merged_records: list[dict[str, Any]] = []
@@ -709,7 +937,7 @@ def merge_random_search_results(cfg=None) -> dict[str, Any]:
         for subshard_index in range(1, cfg.random_search_subshard_count + 1):
             partial_summary_path = (
                 cfg.random_search_result_dir
-                / f"kan_full_test_random_search_summary_w{window_index}_s{subshard_index}.json"
+                / f"kan_full_test_random_search_summary_{window_tag}_s{subshard_index}.json"
             )
             if not partial_summary_path.is_file():
                 raise FileNotFoundError(f"Missing random-search partial summary: {partial_summary_path}")
@@ -784,7 +1012,7 @@ def merge_random_search_results(cfg=None) -> dict[str, Any]:
             "mean_train_loss": float(selected_row.get("train_loss", float("inf"))),
         }
         common_trial_index = int(selected_row["trial"])
-        target_window_indices = list(range(1, len(prepared.splits) + 1))
+        target_window_indices = list(selected_window_indices)
         common_rows_by_window = {window_index: dict(selected_row) for window_index in target_window_indices}
         selection_mode = "source_window_best_ranking_loss"
     else:
@@ -833,7 +1061,8 @@ def merge_random_search_results(cfg=None) -> dict[str, Any]:
         else:
             split = prepared.splits[window_index - 1]
             source_window_info = per_window[source_window_index]
-            canonical_history_path = cfg.random_search_result_dir / f"kan_full_test_random_search_trials_p{window_index}.json"
+            window_tag = _window_file_tag(split.role)
+            canonical_history_path = cfg.random_search_result_dir / f"kan_full_test_random_search_trials_{window_tag}.json"
             with canonical_history_path.open("w", encoding="utf-8") as f:
                 json.dump(
                     source_window_info["merged_records"],
@@ -842,8 +1071,8 @@ def merge_random_search_results(cfg=None) -> dict[str, Any]:
                     ensure_ascii=False,
                     default=_json_default,
                 )
-            canonical_summary_path = cfg.random_search_result_dir / f"kan_full_test_random_search_summary_p{window_index}.json"
-            canonical_best_path = cfg.random_search_checkpoint_dir / f"kan_full_test_random_search_best_p{window_index}.pt"
+            canonical_summary_path = cfg.random_search_result_dir / f"kan_full_test_random_search_summary_{window_tag}.json"
+            canonical_best_path = cfg.random_search_checkpoint_dir / f"kan_full_test_random_search_best_{window_tag}.pt"
             window_info = {
                 "canonical_history_path": canonical_history_path,
                 "canonical_summary_path": canonical_summary_path,
@@ -920,8 +1149,8 @@ def merge_random_search_results(cfg=None) -> dict[str, Any]:
                 str(
                     cfg.random_search_result_dir
                     / (
-                        f"kan_full_test_random_search_summary_w"
-                        f"{source_window_index if source_window_index > 0 else window_index}"
+                        "kan_full_test_random_search_summary_"
+                        f"{_window_file_tag(prepared.splits[(source_window_index if source_window_index > 0 else window_index) - 1].role)}"
                         f"_s{subshard_index}.json"
                     )
                 )

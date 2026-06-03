@@ -27,6 +27,8 @@ _BEST_VIZ_RE = re.compile(r"stage2light_best_p(\d+)\.viz\.pkl$")
 def _role_sort_key(role: str) -> tuple[int, str]:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
+        return (0, role_norm)
+    if role_norm == "middle":
         return (1, role_norm)
     if role_norm == "max_x1_pp_change":
         return (2, role_norm)
@@ -80,11 +82,25 @@ def load_available_payloads() -> list[dict]:
     )
 
 
+def _select_snapshot(payload: dict) -> dict:
+    final_snapshot = payload.get("final_snapshot")
+    if isinstance(final_snapshot, dict):
+        snap = final_snapshot.get("full") or final_snapshot.get("val")
+        if isinstance(snap, dict):
+            return snap
+
+    best_snapshot = payload["best"]["best_snapshot"]
+    snap = best_snapshot.get("full") or best_snapshot.get("val")
+    if snap is None:
+        raise KeyError("Neither final nor best snapshot contains 'full'/'val' data")
+    return snap
+
+
 def main() -> None:
     payloads = load_available_payloads()
     fig, axes = plt.subplots(2, len(payloads), figsize=(6 * len(payloads), 9), sharex=False, squeeze=False)
     for col, payload in enumerate(payloads):
-        snap = payload["best"]["best_snapshot"]["full"]
+        snap = _select_snapshot(payload)
         times_us = 1.0e6 * np.asarray(snap["times"], dtype=float)
         ode_true = np.asarray(snap["ode_true"], dtype=float)
         traj_pred = np.asarray(snap["traj_pred"], dtype=float)

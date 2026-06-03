@@ -1,0 +1,2 @@
+"""KFT-local optimizer variants."""
+

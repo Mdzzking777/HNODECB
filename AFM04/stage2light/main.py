@@ -9,6 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from AFM04.stage2light.archive import archive_completed_stage2light_run
 from AFM04.stage2light.config import default_config
 from AFM04.stage2light.train import merge_stage2light_results, run_stage2light_shard
 
@@ -79,10 +80,12 @@ def run_driver(cfg, *, auto_generate_dataset: bool) -> dict[str, object]:
 
         merged = merge_stage2light_results(cfg)
         _log_line(log, f"driver merge complete | best_val={merged['best_val_loss']:.6e}")
+        archive_summary = archive_completed_stage2light_run(cfg, log=log)
         return {
             "driver_log": str(driver_log),
             "exit_codes": exit_codes,
             "merged_summary": merged,
+            "archive_summary": archive_summary,
         }
 
 

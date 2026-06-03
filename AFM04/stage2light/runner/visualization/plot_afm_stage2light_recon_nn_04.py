@@ -12,7 +12,7 @@ from AFM04.stage2light.runner.visualization._common import (
     REPO_ROOT,
     discover_log_paths,
     finalize_and_save,
-    load_result_payloads,
+    load_available_payloads,
     out_path,
     stage_title,
     window_title,
@@ -21,7 +21,7 @@ from AFM04.stage2light.runner.visualization._common import (
 
 ROLE_RE = re.compile(r"role=([^|]+)")
 LABEL_RE = re.compile(r"label=([^|]+)")
-EPOCH_RE = re.compile(r"KAN epoch (\d+) train=([0-9eE+\-.]+)")
+EPOCH_RE = re.compile(r"KAN (?:LBFGS step \d+ epoch|epoch) (\d+) train=([0-9eE+\-.]+)")
 VAL_EPOCH_RE = re.compile(r"KAN val epoch (\d+) val=([0-9eE+\-.]+|NaN|Inf|-Inf)")
 REC_RE = re.compile(r"rec:\s*x1=([0-9eE+\-.]+)%\s+x3=([0-9eE+\-.]+)%")
 VAL_REC_RE = re.compile(r"val rec:\s*x1=([0-9eE+\-.]+)%\s+x3=([0-9eE+\-.]+)%")
@@ -36,6 +36,8 @@ DEFAULT_OUT_FILE = "afm_param_stage2light_04_recon_nn_grid.png"
 def _role_sort_key(role: str) -> tuple[int, str]:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
+        return (0, role_norm)
+    if role_norm == "middle":
         return (1, role_norm)
     if role_norm == "max_x1_pp_change":
         return (2, role_norm)
@@ -53,7 +55,9 @@ def _series_key(role: str, label: str) -> str:
 def shard_title(role: str, label: str) -> str:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
-        return "W1: window1: right after first contact"
+        return "W0: first-contact window"
+    if role_norm == "middle":
+        return "W1: middle window"
     if role_norm == "max_x1_pp_change":
         return "W2: window2: the most drastic region"
     if role_norm == "tail_stable":
@@ -114,25 +118,21 @@ def parse_log_metrics(log_path: Path) -> dict:
         if match is not None and current_epoch is not None:
             train_nn[current_epoch] = float(match.group(1))
 
-    # Prefer validation metrics when they exist, otherwise fall back to train-side metrics.
-    epochs = sorted(set(val_x1) | set(val_x3) | set(val_nn))
-    use_train = not epochs
-    if use_train:
-        epochs = sorted(set(train_x1) | set(train_x3) | set(train_nn))
-
-    x1 = [(train_x1 if use_train else val_x1).get(epoch, float("nan")) for epoch in epochs]
-    x3 = [(train_x3 if use_train else val_x3).get(epoch, float("nan")) for epoch in epochs]
-    nn = [(train_nn if use_train else val_nn).get(epoch, float("nan")) for epoch in epochs]
+    train_epochs = sorted(set(train_x1) | set(train_x3) | set(train_nn))
+    val_epochs = sorted(set(val_x1) | set(val_x3) | set(val_nn))
     return {
         "source": "log",
         "role": role,
         "label": label,
-        "epochs": epochs,
-        "x1": x1,
-        "x3": x3,
-        "nn": nn,
+        "train_epochs": train_epochs,
+        "train_x1": [train_x1.get(epoch, float("nan")) for epoch in train_epochs],
+        "train_x3": [train_x3.get(epoch, float("nan")) for epoch in train_epochs],
+        "train_nn": [train_nn.get(epoch, float("nan")) for epoch in train_epochs],
+        "val_epochs": val_epochs,
+        "val_x1": [val_x1.get(epoch, float("nan")) for epoch in val_epochs],
+        "val_x3": [val_x3.get(epoch, float("nan")) for epoch in val_epochs],
+        "val_nn": [val_nn.get(epoch, float("nan")) for epoch in val_epochs],
         "title": shard_title(role if role else label, label),
-        "metric_split": "train" if use_train else "val",
     }
 
 
@@ -154,7 +154,7 @@ def load_merged_series(log_dir: Path = DEFAULT_LOG_DIR) -> list[dict]:
         merged[_series_key(str(payload.get("role", "")), str(payload.get("label", "")))] = payload
 
     try:
-        result_payloads = load_result_payloads()
+        result_payloads = load_available_payloads()
     except FileNotFoundError:
         result_payloads = []
     for payload in result_payloads:
@@ -177,39 +177,64 @@ def load_merged_series(log_dir: Path = DEFAULT_LOG_DIR) -> list[dict]:
 def run_one(*, log_dir: Path | None = None, out_dir: Path = DEFAULT_OUT_DIR) -> Path:
     payloads = load_merged_series(log_dir if log_dir is not None else DEFAULT_LOG_DIR)
 
-    fig, axes = plt.subplots(2, len(payloads), figsize=(6 * len(payloads), 9), sharex=False, squeeze=False)
-    for col, payload in enumerate(payloads):
+    fig, axes = plt.subplots(len(payloads), 4, figsize=(24, 4.8 * len(payloads)), sharex=False, squeeze=False)
+    for row, payload in enumerate(payloads):
         if payload.get("source") == "log":
-            epochs = payload["epochs"]
-            x1 = payload["x1"]
-            x3 = payload["x3"]
-            nn = payload["nn"]
-            title = f"{payload['title']} ({payload['metric_split']})"
+            title = payload["title"]
+            train_epochs = payload["train_epochs"]
+            train_x1 = payload["train_x1"]
+            train_x3 = payload["train_x3"]
+            train_nn = payload["train_nn"]
+            val_epochs = payload["val_epochs"]
+            val_x1 = payload["val_x1"]
+            val_x3 = payload["val_x3"]
+            val_nn = payload["val_nn"]
         else:
             result_payload = payload["payload"]
             hist = result_payload.get("history", [])
-            epochs = [int(row["epoch"]) for row in hist]
-            x1 = [float(row.get("val_x1_rec", float("nan"))) for row in hist]
-            x3 = [float(row.get("val_x3_rec", float("nan"))) for row in hist]
-            nn = [float(row.get("val_fts_teacher_rec", float("nan"))) for row in hist]
+            train_epochs = [int(item["epoch"]) for item in hist]
+            val_epochs = [int(item["epoch"]) for item in hist]
+            train_x1 = [float(item.get("train_x1_rec", float("nan"))) for item in hist]
+            train_x3 = [float(item.get("train_x3_rec", float("nan"))) for item in hist]
+            train_nn = [float(item.get("train_fts_rollout_rec", float("nan"))) for item in hist]
+            val_x1 = [float(item.get("val_x1_rec", float("nan"))) for item in hist]
+            val_x3 = [float(item.get("val_x3_rec", float("nan"))) for item in hist]
+            val_nn = [float(item.get("val_fts_rollout_rec", float("nan"))) for item in hist]
             title = f"{stage_title(result_payload)}: {window_title(result_payload)}"
 
-        ax1 = axes[0, col]
-        ax1.plot(epochs, x1, color="seagreen", linewidth=2, label="x1_rec")
-        ax1.plot(epochs, x3, color="purple", linewidth=2, label="x3_rec")
-        ax1.set_title(title)
-        ax1.set_xlabel("epoch")
-        ax1.set_ylabel("reconstruction error (%)")
-        ax1.grid(True, alpha=0.25)
-        ax1.legend(loc="best")
+        ax_train_rec = axes[row, 0]
+        ax_train_rec.plot(train_epochs, train_x1, color="seagreen", linewidth=2, label="x1_rec")
+        ax_train_rec.plot(train_epochs, train_x3, color="purple", linewidth=2, label="x3_rec")
+        ax_train_rec.set_title(f"{title} | train rec")
+        ax_train_rec.set_xlabel("epoch")
+        ax_train_rec.set_ylabel("reconstruction error (%)")
+        ax_train_rec.grid(True, alpha=0.25)
+        ax_train_rec.legend(loc="best")
 
-        ax2 = axes[1, col]
-        ax2.plot(epochs, nn, color="black", linewidth=2, label="F_contact err")
-        ax2.set_title(title)
-        ax2.set_xlabel("epoch")
-        ax2.set_ylabel("NN F_contact error (%)")
-        ax2.grid(True, alpha=0.25)
-        ax2.legend(loc="best")
+        ax_val_rec = axes[row, 1]
+        ax_val_rec.plot(val_epochs, val_x1, color="seagreen", linewidth=2, label="x1_rec")
+        ax_val_rec.plot(val_epochs, val_x3, color="purple", linewidth=2, label="x3_rec")
+        ax_val_rec.set_title(f"{title} | val rec")
+        ax_val_rec.set_xlabel("epoch")
+        ax_val_rec.set_ylabel("reconstruction error (%)")
+        ax_val_rec.grid(True, alpha=0.25)
+        ax_val_rec.legend(loc="best")
+
+        ax_train_nn = axes[row, 2]
+        ax_train_nn.plot(train_epochs, train_nn, color="black", linewidth=2, label="F_contact err")
+        ax_train_nn.set_title(f"{title} | train NN")
+        ax_train_nn.set_xlabel("epoch")
+        ax_train_nn.set_ylabel("NN F_contact error (%)")
+        ax_train_nn.grid(True, alpha=0.25)
+        ax_train_nn.legend(loc="best")
+
+        ax_val_nn = axes[row, 3]
+        ax_val_nn.plot(val_epochs, val_nn, color="black", linewidth=2, label="F_contact err")
+        ax_val_nn.set_title(f"{title} | val NN")
+        ax_val_nn.set_xlabel("epoch")
+        ax_val_nn.set_ylabel("NN F_contact error (%)")
+        ax_val_nn.grid(True, alpha=0.25)
+        ax_val_nn.legend(loc="best")
 
     out_file = out_path(DEFAULT_OUT_FILE, out_dir)
     finalize_and_save(fig, out_file)

@@ -102,7 +102,7 @@ def stage2_w1_window_indices(times: np.ndarray, contact_mask: np.ndarray, x1_sig
 
 def _apply_stage2_window_time_overrides(selected: list[dict], times: np.ndarray, contact_mask: np.ndarray) -> list[dict]:
     overrides = {
-        "first_contact": ("start", 1034.0),
+        "middle": ("start", 1034.0),
         "max_x1_pp_change": ("stop", 1057.0),
         "tail_stable": ("stop", 1998.0),
     }
@@ -112,7 +112,7 @@ def _apply_stage2_window_time_overrides(selected: list[dict], times: np.ndarray,
     for win in selected:
         anchor, target_us = overrides[win["role"]]
         new_start, new_stop = relocate_window_with_anchor(t_us, win["start_idx"], win["stop_idx"], anchor=anchor, target_us=target_us)
-        if win["role"] == "first_contact":
+        if win["role"] == "middle":
             new_stop = extend_stop_to_contact_end(contact, new_stop)
         adjusted.append({**win, "start_idx": new_start, "stop_idx": new_stop, "length": new_stop - new_start + 1, "t_start": float(times[new_start]), "t_stop": float(times[new_stop]), "idxs": np.arange(new_start, new_stop + 1, dtype=int)})
     return adjusted
@@ -171,7 +171,7 @@ def stage2_window_manifest(times: np.ndarray, contact_mask: np.ndarray, x1_signa
             if add_window(role, int(candidate_idx)):
                 return
 
-    add_window("first_contact", first_idx)
+    add_window("middle", first_idx)
     add_first_unique("max_x1_pp_change", change_order)
     add_first_unique("tail_stable", tail_order)
     if len(selected) < 3:
@@ -207,7 +207,7 @@ def select_window_indices(times: np.ndarray, contact_mask: np.ndarray, window_mo
         if x1_signal is None:
             raise ValueError(f"{window_mode} requires x1_signal")
         return stage2_w1_window_indices(times, contact_mask, x1_signal)
-    if mode in ("first_contact", "first-contact"):
+    if mode in ("first_contact", "first-contact", "w0", "stage2_w0", "stage2-w0"):
         return first_contact_window_indices(times, contact_mask, window_us)
     raise ValueError(f"unsupported window mode: {window_mode!r}")
 

@@ -1,0 +1,5 @@
+{
+  "epochs": 200,
+  "adam_epochs": 10,
+  "lbfgs_epochs": 190
+}

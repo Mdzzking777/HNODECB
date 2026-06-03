@@ -8,7 +8,7 @@ import numpy as np
 
 from AFM04.datasets.afm_dataset_generator import generate_afm_dmt_kv_dataset
 from AFM04.stage1pluslight.data import load_dataset, make_train_val_masks, truncate_to_first_contact
-from AFM04.stage1pluslight.windows import window_manifests
+from AFM04.stage1pluslight.windows import WindowManifest, window_manifests
 from AFM04.test_case_settings.afm_dmt_kv_settings.afm_dmt_kv_model_settings import DEFAULT_SETTINGS
 
 
@@ -25,6 +25,8 @@ class WindowSplit:
     x2dot_full: np.ndarray
     contact_full: np.ndarray
     fts_full_true: np.ndarray
+    train_idx: np.ndarray
+    val_idx: np.ndarray
     times_train: np.ndarray
     times_val: np.ndarray
     ode_train: np.ndarray
@@ -42,6 +44,9 @@ class PreparedData:
     splits: tuple[WindowSplit, ...]
     train_states_all: np.ndarray
     train_fts_all: np.ndarray
+    # Legacy compatibility fields.  KFT raw-input mode does not normalize KAN
+    # inputs with these arrays; they are identity coordinates kept for older
+    # payload/readers that still expect the keys to exist.
     state_mean: np.ndarray
     state_scale: np.ndarray
     known_pars: tuple[float, ...]
@@ -96,11 +101,106 @@ def _compute_true_fts(
 
 
 def _state_normalizer(train_states_all: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    mean = np.mean(train_states_all, axis=0)
-    centered = train_states_all - mean[None, :]
-    scale = np.max(np.abs(centered), axis=0)
-    scale = np.maximum(scale, 1.0e-12)
-    return mean.astype(float), scale.astype(float)
+    """Legacy identity coordinates for raw-input KAN.
+
+    pykan's main route is raw input plus adaptive spline grids.  KFT therefore
+    no longer uses hand-written mean/scale normalization before KAN forward.
+    The returned arrays are identity placeholders for payload compatibility.
+    """
+
+    dim = int(np.asarray(train_states_all).shape[1])
+    return np.zeros(dim, dtype=float), np.ones(dim, dtype=float)
+
+
+def x3dot_init_from_split(split: WindowSplit, *, policy: str = "minus_x2_init", fallback: float = 0.0) -> float:
+    """Plan Z missing-history input initializer."""
+
+    policy_key = policy.strip().lower().replace("-", "_")
+    if policy_key in ("value", "constant", "configured", "config"):
+        return float(fallback)
+    if policy_key not in ("minus_x2_init", "negative_x2_init", "neg_x2_init"):
+        raise ValueError(f"unsupported x3dot init policy: {policy!r}")
+    ode_full = np.asarray(split.ode_full, dtype=float)
+    if ode_full.ndim != 2 or ode_full.shape[0] < 2 or ode_full.shape[1] < 1:
+        raise ValueError("x3dot init requires a nonempty full-window state trajectory with x2")
+    return -float(ode_full[1, 0])
+
+
+def x3dot_scale_from_split(
+    split: WindowSplit,
+    *,
+    configured_scale: float,
+    scale_mode: str,
+    a0: float,
+    window_span: float,
+) -> float:
+    """Plan Z q-input scale using measured x2 only, never true x3dot.
+
+    The default non-leaking q=x3dot normalizer mirrors the hidden x3 rule:
+
+        q_mean  = x2_mean
+        q_scale = x2_scale / 10
+
+    This function returns q_scale; KANForceModule appends q_mean from x2_mean.
+    """
+
+    configured = float(configured_scale)
+    if np.isfinite(configured) and configured > 0.0:
+        return configured
+    mode = str(scale_mode).strip().lower().replace("-", "_")
+    physics = max(float(a0), 1.0e-30) / max(float(window_span), 1.0e-30)
+    if mode in ("x2_scale_tenth", "x2_train_scale_tenth", "x2_tenth", "x2_window", "measured_x2", "x2"):
+        ode_train = np.asarray(split.ode_train, dtype=float)
+        if ode_train.ndim != 2 or ode_train.shape[0] < 2 or ode_train.shape[1] < 1:
+            raise ValueError("x3dot scale requires a nonempty full-window state trajectory with x2")
+        x2 = ode_train[1, :]
+        x2_center = float(np.mean(x2))
+        x2_scale = float(np.max(np.abs(x2 - x2_center)))
+        return max(x2_scale / 10.0, 1.0e-12)
+    if mode in ("x2_window_abs", "x2_abs", "minus_x2_init"):
+        ode_full = np.asarray(split.ode_full, dtype=float)
+        if ode_full.ndim != 2 or ode_full.shape[0] < 2 or ode_full.shape[1] < 1:
+            raise ValueError("x3dot scale requires a nonempty full-window state trajectory with x2")
+        x2_abs = np.abs(ode_full[1, :])
+        q_init_abs = abs(x3dot_init_from_split(split, policy="minus_x2_init"))
+        return max(float(np.max(x2_abs)), float(q_init_abs), physics, 1.0e-12)
+    if mode in ("physics", "physical", "a0_over_window"):
+        return max(physics, 1.0e-12)
+    return 1.0
+
+
+def _is_modified_w0_mode(window_mode: str) -> bool:
+    return window_mode.strip().lower() in ("modified_w0", "modified-w0", "shifted_w0", "shifted-w0")
+
+
+def _modified_w0_manifest(times: np.ndarray, contact: np.ndarray, cfg) -> list[WindowManifest]:
+    base = window_manifests(times, contact, "w0", cfg.arch_window_us)
+    if len(base) != 1:
+        raise RuntimeError(f"modified W0 expected exactly one base W0 window, got {len(base)}")
+    length = int(base[0].length)
+    start_time = float(getattr(cfg, "modified_w0_start_us", 236.0)) * 1.0e-6
+    start_idx = int(np.searchsorted(np.asarray(times, dtype=float), start_time, side="left"))
+    if start_idx >= len(times):
+        raise ValueError(f"modified W0 start is outside the time vector: {start_time:.9e} s")
+    stop_idx = start_idx + length - 1
+    if stop_idx >= len(times):
+        raise ValueError(
+            "modified W0 window would exceed the available time vector: "
+            f"start_idx={start_idx} length={length} total={len(times)}"
+        )
+    idxs = np.arange(start_idx, stop_idx + 1, dtype=int)
+    return [
+        WindowManifest(
+            role="modified_w0",
+            label="modified_w0_window",
+            start_idx=int(start_idx),
+            stop_idx=int(stop_idx),
+            length=int(length),
+            t_start=float(times[start_idx]),
+            t_stop=float(times[stop_idx]),
+            idxs=idxs,
+        )
+    ]
 
 
 def prepare_data(cfg) -> PreparedData:
@@ -115,7 +215,10 @@ def prepare_data(cfg) -> PreparedData:
     contact_all = np.asarray(pert_df["contact"], dtype=bool)
     x1_signal = np.asarray(ode_data[0, :], dtype=float)
 
-    manifests = window_manifests(all_times, contact_all, cfg.window_mode, cfg.arch_window_us, x1_signal=x1_signal)
+    if _is_modified_w0_mode(cfg.window_mode):
+        manifests = _modified_w0_manifest(all_times, contact_all, cfg)
+    else:
+        manifests = window_manifests(all_times, contact_all, cfg.window_mode, cfg.arch_window_us, x1_signal=x1_signal)
     settings = DEFAULT_SETTINGS
     known_pars = (
         settings.k,
@@ -175,6 +278,8 @@ def prepare_data(cfg) -> PreparedData:
                 x2dot_full=x2dot_window,
                 contact_full=contact_window,
                 fts_full_true=fts_window_true,
+                train_idx=train_idx,
+                val_idx=val_idx,
                 times_train=times_train,
                 times_val=times_val,
                 ode_train=ode_train,
@@ -207,4 +312,11 @@ def prepare_data(cfg) -> PreparedData:
     )
 
 
-__all__ = ["PreparedData", "WindowSplit", "prepare_data", "f_ts_from_distance_numpy"]
+__all__ = [
+    "PreparedData",
+    "WindowSplit",
+    "prepare_data",
+    "f_ts_from_distance_numpy",
+    "x3dot_init_from_split",
+    "x3dot_scale_from_split",
+]

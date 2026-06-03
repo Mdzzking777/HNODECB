@@ -21,6 +21,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from AFM04.test_case_settings.afm_dmt_kv_settings.afm_dmt_kv_model_settings import CS, KS
+from AFM04.stage1pluslight.result_validation import validate_complete_stage1plus_payload
 
 
 def field_or(rec: dict[str, Any], key: str, default: Any) -> Any:
@@ -64,15 +65,30 @@ def window_roles(records: list[dict[str, Any]]) -> list[str]:
     return [str(role) for role in roles] if isinstance(roles, list) else []
 
 
+def window_display(role: str, fallback_idx: int) -> str:
+    role_norm = str(role).strip().lower()
+    if role_norm == "first_contact":
+        return "W0"
+    if role_norm == "middle":
+        return "W1"
+    if role_norm == "max_x1_pp_change":
+        return "W2"
+    if role_norm == "tail_stable":
+        return "W3"
+    return f"W{fallback_idx}"
+
+
 def metric_specs(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     roles = window_roles(records)
     if not roles:
         return [{"slug": "val_loss", "label": "val_loss", "title": "val_loss", "idx": 0, "role": "single"}]
     if len(roles) == 1:
-        return [{"slug": "w1_val_loss", "label": "W1 val_loss", "title": f"W1 val_loss ({roles[0]})", "idx": 1, "role": roles[0]}]
+        display = window_display(roles[0], 1)
+        return [{"slug": f"{display.lower()}_val_loss", "label": f"{display} val_loss", "title": f"{display} val_loss ({roles[0]})", "idx": 1, "role": roles[0]}]
     specs: list[dict[str, Any]] = [{"slug": "mean_val_loss", "label": "mean val_loss", "title": "mean val_loss", "idx": 0, "role": "mean"}]
     for i, role in enumerate(roles, start=1):
-        specs.append({"slug": f"w{i}_val_loss", "label": f"W{i} val_loss", "title": f"W{i} val_loss ({role})", "idx": i, "role": role})
+        display = window_display(role, i)
+        specs.append({"slug": f"{display.lower()}_val_loss", "label": f"{display} val_loss", "title": f"{display} val_loss ({role})", "idx": i, "role": role})
     return specs
 
 
@@ -204,6 +220,107 @@ def sci_tick_spec(lo: float, hi: float) -> tuple[list[int], list[str]]:
     return vals, texts
 
 
+def _grid_key(ks0: float, cs0: float) -> tuple[str, str]:
+    return f"{ks0:.16e}", f"{cs0:.16e}"
+
+
+def best_seed_surface(records: list[dict[str, Any]], spec: dict[str, Any]) -> dict[str, Any] | None:
+    """Build the lower envelope over NN seeds for each mech grid.
+
+    Each mech grid (ks0, cs0) has many NN seeds/trials.  The surface z-value is
+    the minimum positive finite metric among those trials, using the same metric
+    as the parent 3D plot.
+    """
+
+    best_by_grid: dict[tuple[str, str], dict[str, Any]] = {}
+    ks_values_by_key: dict[str, float] = {}
+    cs_values_by_key: dict[str, float] = {}
+
+    for rec in records:
+        params = field_or(rec, "params", {})
+        ks0 = finite_float_or(param_or(params, "ks0", field_or(rec, "ks_hat", math.nan)))
+        cs0 = finite_float_or(param_or(params, "cs0", field_or(rec, "cs_hat", math.nan)))
+        z_val = finite_float_or(metric_value(rec, spec))
+        if not (math.isfinite(ks0) and ks0 > 0.0 and math.isfinite(cs0) and cs0 > 0.0 and math.isfinite(z_val) and z_val > 0.0):
+            continue
+
+        key = _grid_key(ks0, cs0)
+        ks_values_by_key[key[0]] = ks0
+        cs_values_by_key[key[1]] = cs0
+        prev = best_by_grid.get(key)
+        if prev is None or z_val < float(prev["z_val"]):
+            best_by_grid[key] = {"z_val": z_val, "record": rec}
+
+    if not best_by_grid:
+        return None
+
+    ks_keys = sorted(ks_values_by_key, key=lambda k: ks_values_by_key[k])
+    cs_keys = sorted(cs_values_by_key, key=lambda k: cs_values_by_key[k])
+    x = [math.log10(ks_values_by_key[key]) for key in ks_keys]
+    y = [math.log10(cs_values_by_key[key]) for key in cs_keys]
+    z: list[list[float | None]] = []
+    text: list[list[str]] = []
+
+    for cs_key in cs_keys:
+        z_row: list[float | None] = []
+        text_row: list[str] = []
+        for ks_key in ks_keys:
+            best = best_by_grid.get((ks_key, cs_key))
+            if best is None:
+                z_row.append(None)
+                text_row.append("")
+                continue
+            rec = best["record"]
+            params = field_or(rec, "params", {})
+            trial_id = param_or(params, "trial_id", -1)
+            ks0 = ks_values_by_key[ks_key]
+            cs0 = cs_values_by_key[cs_key]
+            loss = float(best["z_val"])
+            z_row.append(math.log10(loss))
+            text_row.append(
+                "".join(
+                    [
+                        "best seed envelope",
+                        f"<br>trial={trial_id}",
+                        f"<br>{spec['label']}={fmt_e_html(loss)}",
+                        f"<br>ks0={fmt_e_html(ks0)}",
+                        f"<br>cs0={fmt_e_html(cs0)}",
+                        f"<br>log10(ks0)={fmt_f_html(math.log10(ks0), 6)}",
+                        f"<br>log10(cs0)={fmt_f_html(math.log10(cs0), 6)}",
+                    ]
+                )
+            )
+        z.append(z_row)
+        text.append(text_row)
+
+    return {
+        "type": "surface",
+        "name": "best NN seed envelope",
+        "x": x,
+        "y": y,
+        "z": z,
+        "text": text,
+        "hovertemplate": "%{text}<extra></extra>",
+        "opacity": 0.38,
+        "connectgaps": False,
+        "showscale": False,
+        "colorscale": [
+            [0.00, "#d9f0ff"],
+            [0.35, "#74add1"],
+            [0.70, "#2b83ba"],
+            [1.00, "#08306b"],
+        ],
+        "contours": {
+            "z": {
+                "show": True,
+                "usecolormap": True,
+                "highlightcolor": "#111111",
+                "project": {"z": True},
+            }
+        },
+    }
+
+
 def write_plot_html(
     html_path: Path,
     result_path: Path,
@@ -225,7 +342,7 @@ def write_plot_html(
     ys = [math.log10(y) for y in ys_raw]
     zs = [math.log10(z) for z in zs_raw]
 
-    highlight_n = max(1, math.ceil(0.001 * len(kept_records)))
+    highlight_n = min(len(kept_records), 100)
     highlight_order = sorted(range(len(zs_raw)), key=lambda i: zs_raw[i])[:highlight_n]
     highlight_mask = [i in set(highlight_order) for i in range(len(kept_records))]
 
@@ -272,6 +389,10 @@ def write_plot_html(
     )
 
     traces = []
+    surface = best_seed_surface(kept_records, spec)
+    if surface is not None:
+        traces.append(surface)
+
     traces.append(
         {
             "type": "scatter3d",
@@ -316,7 +437,7 @@ def write_plot_html(
         {
             "type": "scatter3d",
             "mode": "markers",
-            "name": f"lowest 0.1% {spec['label']} (black outline)",
+            "name": f"lowest {highlight_n} {spec['label']} trials (black outline)",
             "x": xs_high,
             "y": ys_high,
             "z": zs_high,
@@ -482,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = load_payload(result_path)
     if "trial_parameters" not in payload:
         raise KeyError(f"Result file does not contain 'trial_parameters': {result_path}")
+    validate_complete_stage1plus_payload(payload, path=result_path)
 
     all_records = [rec for rec in payload["trial_parameters"] if isinstance(rec, dict)]
     records = [

@@ -14,6 +14,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "KANForceModule": ("AFM04.stage2light.kan_backend", "KANForceModule"),
     "LearnableMechModule": ("AFM04.stage2light.rollout", "LearnableMechModule"),
     "PreparedData": ("AFM04.stage2light.data", "PreparedData"),
+    "Prestage2WarmstartCandidate": ("AFM04.stage2light.data", "Prestage2WarmstartCandidate"),
     "Stage1WarmstartCandidate": ("AFM04.stage2light.data", "Stage1WarmstartCandidate"),
     "Stage2LightConfig": ("AFM04.stage2light.config", "Stage2LightConfig"),
     "WindowSplit": ("AFM04.stage2light.data", "WindowSplit"),
@@ -25,7 +26,9 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "run_full_test_shard": ("AFM04.stage2light.train", "run_full_test_shard"),
     "run_stage2light": ("AFM04.stage2light.train", "run_stage2light"),
     "run_stage2light_shard": ("AFM04.stage2light.train", "run_stage2light_shard"),
+    "select_prestage2_candidate": ("AFM04.stage2light.data", "select_prestage2_candidate"),
     "select_stage1_candidate": ("AFM04.stage2light.data", "select_stage1_candidate"),
+    "select_stage1_candidate_by_trial_id": ("AFM04.stage2light.data", "select_stage1_candidate_by_trial_id"),
 }
 
 __all__ = list(_EXPORTS)

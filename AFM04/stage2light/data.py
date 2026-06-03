@@ -11,6 +11,7 @@ import numpy as np
 
 from AFM04.datasets.afm_dataset_generator import generate_afm_dmt_kv_dataset
 from AFM04.stage1pluslight.data import load_dataset, make_train_val_masks, truncate_to_first_contact
+from AFM04.stage1pluslight.result_validation import validate_complete_stage1plus_payload
 from AFM04.stage1pluslight.windows import window_manifests
 from AFM04.test_case_settings.afm_dmt_kv_settings.afm_dmt_kv_model_settings import DEFAULT_SETTINGS
 
@@ -28,6 +29,8 @@ class WindowSplit:
     x2dot_full: np.ndarray
     contact_full: np.ndarray
     fts_full_true: np.ndarray
+    train_idx: np.ndarray
+    val_idx: np.ndarray
     times_train: np.ndarray
     times_val: np.ndarray
     ode_train: np.ndarray
@@ -58,6 +61,23 @@ class Stage1WarmstartCandidate:
     path: Path
     rank: int
     record: dict[str, Any]
+    trial_id: int
+    ranking_loss: float
+    ks0: float
+    cs0: float
+    init_seed: int
+    mech_winner: int = 0
+    warmstart_label: str = ""
+
+
+@dataclass(frozen=True)
+class Prestage2WarmstartCandidate:
+    path: Path
+    candidate: int
+    record: dict[str, Any]
+    result_path: Path
+    original_rank: int
+    source_mech_winner: int
     trial_id: int
     ranking_loss: float
     ks0: float
@@ -111,11 +131,15 @@ def _compute_true_fts(
 
 
 def _state_normalizer(train_states_all: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    mean = np.mean(train_states_all, axis=0)
-    centered = train_states_all - mean[None, :]
-    scale = np.max(np.abs(centered), axis=0)
-    scale = np.maximum(scale, 1.0e-12)
-    return mean.astype(float), scale.astype(float)
+    """Identity placeholders for raw-input formal KAN.
+
+    The KAN input coordinates are physical [x1, x2, x3] values.  We keep
+    state_mean/state_scale only for payload compatibility and deliberately do
+    not compute hidden true-x3 statistics.
+    """
+
+    dim = int(np.asarray(train_states_all).shape[1])
+    return np.zeros(dim, dtype=float), np.ones(dim, dtype=float)
 
 
 def load_stage1_payload(path: str | Path) -> dict[str, Any]:
@@ -138,33 +162,19 @@ def _record_loss_key(record: dict[str, Any]) -> tuple[bool, float]:
 
 
 def stage1_candidate_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    ranked = payload.get("ranked_topk")
-    if isinstance(ranked, list) and ranked:
-        return [rec for rec in ranked if isinstance(rec, dict)]
+    validate_complete_stage1plus_payload(payload)
     trials = payload.get("trial_parameters", [])
     records = [rec for rec in trials if isinstance(rec, dict)]
     return sorted(records, key=_record_loss_key)
 
 
-def select_stage1_candidate(path: str | Path, *, rank: int = 1) -> Stage1WarmstartCandidate:
-    payload_path = Path(path)
-    payload = load_stage1_payload(payload_path)
-    ranked = payload.get("ranked_topk")
-    ranked_records = [rec for rec in ranked if isinstance(rec, dict)] if isinstance(ranked, list) else []
-    all_trials = payload.get("trial_parameters", [])
-    all_records = sorted([rec for rec in all_trials if isinstance(rec, dict)], key=_record_loss_key)
-
-    if ranked_records and rank <= len(ranked_records):
-        records = ranked_records
-    else:
-        records = all_records
-
-    if not records:
-        raise RuntimeError(f"No stage1 candidate records in: {payload_path}")
-    if rank < 1 or rank > len(records):
-        raise ValueError(f"Requested stage1 rank {rank} but only {len(records)} candidate(s) exist")
-
-    record = records[rank - 1]
+def _stage1_record_to_warmstart(
+    *,
+    payload_path: Path,
+    record: dict[str, Any],
+    rank: int = 0,
+    mech_winner: int = 0,
+) -> Stage1WarmstartCandidate:
     params = record.get("params", {}) if isinstance(record.get("params"), dict) else {}
     trial_id = int(params.get("trial_id", 0))
     ranking_loss = float(record.get("loss", float("inf")))
@@ -175,11 +185,138 @@ def select_stage1_candidate(path: str | Path, *, rank: int = 1) -> Stage1Warmsta
         raise RuntimeError(f"Stage1 candidate is missing finite ks/cs init values: {payload_path}")
     if init_seed <= 0:
         raise RuntimeError(f"Stage1 candidate is missing a positive nn_init_seed: {payload_path}")
+    if trial_id <= 0:
+        raise RuntimeError(f"Stage1 candidate is missing a positive trial_id: {payload_path}")
+
+    seedbank = int(params.get("nn_seed_bank_idx", 0))
+    if mech_winner > 0 and seedbank > 0 and rank > 0:
+        label = f"mech winner {int(mech_winner)} +NN seed {seedbank} (rank {int(rank)})"
+    elif mech_winner > 0 and seedbank > 0:
+        label = f"mech winner {int(mech_winner)} +NN seed {seedbank}"
+    elif mech_winner > 0 and rank > 0:
+        label = f"mech winner {int(mech_winner)} (rank {int(rank)})"
+    elif mech_winner > 0:
+        label = f"mech winner {int(mech_winner)}"
+    elif rank > 0:
+        label = f"stage1 rank {int(rank)}"
+    else:
+        label = f"stage1 trial {int(trial_id)}"
 
     return Stage1WarmstartCandidate(
         path=payload_path,
         rank=int(rank),
         record=record,
+        trial_id=trial_id,
+        ranking_loss=ranking_loss,
+        ks0=ks0,
+        cs0=cs0,
+        init_seed=init_seed,
+        mech_winner=int(mech_winner),
+        warmstart_label=label,
+    )
+
+
+def select_stage1_candidate(path: str | Path, *, rank: int = 1) -> Stage1WarmstartCandidate:
+    payload_path = Path(path)
+    payload = load_stage1_payload(payload_path)
+    validate_complete_stage1plus_payload(payload, path=payload_path)
+    all_trials = payload.get("trial_parameters", [])
+    all_records = sorted([rec for rec in all_trials if isinstance(rec, dict)], key=_record_loss_key)
+
+    records = all_records
+    if not records:
+        raise RuntimeError(f"No stage1 candidate records in: {payload_path}")
+    if rank < 1 or rank > len(records):
+        raise ValueError(f"Requested stage1 rank {rank} but only {len(records)} candidate(s) exist")
+
+    record = records[rank - 1]
+    return _stage1_record_to_warmstart(payload_path=payload_path, record=record, rank=int(rank))
+
+def select_stage1_candidate_by_trial_id(
+    path: str | Path,
+    *,
+    trial_id: int,
+    mech_winner: int = 0,
+) -> Stage1WarmstartCandidate:
+    payload_path = Path(path)
+    payload = load_stage1_payload(payload_path)
+    validate_complete_stage1plus_payload(payload, path=payload_path)
+    all_records = [rec for rec in payload.get("trial_parameters", []) if isinstance(rec, dict)]
+    rank_by_trial_id: dict[int, int] = {}
+    for idx, rec in enumerate(sorted(all_records, key=_record_loss_key), start=1):
+        params = rec.get("params", {}) if isinstance(rec.get("params"), dict) else {}
+        rec_trial_id = int(params.get("trial_id", 0))
+        if rec_trial_id > 0:
+            rank_by_trial_id[rec_trial_id] = int(idx)
+
+    wanted = int(trial_id)
+    if wanted <= 0:
+        raise ValueError(f"Requested stage1 trial_id must be positive, got {trial_id}")
+    for rec in payload.get("trial_parameters", []):
+        if not isinstance(rec, dict):
+            continue
+        params = rec.get("params", {}) if isinstance(rec.get("params"), dict) else {}
+        if int(params.get("trial_id", 0)) == wanted:
+            return _stage1_record_to_warmstart(
+                payload_path=payload_path,
+                record=rec,
+                rank=int(rank_by_trial_id.get(wanted, 0)),
+                mech_winner=int(mech_winner),
+            )
+    raise ValueError(f"Requested stage1 trial_id {wanted} was not found in: {payload_path}")
+
+
+
+def prestage2_candidate_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    ranked = payload.get("candidate_b_records")
+    if isinstance(ranked, list) and ranked:
+        return [rec for rec in ranked if isinstance(rec, dict)]
+    ranked = payload.get("candidate_records")
+    if isinstance(ranked, list) and ranked:
+        return [rec for rec in ranked if isinstance(rec, dict)]
+    ranked = payload.get("ranked_candidates")
+    if isinstance(ranked, list) and ranked:
+        return [rec for rec in ranked if isinstance(rec, dict)]
+    ranked = payload.get("candidates")
+    if isinstance(ranked, list) and ranked:
+        return [rec for rec in ranked if isinstance(rec, dict)]
+    return []
+
+
+def select_prestage2_candidate(path: str | Path, *, candidate: int = 1) -> Prestage2WarmstartCandidate:
+    payload_path = Path(path)
+    payload = load_stage1_payload(payload_path)
+    records = prestage2_candidate_records(payload)
+    if not records:
+        raise RuntimeError(f"No prestage2 candidate records in: {payload_path}")
+    if candidate < 1 or candidate > len(records):
+        raise ValueError(f"Requested prestage2 candidate {candidate} but only {len(records)} candidate(s) exist")
+
+    record = records[candidate - 1]
+    result_path_raw = str(record.get("result_path", "")).strip()
+    result_path = Path(result_path_raw) if result_path_raw != "" else Path()
+    if result_path_raw != "" and not result_path.is_absolute():
+        result_path = (payload_path.parent / result_path).resolve()
+
+    original_rank = int(record.get("source_stage1_rank", record.get("original_rank", 0)))
+    source_mech_winner = int(record.get("source_mech_winner", 0))
+    trial_id = int(record.get("trial_id", record.get("source_stage1_trial_id", 0)))
+    ranking_loss = float(record.get("candidate_loss", record.get("final_train_loss", record.get("final_val_loss", float("inf")))))
+    ks0 = float(record.get("ks0", float("nan")))
+    cs0 = float(record.get("cs0", float("nan")))
+    init_seed = int(record.get("seed", 0))
+    if not np.isfinite(ks0) or not np.isfinite(cs0):
+        raise RuntimeError(f"Prestage2 candidate is missing finite ks/cs init values: {payload_path}")
+    if init_seed <= 0:
+        raise RuntimeError(f"Prestage2 candidate is missing a positive init seed: {payload_path}")
+
+    return Prestage2WarmstartCandidate(
+        path=payload_path,
+        candidate=int(candidate),
+        record=record,
+        result_path=result_path,
+        original_rank=original_rank,
+        source_mech_winner=source_mech_winner,
         trial_id=trial_id,
         ranking_loss=ranking_loss,
         ks0=ks0,
@@ -260,6 +397,8 @@ def prepare_data(cfg) -> PreparedData:
                 x2dot_full=x2dot_window,
                 contact_full=contact_window,
                 fts_full_true=fts_window_true,
+                train_idx=train_idx,
+                val_idx=val_idx,
                 times_train=times_train,
                 times_val=times_val,
                 ode_train=ode_train,
@@ -293,12 +432,16 @@ def prepare_data(cfg) -> PreparedData:
 
 
 __all__ = [
+    "Prestage2WarmstartCandidate",
     "PreparedData",
     "Stage1WarmstartCandidate",
     "WindowSplit",
     "f_ts_from_distance_numpy",
     "load_stage1_payload",
     "prepare_data",
+    "prestage2_candidate_records",
+    "select_prestage2_candidate",
     "select_stage1_candidate",
+    "select_stage1_candidate_by_trial_id",
     "stage1_candidate_records",
 ]

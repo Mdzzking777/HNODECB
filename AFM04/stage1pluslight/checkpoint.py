@@ -7,6 +7,8 @@ import pickle
 from pathlib import Path
 from typing import Any, Mapping
 
+from AFM04.rng_state import restore_rng_state
+
 
 def trial_id_or_zero(record: Any) -> int:
     params = record.get("params") if isinstance(record, Mapping) else getattr(record, "params", None)
@@ -26,6 +28,7 @@ def load_resume_trials(
     cs_nodes: int,
     nn_seeds_per_node: int,
     window_mode: str,
+    arch_window_us: float,
 ) -> tuple[list[Any], str]:
     checkpoint_path = Path(path)
     backup_path = checkpoint_path.with_name(checkpoint_path.name + ".bak")
@@ -68,7 +71,24 @@ def load_resume_trials(
         return [], "nn_seeds_mismatch"
     if str(data.get("stage1plus_window_mode", window_mode)) != str(window_mode):
         return [], "window_mode_mismatch"
-    return list(data["trial_parameters"]), ("loaded_from_backup" if loaded_from == "backup" else "")
+    old_arch_window_us = data.get("stage1plus_arch_window_us")
+    if old_arch_window_us is None:
+        return [], "arch_window_us_missing"
+    try:
+        old_arch_window_us_f = float(old_arch_window_us)
+    except Exception:
+        return [], "arch_window_us_invalid"
+    if abs(old_arch_window_us_f - float(arch_window_us)) > max(1.0e-15, 1.0e-9 * abs(float(arch_window_us))):
+        return [], "arch_window_us_mismatch"
+    notes: list[str] = []
+    if loaded_from == "backup":
+        notes.append("loaded_from_backup")
+    restored_rng = restore_rng_state(data.get("rng_state"))
+    if restored_rng:
+        notes.append(f"rng_restored={','.join(restored_rng)}")
+    elif "rng_state" not in data:
+        notes.append("legacy_checkpoint_no_rng_state")
+    return list(data["trial_parameters"]), ";".join(notes)
 
 
 def write_checkpoint_atomic(path: str | Path, payload: Any) -> None:

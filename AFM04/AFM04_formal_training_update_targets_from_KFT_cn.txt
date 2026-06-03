@@ -1,0 +1,215 @@
+AFM04 formal training update targets from KFT
+============================================
+
+Purpose
+-------
+
+This document records the confirmed engineering targets for promoting selected
+KFT mechanisms into the formal AFM04 training pipeline.
+
+This is a planning/target document only. It does not mean the code has already
+been changed.
+
+
+Confirmed scope
+---------------
+
+"AFM04 formal training process" means only these three parts:
+
+- AFM04/stage1pluslight
+- AFM04/prestage2 and AFM04/prestage2/prest2
+- AFM04/stage2light
+
+KFT, MFT, QCS, and archive folders are not part of this formal-change scope
+unless explicitly requested later.
+
+Working correspondence:
+
+- stage1pluslight (st1pl) ~= random search (RS)
+- stage2light (st2l) ~= gradient-based optimization (GBO)
+- prestage2/prest2 ~= short candidate promotion / pre-GBO screening
+
+
+1. Remove w_pred completely
+---------------------------
+
+Target:
+
+- In formal AFM04, remove w_pred completely.
+- Removal scope includes:
+  - configuration fields and environment variables;
+  - runtime force-chain logic;
+  - logs and summaries;
+  - result fields;
+  - visualization fields and labels.
+
+The formal AFM04 force path should not contain a w_pred multiplier or a w_pred
+diagnostic branch.
+
+
+2. KFT-style soft mask
+----------------------
+
+Target:
+
+- Promote the current KFT soft-mask force gate into formal AFM04.
+- Use the same formal default values currently used by KFT:
+  - s0 = 20*a0
+  - alpha = 0.25/a0
+  - m_min = 0, fixed and not learnable
+- The mask remains a hard-noncontact-only soft attenuation gate.
+
+Phase behavior:
+
+- In st1pl / RS-like phase:
+  - soft mask is enabled;
+  - s0 and alpha are fixed at the default initial values;
+  - s0 and alpha do not participate in random search.
+- In st2l / GBO-like phase:
+  - soft mask is enabled;
+  - s0 and alpha are trainable by gradient-based optimization.
+- In prest2:
+  - candidate optimization should follow the st2l/GBO-side behavior unless a
+    prest2-specific reason is identified later.
+
+Intended effective force family:
+
+- NN/KAN raw force output;
+- global gain g_nn;
+- hard-noncontact-only soft mask;
+- no w_pred.
+
+
+3. AGU placement and source data
+--------------------------------
+
+Target:
+
+- Promote KFT's corrected AGU logic into formal AFM04.
+- AGU must not use x3_true.
+- AGU must not use x3_pred as a guiding coordinate.
+- AGU should be based on observed x1_true and x2_true, plus a neutral third-axis
+  coordinate only to satisfy the 3-input KAN interface.
+
+Phase placement:
+
+- st1pl:
+  - apply AGU during model initialization, matching KFT RS behavior.
+- prest2:
+  - apply AGU by epoch schedule, matching short GBO-like candidate behavior.
+- st2l:
+  - apply AGU by epoch schedule during Adam/AMSGrad phase.
+  - disable AGU during LBFGS phase, matching KFT GBO behavior.
+
+
+4. Optimizer split: Adam/AMSGrad then LBFGS
+-------------------------------------------
+
+Target:
+
+- Formal AFM04 should explicitly split the optimizer into two phases:
+  1. Adam/AMSGrad + Armijo/backtracking
+  2. dedicated LBFGS + strong Wolfe line search
+- The two phase lengths should be explicit, not ambiguous.
+
+Default schedule:
+
+- max epoch count = 200
+- Adam/AMSGrad phase = first 20 epochs
+- LBFGS phase = remaining epochs
+
+Adam/AMSGrad phase:
+
+- Use KFT-style Adam/AMSGrad proposal plus Armijo-like backtracking acceptance.
+- This replaces the old rough step-guard retry behavior as the default control
+  logic.
+
+LBFGS phase:
+
+- Use the dedicated KFT-style LBFGS implementation, not raw torch.optim.LBFGS.
+- Enable strong Wolfe line search by default.
+- Expose and keep manually configurable the KFT-style ys_threshold.
+- Disable AGU during this phase.
+
+
+5. Early stopping default
+-------------------------
+
+Target:
+
+- Disable early stopping by default in formal AFM04 while introducing the new
+  optimizer stack.
+- This avoids mixing optimizer behavior with early-stop behavior during the
+  first formal migration.
+
+Notes:
+
+- Existing early-stop code may remain behind explicit switches if useful.
+- The default formal path should not early-stop.
+
+
+6. Contact/noncontact loss weighting
+------------------------------------
+
+Target:
+
+- Set contact:noncontact weighting to 1:1 in all formal AFM04 phases:
+  - st1pl
+  - prest2
+  - st2l
+- This applies wherever the same x2dot/state loss logic is used.
+
+
+7. Logging and result expansion
+-------------------------------
+
+Target:
+
+- Formal AFM04 logs should be expanded in the same spirit as KFT logs.
+- Main human-readable logs should summarize each epoch or outer optimizer step.
+- Detailed optimizer event logs may be stored separately as jsonl.
+
+Required summary fields should include, when applicable:
+
+- optimizer phase;
+- train/val loss;
+- loss terms;
+- grad norm;
+- learning rate or effective learning rate;
+- Armijo/backtracking retry count;
+- accepted/rejected status;
+- reject reason;
+- soft mask s0 and alpha;
+- LBFGS closure count;
+- LBFGS line-search mode;
+- LBFGS loss before/after;
+- LBFGS parameter delta;
+- LBFGS curvature/ys threshold metadata.
+
+
+8. Minimum validation after implementation
+------------------------------------------
+
+After the formal AFM04 code migration is complete, the required checks are:
+
+- py_compile passes for touched AFM04 modules;
+- one small-scale st1pl smoke run;
+- logs confirm:
+  - w_pred is absent;
+  - soft mask is enabled with the intended phase behavior;
+  - AGU uses observed x1/x2 plus neutral third axis;
+  - early stop is OFF by default;
+  - contact/noncontact weighting is 1:1;
+  - optimizer phase split is Adam/AMSGrad + Armijo/backtracking -> LBFGS +
+    strong Wolfe.
+
+
+Explicitly not included as formal targets
+-----------------------------------------
+
+The following KFT mechanisms are not part of the current AFM04 formal update
+target list:
+
+- handoff checkpoint / replay as a formal training feature;
+- KFT-specific warmstart priority ordering such as prerun candidate 1 -> RS rank
+  1 -> deterministic random init.

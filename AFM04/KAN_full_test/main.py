@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from AFM04.KAN_full_test.config import default_config
+from AFM04.KAN_full_test.prerun import run_prerun_driver, run_prerun_shard
 from AFM04.KAN_full_test.random_search import (
     merge_random_search_results,
     run_random_search_shard,
@@ -28,7 +29,33 @@ def _driver_log_path(cfg) -> Path:
     return cfg.log_dir / f"log2_04_step2a_kan_full_test_local_driver_{stamp}.txt"
 
 
+def _window_mode_norm(cfg) -> str:
+    return str(cfg.window_mode).strip().lower()
+
+
+def _is_modified_w0(cfg) -> bool:
+    return _window_mode_norm(cfg) in ("modified_w0", "modified-w0", "shifted_w0", "shifted-w0")
+
+
+def _is_w0(cfg) -> bool:
+    return _window_mode_norm(cfg) in ("w0", "stage2_w0", "stage2-w0", "first_contact", "first-contact")
+
+
+def _selected_window_text(cfg) -> str:
+    if _is_modified_w0(cfg):
+        return "modified W0"
+    if _is_w0(cfg):
+        return "W0"
+    if cfg.random_search_window_index > 0:
+        return f"W{cfg.random_search_window_index}"
+    return f"{cfg.shard_count} selected windows"
+
+
 def _shard_log_path(cfg, shard_index: int) -> Path:
+    if _is_modified_w0(cfg):
+        return cfg.shard_log_dir / "log2_04_step2a_kan_full_test_local_modified_w0.txt"
+    if _is_w0(cfg):
+        return cfg.shard_log_dir / "log2_04_step2a_kan_full_test_local_w0.txt"
     return cfg.shard_log_dir / f"log2_04_step2a_kan_full_test_local_p{shard_index}.txt"
 
 
@@ -123,11 +150,7 @@ def run_random_search_driver(cfg, *, auto_generate_dataset: bool) -> dict[str, o
 
     with driver_log.open("w", encoding="utf-8") as log:
         total_workers = cfg.random_search_subshard_count
-        selected_window_text = (
-            f"W{cfg.random_search_window_index}"
-            if cfg.random_search_window_index > 0
-            else f"W1..W{cfg.shard_count}"
-        )
+        selected_window_text = _selected_window_text(cfg)
         _log_line(
             log,
             "AFM04 KAN random-search driver start | "
@@ -221,6 +244,10 @@ def main() -> None:
     parser.add_argument("--with-random-search", action="store_true")
     parser.add_argument("--random-search-driver", action="store_true")
     parser.add_argument("--random-search-shard", action="store_true")
+    parser.add_argument("--prerun-driver", action="store_true")
+    parser.add_argument("--prerun-shard", action="store_true")
+    parser.add_argument("--prerun-layer", type=str, default="layer_a")
+    parser.add_argument("--prerun-assignment-path", type=str, default=None)
     parser.add_argument("--auto-generate-dataset", action="store_true")
     parser.add_argument("--warmstart-from-random-search", action="store_true")
     parser.add_argument("--warmstart-fallback-random", action="store_true")
@@ -240,6 +267,15 @@ def main() -> None:
         result = run_random_search_shard(
             cfg,
             subshard_index=args.random_search_subshard_index,
+        )
+    elif args.prerun_driver:
+        result = run_prerun_driver(cfg)
+    elif args.prerun_shard:
+        result = run_prerun_shard(
+            cfg,
+            shard_index=args.shard_index,
+            layer_name=args.prerun_layer,
+            assignment_path=args.prerun_assignment_path,
         )
     elif args.driver and args.with_random_search:
         result = run_pipeline_driver(cfg, auto_generate_dataset=args.auto_generate_dataset)

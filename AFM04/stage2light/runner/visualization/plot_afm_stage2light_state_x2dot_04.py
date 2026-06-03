@@ -12,7 +12,7 @@ from AFM04.stage2light.runner.visualization._common import (
     REPO_ROOT,
     discover_log_paths,
     finalize_and_save,
-    load_result_payloads,
+    load_available_payloads,
     out_path,
     stage_title,
     window_title,
@@ -21,7 +21,7 @@ from AFM04.stage2light.runner.visualization._common import (
 
 ROLE_RE = re.compile(r"role=([^|]+)")
 LABEL_RE = re.compile(r"label=([^|]+)")
-EPOCH_RE = re.compile(r"KAN epoch (\d+) train=([0-9eE+\-.]+)")
+EPOCH_RE = re.compile(r"KAN (?:LBFGS step \d+ epoch|epoch) (\d+) train=([0-9eE+\-.]+)")
 VAL_EPOCH_RE = re.compile(r"KAN val epoch (\d+) val=([0-9eE+\-.]+|NaN|Inf|-Inf)")
 PARTS_RE = re.compile(
     r"parts:\s*state=([0-9eE+\-.]+)\s+x1_state=([0-9eE+\-.]+)\s+x2_state=([0-9eE+\-.]+)\s+x2dot=([0-9eE+\-.]+)"
@@ -37,7 +37,9 @@ DEFAULT_OUT_DIR = REPO_ROOT / "AFM04" / "stage2light" / "logs" / "visualization"
 def shard_title(role: str, label: str) -> str:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
-        return "W1: window1: right after first contact"
+        return "W0: first-contact window"
+    if role_norm == "middle":
+        return "W1: middle window"
     if role_norm == "max_x1_pp_change":
         return "W2: window2: the most drastic region"
     if role_norm == "tail_stable":
@@ -90,21 +92,18 @@ def parse_log_series(log_path: Path) -> dict:
             train_x2[current_epoch] = float(match.group(3))
             train_x2dot[current_epoch] = float(match.group(4))
 
-    epochs = sorted(set(val_x1) | set(val_x2) | set(val_x2dot))
-    use_train = not epochs
-    if use_train:
-        epochs = sorted(set(train_x1) | set(train_x2) | set(train_x2dot))
-
-    source_x1 = train_x1 if use_train else val_x1
-    source_x2 = train_x2 if use_train else val_x2
-    source_x2dot = train_x2dot if use_train else val_x2dot
+    train_epochs = sorted(set(train_x1) | set(train_x2) | set(train_x2dot))
+    val_epochs = sorted(set(val_x1) | set(val_x2) | set(val_x2dot))
     return {
-        "epochs": epochs,
-        "x1_state": [source_x1.get(epoch, float("nan")) for epoch in epochs],
-        "x2_state": [source_x2.get(epoch, float("nan")) for epoch in epochs],
-        "x2dot": [source_x2dot.get(epoch, float("nan")) for epoch in epochs],
+        "train_epochs": train_epochs,
+        "train_x1_state": [train_x1.get(epoch, float("nan")) for epoch in train_epochs],
+        "train_x2_state": [train_x2.get(epoch, float("nan")) for epoch in train_epochs],
+        "train_x2dot": [train_x2dot.get(epoch, float("nan")) for epoch in train_epochs],
+        "val_epochs": val_epochs,
+        "val_x1_state": [val_x1.get(epoch, float("nan")) for epoch in val_epochs],
+        "val_x2_state": [val_x2.get(epoch, float("nan")) for epoch in val_epochs],
+        "val_x2dot": [val_x2dot.get(epoch, float("nan")) for epoch in val_epochs],
         "title": shard_title(role if role else label, label),
-        "metric_split": "train" if use_train else "val",
     }
 
 
@@ -121,7 +120,7 @@ def run_one(*, log_dir: Path | None = None, out_dir: Path = DEFAULT_OUT_DIR) -> 
         payloads = load_log_payloads(log_dir)
     else:
         try:
-            payloads = load_result_payloads()
+            payloads = load_available_payloads()
         except FileNotFoundError:
             use_logs = True
             payloads = load_log_payloads()
@@ -129,21 +128,32 @@ def run_one(*, log_dir: Path | None = None, out_dir: Path = DEFAULT_OUT_DIR) -> 
     fig, axes = plt.subplots(3, len(payloads), figsize=(6 * len(payloads), 13), sharex=False, squeeze=False)
     for col, payload in enumerate(payloads):
         if use_logs:
-            epochs = payload["epochs"]
-            x1_state = payload["x1_state"]
-            x2_state = payload["x2_state"]
-            x2dot = payload["x2dot"]
-            title = f"{payload['title']} ({payload['metric_split']})"
+            train_epochs = payload["train_epochs"]
+            train_x1_state = payload["train_x1_state"]
+            train_x2_state = payload["train_x2_state"]
+            train_x2dot = payload["train_x2dot"]
+            val_epochs = payload["val_epochs"]
+            val_x1_state = payload["val_x1_state"]
+            val_x2_state = payload["val_x2_state"]
+            val_x2dot = payload["val_x2dot"]
+            title = payload["title"]
         else:
             hist = payload.get("history", [])
-            epochs = [int(row["epoch"]) for row in hist]
-            x1_state = [float(row.get("val_x1_state", float("nan"))) for row in hist]
-            x2_state = [float(row.get("val_x2_state", float("nan"))) for row in hist]
-            x2dot = [float(row.get("val_x2dot", float("nan"))) for row in hist]
+            train_epochs = [int(row["epoch"]) for row in hist if "train_x1_state" in row or "train_x2_state" in row or "train_x2dot" in row]
+            train_x1_state = [float(row.get("train_x1_state", float("nan"))) for row in hist if "train_x1_state" in row or "train_x2_state" in row or "train_x2dot" in row]
+            train_x2_state = [float(row.get("train_x2_state", float("nan"))) for row in hist if "train_x1_state" in row or "train_x2_state" in row or "train_x2dot" in row]
+            train_x2dot = [float(row.get("train_x2dot", float("nan"))) for row in hist if "train_x1_state" in row or "train_x2_state" in row or "train_x2dot" in row]
+            val_epochs = [int(row["epoch"]) for row in hist if "val_x1_state" in row or "val_x2_state" in row or "val_x2dot" in row]
+            val_x1_state = [float(row.get("val_x1_state", float("nan"))) for row in hist if "val_x1_state" in row or "val_x2_state" in row or "val_x2dot" in row]
+            val_x2_state = [float(row.get("val_x2_state", float("nan"))) for row in hist if "val_x1_state" in row or "val_x2_state" in row or "val_x2dot" in row]
+            val_x2dot = [float(row.get("val_x2dot", float("nan"))) for row in hist if "val_x1_state" in row or "val_x2_state" in row or "val_x2dot" in row]
             title = f"{stage_title(payload)}: {window_title(payload)}"
 
         ax1 = axes[0, col]
-        ax1.plot(epochs, x1_state, color="seagreen", linewidth=2, label="x1_state")
+        if train_epochs:
+            ax1.plot(train_epochs, train_x1_state, color="seagreen", linewidth=2, label="train x1_state")
+        if val_epochs:
+            ax1.plot(val_epochs, val_x1_state, color="darkgreen", linewidth=2, linestyle="--", label="val x1_state")
         ax1.set_title(title)
         ax1.set_xlabel("epoch")
         ax1.set_ylabel("x1 state loss")
@@ -152,7 +162,10 @@ def run_one(*, log_dir: Path | None = None, out_dir: Path = DEFAULT_OUT_DIR) -> 
         ax1.legend(loc="best")
 
         ax2 = axes[1, col]
-        ax2.plot(epochs, x2_state, color="royalblue", linewidth=2, label="x2_state")
+        if train_epochs:
+            ax2.plot(train_epochs, train_x2_state, color="royalblue", linewidth=2, label="train x2_state")
+        if val_epochs:
+            ax2.plot(val_epochs, val_x2_state, color="navy", linewidth=2, linestyle="--", label="val x2_state")
         ax2.set_title(title)
         ax2.set_xlabel("epoch")
         ax2.set_ylabel("x2 state loss")
@@ -161,7 +174,10 @@ def run_one(*, log_dir: Path | None = None, out_dir: Path = DEFAULT_OUT_DIR) -> 
         ax2.legend(loc="best")
 
         ax3 = axes[2, col]
-        ax3.plot(epochs, x2dot, color="darkorange", linewidth=2, label="x2dot")
+        if train_epochs:
+            ax3.plot(train_epochs, train_x2dot, color="darkorange", linewidth=2, label="train x2dot")
+        if val_epochs:
+            ax3.plot(val_epochs, val_x2dot, color="firebrick", linewidth=2, linestyle="--", label="val x2dot")
         ax3.set_title(title)
         ax3.set_xlabel("epoch")
         ax3.set_ylabel("x2dot loss")

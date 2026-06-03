@@ -21,11 +21,18 @@ while ($true) {
 
 Set-Location -Path $repoRoot
 
+$pythonExe = Join-Path $repoRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path -Path $pythonExe)) {
+  $pythonExe = "python"
+}
+
 $env:HNODECB_AFM04_STAGE1_SHARD_COUNT = "$Shards"
-$env:HNODECB_AFM04_STAGE1PLUS_WINDOW_MODE = "stage2_w1"
-$env:HNODECB_AFM04_STAGE1PLUS_GRID_KS_NODES = "10"
-$env:HNODECB_AFM04_STAGE1PLUS_GRID_CS_NODES = "10"
-$env:HNODECB_AFM04_STAGE1PLUS_GRID_NN_SEEDS_PER_NODE = "1000"
+$env:HNODECB_AFM04_STAGE1PLUS_WINDOW_MODE = "stage2_w0"
+$env:HNODECB_AFM04_STAGE1PLUS_ARCH_WINDOW_US = "6.288e-6"
+$env:HNODECB_AFM04_STAGE1PLUS_GRID_KS_NODES = "20"
+$env:HNODECB_AFM04_STAGE1PLUS_GRID_CS_NODES = "20"
+$env:HNODECB_AFM04_STAGE1PLUS_GRID_NN_SEEDS_PER_NODE = "200"
+$env:HNODECB_AFM04_STAGE1_RUN_SEED = "20260406"
 $env:HNODECB_AFM04_KAN_TEST_RANDOM_SEARCH_USE_VAL = "0"
 $env:HNODECB_AFM04_KAN_TEST_RANDOM_SEARCH_TRUE_RANDOM = "0"
 $env:HNODECB_AFM04_KAN_TEST_RANDOM_SEARCH_FAIL_FAST = "1"
@@ -37,11 +44,15 @@ $driverLogHint = Join-Path $repoRoot "AFM04\stage1pluslight\logs"
 
 Write-Host "Running AFM04 stage1pluslight with SHARDS=$Shards"
 Write-Host "Repo root   -> $repoRoot"
+Write-Host "Python      -> $pythonExe"
 Write-Host "Backend     -> KAN (KFT-RS style)"
 Write-Host "Window mode -> $env:HNODECB_AFM04_STAGE1PLUS_WINDOW_MODE"
+Write-Host "Window span -> $env:HNODECB_AFM04_STAGE1PLUS_ARCH_WINDOW_US s"
 Write-Host "Search size -> $env:HNODECB_AFM04_STAGE1PLUS_GRID_KS_NODES x $env:HNODECB_AFM04_STAGE1PLUS_GRID_CS_NODES x $env:HNODECB_AFM04_STAGE1PLUS_GRID_NN_SEEDS_PER_NODE"
-Write-Host "Trial split -> interleaved W1 trial sharding"
+Write-Host "NN seeds    -> initseed = $env:HNODECB_AFM04_STAGE1_RUN_SEED + seedbank"
+Write-Host "Trial split -> interleaved W0 trial sharding"
 Write-Host "Bad trial   -> KFT-RS fail-fast guard ON"
+Write-Host "Force chain -> soft mask fixed at s0=20*a0, alpha=0.25/a0; no legacy contact multiplier"
 Write-Host "Logs dir    -> $driverLogHint"
 
 $py = @"
@@ -52,7 +63,7 @@ cfg = default_config(r"$repoRoot")
 launch_local_shards(cfg, shard_count=$Shards, auto_generate_dataset=$autoGeneratePy)
 "@
 
-$py | python -
+$py | & $pythonExe -
 $exitCode = $LASTEXITCODE
 
 if ($exitCode -ne 0) {

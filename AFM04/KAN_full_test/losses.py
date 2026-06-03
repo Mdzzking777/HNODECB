@@ -6,18 +6,25 @@ from dataclasses import dataclass
 
 import torch
 
-from AFM04.KAN_full_test.rollout import fts_truth_from_states_torch, rollout_single_shooting_torch, x2dot_rhs_torch
+from AFM04.KAN_full_test.rollout import (
+    force_inputs_for_module,
+    fts_truth_from_states_torch,
+    rollout_single_shooting_torch,
+    x2dot_rhs_torch,
+)
 from AFM04.stage1pluslight.losses import (
-    CONTACT_LOSS_WEIGHT,
     FTS_RANGE_AMP,
     FTS_RANGE_EPS,
     FTS_RANGE_WEIGHT,
-    NONCONTACT_LOSS_WEIGHT,
     SCALE_EPS,
     X3_RANGE_AMP,
     X3_RANGE_EPS,
     X3_RANGE_WEIGHT,
 )
+
+
+CONTACT_LOSS_WEIGHT = 1.0
+NONCONTACT_LOSS_WEIGHT = 1.0
 
 
 @dataclass(frozen=True)
@@ -31,7 +38,7 @@ class TorchLossParts:
     cont: float
     x1_rec: float
     x3_rec: float
-    fts_teacher_rec: float
+    fts_rollout_rec: float
 
 
 def _softplus_torch(x: torch.Tensor, eps: float) -> torch.Tensor:
@@ -57,7 +64,19 @@ def _window_loss(
     known_pars: tuple[float, ...],
     mech_true: torch.Tensor,
     eta_star_true: float,
+    q_pre: torch.Tensor | None = None,
+    loss_indices: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, TorchLossParts]:
+    if loss_indices is not None:
+        idx = loss_indices.to(device=traj.device, dtype=torch.long)
+        traj = traj[:, idx]
+        ode_true = ode_true[:, idx]
+        x2dot_true = x2dot_true[idx]
+        contact_mask = contact_mask[idx]
+        times = times[idx]
+        if q_pre is not None:
+            q_pre = q_pre[idx]
+
     weights = torch.where(
         contact_mask > 0.5,
         torch.full_like(contact_mask, CONTACT_LOSS_WEIGHT),
@@ -75,12 +94,14 @@ def _window_loss(
     x1_state_loss = torch.sum(weights * x1_err) / weights_sum
     x2_state_loss = torch.sum(weights * x2_err_state) / weights_sum
 
-    x2dot_pred = x2dot_rhs_torch(traj, times, force_module, known_pars)
+    x2dot_pred = x2dot_rhs_torch(traj, times, force_module, known_pars, q_pre=q_pre)
     x2dot_scale = torch.sqrt(torch.mean(torch.square(x2dot_true)))
     x2_err = torch.square((x2dot_true - x2dot_pred) / x2dot_scale)
     x2dot_loss = torch.sum(weights * x2_err) / weights_sum
 
-    fts_pred = force_module(traj.transpose(0, 1))
+    rollout_states = traj.transpose(0, 1)
+    rollout_inputs = force_inputs_for_module(force_module, rollout_states, q_pre)
+    fts_pred = force_module(rollout_inputs)
     fts_scale = torch.tensor(max(float(FTS_RANGE_AMP), float(SCALE_EPS)), dtype=traj.dtype, device=traj.device)
     fts_exceed = torch.abs(fts_pred) - FTS_RANGE_AMP
     fts_pen = torch.square(_softplus_torch(fts_exceed, FTS_RANGE_EPS) / fts_scale)
@@ -95,14 +116,13 @@ def _window_loss(
     x3_rec = _relative_rmse_pct(traj[2, :], ode_true[2, :])
 
     teacher_states = ode_true.transpose(0, 1)
-    fts_teacher_pred = force_module(teacher_states)
     fts_teacher_true = fts_truth_from_states_torch(
         teacher_states,
         known_pars,
         eta_star=eta_star_true,
         mech_true=mech_true,
     )
-    fts_teacher_rec = _relative_rmse_pct(fts_teacher_pred, fts_teacher_true)
+    fts_rollout_rec = _relative_rmse_pct(fts_pred, fts_teacher_true)
 
     total = state_loss + x2dot_loss + x3_range_loss + fts_range_loss
     parts = TorchLossParts(
@@ -115,7 +135,7 @@ def _window_loss(
         cont=0.0,
         x1_rec=float(x1_rec.detach()),
         x3_rec=float(x3_rec.detach()),
-        fts_teacher_rec=float(fts_teacher_rec.detach()),
+        fts_rollout_rec=float(fts_rollout_rec.detach()),
     )
     return total, parts
 
@@ -135,9 +155,11 @@ def evaluate_split(
     eta_star_true: float,
     x1_abs_guard: float | None = None,
     x2_abs_guard: float | None = None,
+    ode_step_budget: int | None = None,
+    loss_indices: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, TorchLossParts, torch.Tensor]:
     u0 = ode_true[:, 0]
-    traj = rollout_single_shooting_torch(
+    rollout_out = rollout_single_shooting_torch(
         force_module,
         known_pars,
         mech_true,
@@ -148,7 +170,10 @@ def evaluate_split(
         atol=ode_atol,
         x1_abs_guard=x1_abs_guard,
         x2_abs_guard=x2_abs_guard,
+        ode_step_budget=ode_step_budget,
+        return_aux=True,
     )
+    traj, aux = rollout_out
     total, parts = _window_loss(
         traj=traj,
         ode_true=ode_true,
@@ -159,7 +184,15 @@ def evaluate_split(
         known_pars=known_pars,
         mech_true=mech_true,
         eta_star_true=eta_star_true,
+        q_pre=aux.q_pre,
+        loss_indices=loss_indices,
     )
+    if aux.q_pre is not None:
+        try:
+            setattr(traj, "_plan_z_q_pre", aux.q_pre)
+            setattr(traj, "_plan_z_accepted_history_count", int(aux.accepted_history_count))
+        except Exception:
+            pass
     return total, parts, traj
 
 

@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 
+from AFM04.rng_state import capture_rng_state
 from AFM04.stage1pluslight.checkpoint import load_resume_trials, trial_id_or_zero, write_checkpoint_atomic
 from AFM04.stage1pluslight.kan_rs_trial import prepare_kan_stage1_runtime, stage1pluslight_kan_random_trial
 from AFM04.stage1pluslight.config import Stage1PlusLightConfig, default_config
@@ -118,11 +119,55 @@ class Stage1PlusLightContext:
     resume_reason: str
 
 
+def _window_manifest_payload(windows: list[WindowManifest] | None) -> list[dict[str, Any]]:
+    if not windows:
+        return []
+    out: list[dict[str, Any]] = []
+    for win in windows:
+        out.append(
+            {
+                "role": str(win.role),
+                "label": str(win.label),
+                "start_idx": int(win.start_idx),
+                "stop_idx": int(win.stop_idx),
+                "length": int(win.length),
+                "t_start": float(win.t_start),
+                "t_stop": float(win.t_stop),
+            }
+        )
+    return out
+
+
+def _stage1plus_window_identity(config: Stage1PlusLightConfig, windows: list[WindowManifest] | None) -> dict[str, Any]:
+    return {
+        "stage1plus_window_mode": str(config.window_mode),
+        "stage1plus_arch_window_us": float(config.arch_window_us),
+        "stage1plus_windows": _window_manifest_payload(windows),
+    }
+
+
+def _payload_matches_stage1plus_window(
+    payload: dict[str, Any],
+    *,
+    config: Stage1PlusLightConfig,
+) -> tuple[bool, str]:
+    if str(payload.get("stage1plus_window_mode", "")) != str(config.window_mode):
+        return False, "window_mode_mismatch"
+    try:
+        old_arch = float(payload.get("stage1plus_arch_window_us"))
+    except Exception:
+        return False, "arch_window_us_missing_or_invalid"
+    if abs(old_arch - float(config.arch_window_us)) > max(1.0e-15, 1.0e-9 * abs(float(config.arch_window_us))):
+        return False, f"arch_window_us_mismatch:{old_arch:.12e}!={float(config.arch_window_us):.12e}"
+    return True, "match"
+
+
 def save_stage1pluslight_partial(
     config: Stage1PlusLightConfig,
     trial_parameters: list[Any],
     *,
     searches_total: int,
+    windows: list[WindowManifest] | None = None,
 ) -> None:
     payload = {
         "study": None,
@@ -141,11 +186,11 @@ def save_stage1pluslight_partial(
         "stage1plus_joint_random_search": False,
         "stage1plus_joint_grid_search": False,
         "stage1plus_kan_search": True,
-        "stage1plus_search_mode": "kscs_grid_kan_seedbank_w1",
+        "stage1plus_search_mode": f"kscs_grid_kan_seedbank_{config.window_mode}",
         "stage1plus_grid_ks_nodes": config.ks_node_count,
         "stage1plus_grid_cs_nodes": config.cs_node_count,
         "stage1plus_grid_nn_seeds_per_node": config.nn_seed_bank_size,
-        "stage1plus_window_mode": config.window_mode,
+        **_stage1plus_window_identity(config, windows),
         "run_seed": config.run_seed,
         "use_multiple_shooting": config.use_multiple_shooting,
         "ms_group_size": config.ms_group_size,
@@ -163,6 +208,7 @@ def save_stage1pluslight_partial(
         "stage1plus_partial": True,
         "stage1plus_shard_index": config.shard_index,
         "stage1plus_shard_count": config.shard_count,
+        "rng_state": capture_rng_state(),
     }
     write_checkpoint_atomic(config.result_path, payload)
 
@@ -197,6 +243,8 @@ def prepare_stage1pluslight_context(
     for win in main_windows:
         local_train_keep = np.isin(win.idxs, train_idx)
         local_val_keep = np.isin(win.idxs, val_idx)
+        train_idx_local = np.flatnonzero(local_train_keep)
+        val_idx_local = np.flatnonzero(local_val_keep)
         window_bundles.append(
             {
                 "role": win.role,
@@ -206,6 +254,12 @@ def prepare_stage1pluslight_context(
                 "len": win.length,
                 "t_start": win.t_start,
                 "t_stop": win.t_stop,
+                "ode_full": ode_data_full[:, win.idxs],
+                "times_full": np.asarray(all_times[win.idxs], dtype=float),
+                "x2dot_full": np.asarray(x2dot_all[win.idxs], dtype=float),
+                "contact_full": np.asarray(contact_all[win.idxs], dtype=bool),
+                "train_idx": train_idx_local,
+                "val_idx": val_idx_local,
                 "ode_train": ode_data_full[:, win.idxs][:, local_train_keep],
                 "ode_val": ode_data_full[:, win.idxs][:, local_val_keep],
                 "times_train": _slice_with_mask(all_times, win.idxs, local_train_keep),
@@ -233,6 +287,7 @@ def prepare_stage1pluslight_context(
             cs_nodes=config.cs_node_count,
             nn_seeds_per_node=config.nn_seed_bank_size,
             window_mode=config.window_mode,
+            arch_window_us=config.arch_window_us,
         )
 
     completed_trial_ids = {trial_id_or_zero(rec) for rec in trial_parameters if trial_id_or_zero(rec) > 0}
@@ -242,7 +297,14 @@ def prepare_stage1pluslight_context(
     state12_scale_full = np.maximum(state12_scale_full, 1.0e-9)
     x2dot_scale_full = float(max(np.max(x2dot_all) - np.min(x2dot_all), 1.0e-9))
     x3_scale = 100.0e-9
-    kan_runtime = prepare_kan_stage1_runtime(config.repo_root, auto_generate_dataset=auto_generate_dataset)
+    kan_runtime = prepare_kan_stage1_runtime(
+        config.repo_root,
+        auto_generate_dataset=auto_generate_dataset,
+        window_mode=config.window_mode,
+        arch_window_us=config.arch_window_us,
+        val_stride=config.val_stride,
+        val_offset=config.val_offset,
+    )
 
     return Stage1PlusLightContext(
         config=config,
@@ -333,6 +395,7 @@ def export_stage1pluslight_final(
     trial_parameters: list[dict[str, Any]],
     *,
     searches_total: int,
+    windows: list[WindowManifest] | None = None,
 ) -> dict[str, Any]:
     summary = summarize_trial_records(trial_parameters, final_topk=config.final_topk)
     payload = {
@@ -344,8 +407,8 @@ def export_stage1pluslight_final(
         "stage1plus_partial": False,
         "stage1plus_complete": True,
         "stage1plus_kan_search": True,
-        "stage1plus_search_mode": "kscs_grid_kan_seedbank_w1",
-        "stage1plus_window_mode": config.window_mode,
+        "stage1plus_search_mode": f"kscs_grid_kan_seedbank_{config.window_mode}",
+        **_stage1plus_window_identity(config, windows),
         "stage1plus_shard_index": config.shard_index,
         "stage1plus_shard_count": config.shard_count,
         "stage1plus_grid_ks_nodes": config.ks_node_count,
@@ -364,6 +427,7 @@ def export_stage1pluslight_final(
         "ode_atol": config.ode_atol,
         "ode_max_step": config.ode_max_step,
         "summary": summary,
+        "rng_state": capture_rng_state(),
     }
     write_checkpoint_atomic(config.result_path, payload)
 
@@ -387,7 +451,9 @@ def _load_payload(path: Path) -> dict[str, Any] | None:
 def merge_shard_exports(config: Stage1PlusLightConfig, *, shard_count: int | None = None) -> dict[str, Any]:
     merged_records: list[dict[str, Any]] = []
     shard_paths: list[str] = []
+    merged_windows: list[dict[str, Any]] | None = None
     shard_count = max(1, int(shard_count if shard_count is not None else config.shard_count))
+    expected_total = total_trials(config.ks_node_count, config.cs_node_count, config.nn_seed_bank_size)
     if shard_count == 1:
         candidate_paths = [config.result_path]
     else:
@@ -398,26 +464,65 @@ def merge_shard_exports(config: Stage1PlusLightConfig, *, shard_count: int | Non
         payload = _load_payload(shard_path)
         if not payload:
             continue
+        matches, reason = _payload_matches_stage1plus_window(payload, config=config)
+        if not matches:
+            raise RuntimeError(
+                "Refusing to merge AFM04 stage1pluslight shards with incompatible window identity: "
+                f"path={shard_path} reason={reason}"
+            )
+        shard_windows = payload.get("stage1plus_windows")
+        if isinstance(shard_windows, list):
+            if merged_windows is None:
+                merged_windows = shard_windows
+            elif json.dumps(merged_windows, sort_keys=True, default=_json_default) != json.dumps(
+                shard_windows,
+                sort_keys=True,
+                default=_json_default,
+            ):
+                raise RuntimeError(
+                    "Refusing to merge AFM04 stage1pluslight shards with different window manifests: "
+                    f"path={shard_path}"
+                )
         shard_paths.append(str(shard_path))
         for rec in payload.get("trial_parameters", []):
             if isinstance(rec, dict):
                 merged_records.append(rec)
+
+    trial_ids = [trial_id_or_zero(rec) for rec in merged_records]
+    if len(merged_records) != expected_total:
+        raise RuntimeError(
+            "Refusing to merge incomplete AFM04 stage1pluslight shards: "
+            f"records={len(merged_records)} expected={expected_total}"
+        )
+    if any(tid <= 0 for tid in trial_ids):
+        raise RuntimeError("Refusing to merge AFM04 stage1pluslight shards: missing trial_id in one or more records")
+    if len(set(trial_ids)) != len(trial_ids):
+        raise RuntimeError("Refusing to merge AFM04 stage1pluslight shards: duplicate trial_id records detected")
 
     summary = summarize_trial_records(merged_records, final_topk=config.final_topk)
     merged_payload = {
         "trial_parameters": merged_records,
         "ranked_topk": summary["ranked_topk"],
         "ranked_viable_topk": summary["ranked_viable_topk"],
-        "searches_per_candidate": len(merged_records),
+        "searches_per_candidate": expected_total,
+        "stage1plus_total_trials": expected_total,
+        "stage1plus_merged_trial_count": len(merged_records),
         "final_topk": config.final_topk,
         "stage1plus_partial": False,
         "stage1plus_complete": True,
         "stage1plus_merged": True,
         "stage1plus_kan_search": True,
-        "stage1plus_search_mode": "kscs_grid_kan_seedbank_w1",
+        "stage1plus_search_mode": f"kscs_grid_kan_seedbank_{config.window_mode}",
+        "stage1plus_window_mode": str(config.window_mode),
+        "stage1plus_arch_window_us": float(config.arch_window_us),
+        "stage1plus_windows": list(merged_windows or []),
         "stage1plus_shard_count": shard_count,
+        "stage1plus_grid_ks_nodes": config.ks_node_count,
+        "stage1plus_grid_cs_nodes": config.cs_node_count,
+        "stage1plus_grid_nn_seeds_per_node": config.nn_seed_bank_size,
         "summary": summary,
         "source_shards": shard_paths,
+        "rng_state": capture_rng_state(),
     }
     write_checkpoint_atomic(config.merged_result_path, merged_payload)
 
@@ -428,6 +533,51 @@ def merge_shard_exports(config: Stage1PlusLightConfig, *, shard_count: int | Non
     with open(topk_path, "w", encoding="utf-8") as fh:
         json.dump(summary["ranked_topk"], fh, indent=2, ensure_ascii=False, default=_json_default)
     return summary
+
+
+def _log_top_trial_ranks(logger: Stage1Logger, ranked_topk: list[dict[str, Any]], *, max_rows: int) -> None:
+    count = min(max(0, int(max_rows)), len(ranked_topk))
+    logger.log(f"stage1plus top trial ranks | count={count}")
+    for idx, rec in enumerate(ranked_topk[:count], start=1):
+        params = rec.get("params", {}) if isinstance(rec, dict) else {}
+        parts = rec.get("val_parts", {}) if isinstance(rec, dict) else {}
+        trial_id = int(params.get("trial_id", 0))
+        node_label = str(params.get("node_label", "node_unknown"))
+        seedbank = int(params.get("nn_seed_bank_idx", 0))
+        initseed = int(params.get("nn_init_seed", 0))
+        train_loss = float(rec.get("train_loss", float("inf")))
+        loss = float(rec.get("loss", float("inf")))
+        ks_hat = float(rec.get("ks_hat", float("nan")))
+        cs_hat = float(rec.get("cs_hat", float("nan")))
+        ks_err = float(rec.get("ks_err_pct", float("nan")))
+        cs_err = float(rec.get("cs_err_pct", float("nan")))
+        x1_rec = float(parts.get("x1_rec", float("nan"))) if isinstance(parts, dict) else float("nan")
+        nn_err = float(rec.get("val_nn_err", rec.get("val_nn_err_start", float("nan"))))
+        viable = bool(rec.get("is_viable", False))
+        logger.log(
+            f"rank {idx:03d} | trial={trial_id} | {node_label} | "
+            f"seedbank={seedbank} initseed={initseed} | "
+            f"train={train_loss:.6e} loss={loss:.6e} | "
+            f"ks={ks_hat:.6e} ({ks_err:.2f}%) cs={cs_hat:.6e} ({cs_err:.2f}%) | "
+            f"x1_rec={x1_rec:.2f}% nn={nn_err:.2f}% | viable={viable}"
+        )
+
+
+def build_stage1pluslight_mechanistic_winners(config: Stage1PlusLightConfig) -> dict[str, Any]:
+    from AFM04.stage1pluslight.visualization_runner.build_afm_stage1pluslight_mechanistic_winners_04 import (
+        build_mechanistic_winner_report,
+    )
+
+    return build_mechanistic_winner_report(
+        result_path=config.merged_result_path,
+        log_dir=config.log_dir,
+        out_dir=config.log_dir,
+        source="result",
+        expected_groups=config.ks_node_count * config.cs_node_count,
+        expected_seeds=config.nn_seed_bank_size,
+        allow_incomplete=False,
+        top=config.ks_node_count * config.cs_node_count,
+    )
 
 
 def run_shard_mainloop(
@@ -446,7 +596,10 @@ def run_shard_mainloop(
             "context prepared | "
             f"shard={config.shard_index}/{config.shard_count} "
             f"window_mode={config.window_mode} "
-            f"backend=kan_rs_w1 "
+            f"backend=kan_rs_{config.window_mode} "
+            f"soft_mask=fixed(s0=20*a0,alpha=0.25/a0,m_min=0) "
+            f"AGU=observed_x1_x2_neutral_axis "
+            f"contact_noncontact_weight=1:1 "
             f"resume_reason={context.resume_reason or 'fresh_start'} "
             f"completed={len(context.trial_parameters)} "
             f"pending={len(context.pending_assignments)}"
@@ -474,15 +627,30 @@ def run_shard_mainloop(
             )
 
         if loop_idx % max(1, config.checkpoint_every) == 0:
-            save_stage1pluslight_partial(config, context.trial_parameters, searches_total=context.searches_total)
+            save_stage1pluslight_partial(
+                config,
+                context.trial_parameters,
+                searches_total=context.searches_total,
+                windows=context.main_windows,
+            )
             if logger is not None:
                 logger.log(f"checkpoint saved | path={config.result_path}")
 
-    save_stage1pluslight_partial(config, context.trial_parameters, searches_total=context.searches_total)
+    save_stage1pluslight_partial(
+        config,
+        context.trial_parameters,
+        searches_total=context.searches_total,
+        windows=context.main_windows,
+    )
     if logger is not None:
         logger.log(f"final partial checkpoint saved | path={config.result_path}")
 
-    summary = export_stage1pluslight_final(config, context.trial_parameters, searches_total=context.searches_total)
+    summary = export_stage1pluslight_final(
+        config,
+        context.trial_parameters,
+        searches_total=context.searches_total,
+        windows=context.main_windows,
+    )
     if logger is not None:
         logger.log(
             "final export complete | "
@@ -554,10 +722,29 @@ def launch_local_shards(
         f"merged_result={config.merged_result_path} "
         f"best_loss={merged_summary['best_loss']:.6e}"
     )
+    _log_top_trial_ranks(driver_logger, merged_summary["ranked_topk"], max_rows=config.final_topk)
+    mech_report = build_stage1pluslight_mechanistic_winners(config)
+    best_mech = mech_report.get("best") if isinstance(mech_report, dict) else None
+    if isinstance(best_mech, dict):
+        driver_logger.log(
+            "average behavior of mech grid complete | "
+            f"groups={mech_report['expected_groups']} seeds_per_group={mech_report['expected_seeds']} "
+            f"txt={mech_report['txt_path']} | "
+            f"mech_winner=1 node={best_mech['node_label']} "
+            f"mean_loss_viable={float(best_mech['mean_loss_viable']):.6e} "
+            f"best_trial={int(best_mech['best_trial_id'])}"
+        )
+    else:
+        driver_logger.log(
+            "average behavior of mech grid complete | "
+            f"groups={mech_report['expected_groups']} seeds_per_group={mech_report['expected_seeds']} "
+            f"txt={mech_report['txt_path']}"
+        )
     return {
         "driver_log": str(driver_log_path),
         "exit_codes": exit_codes,
         "merged_summary": merged_summary,
+        "mechanistic_winner_report": mech_report,
     }
 
 
@@ -568,6 +755,7 @@ __all__ = [
     "export_stage1pluslight_final",
     "format_progress_line",
     "format_trial_line",
+    "build_stage1pluslight_mechanistic_winners",
     "launch_local_shards",
     "make_driver_log_path",
     "make_shard_log_path",

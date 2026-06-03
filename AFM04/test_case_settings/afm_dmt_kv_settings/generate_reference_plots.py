@@ -152,7 +152,8 @@ def _save_f_ts_zoomed_plot(output_dir: Path, afm_table: dict[str, np.ndarray]) -
     y_hi = float(y_all.max() + y_pad)
 
     role_to_rank = {
-        "first_contact": "W1",
+        "first_contact": "W0",
+        "middle": "W1",
         "max_x1_pp_change": "W2",
         "tail_stable": "W3",
     }

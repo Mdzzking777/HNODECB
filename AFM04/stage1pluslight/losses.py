@@ -22,7 +22,7 @@ X3_RANGE_WEIGHT = 1.0
 FTS_RANGE_AMP = 1e-8
 FTS_RANGE_EPS = 1e-10
 FTS_RANGE_WEIGHT = 1.0
-CONTACT_LOSS_WEIGHT = 4.27
+CONTACT_LOSS_WEIGHT = 1.0
 NONCONTACT_LOSS_WEIGHT = 1.0
 SCALE_EPS = 1e-9
 
@@ -150,6 +150,7 @@ def loss_single_or_ms(
     ode_rtol: float = 1.0e-8,
     ode_atol: float = 1.0e-8,
     ode_max_step: float = 0.0,
+    loss_indices: np.ndarray | None = None,
 ) -> tuple[float, LossParts]:
     mech_raw = np.asarray(_theta_field(theta, "mech_raw"), dtype=float)
     mech = np.array(
@@ -165,14 +166,16 @@ def loss_single_or_ms(
     x2dot_data = np.asarray(x2dot_data, dtype=float)
     contact_mask = np.asarray(contact_mask, dtype=bool)
     times = np.asarray(times, dtype=float)
+    if loss_indices is None:
+        loss_idx = None
+    else:
+        loss_idx = np.asarray(loss_indices, dtype=int)
+        if loss_idx.size == 0:
+            return float("inf"), INF_LOSS_PARTS
     state12_scale = np.maximum(np.asarray(state12_scale, dtype=float), SCALE_EPS)
     x2dot_scale = float(max(float(x2dot_scale), SCALE_EPS))
     x3_scale = float(max(float(x3_scale), SCALE_EPS))
 
-    total_state = 0.0
-    total_x2dot = 0.0
-    total_x3range = 0.0
-    total_ftsrange = 0.0
     total_cont = 0.0
     pred_full = np.empty_like(ode_data)
 
@@ -198,30 +201,6 @@ def loss_single_or_ms(
                 )
                 preds.append(uhat)
                 pred_full[:, rg] = uhat
-                seg_state, seg_x2dot, seg_x3range, seg_ftsrange, _ = _loss_from_pred(
-                    uhat,
-                    ode_data[:, rg],
-                    x2dot_data[rg],
-                    contact_mask[rg],
-                    times[rg],
-                    state12_scale,
-                    x2dot_scale,
-                    x3_scale,
-                    mech,
-                    model,
-                    model_params,
-                    known_pars,
-                    zero_contact_override=zero_contact_override,
-                )
-                total_state += seg_state
-                total_x2dot += seg_x2dot
-                total_x3range += seg_x3range
-                total_ftsrange += seg_ftsrange
-            if preds:
-                total_state /= len(preds)
-                total_x2dot /= len(preds)
-                total_x3range /= len(preds)
-                total_ftsrange /= len(preds)
             for i in range(1, len(preds)):
                 total_cont += float(ms_continuity_term * np.sum(np.square(preds[i - 1][:, -1] - preds[i][:, 0])))
         else:
@@ -240,21 +219,6 @@ def loss_single_or_ms(
                 ode_atol=ode_atol,
                 ode_max_step=ode_max_step,
             )
-            total_state, total_x2dot, total_x3range, total_ftsrange, _ = _loss_from_pred(
-                pred_full,
-                ode_data,
-                x2dot_data,
-                contact_mask,
-                times,
-                state12_scale,
-                x2dot_scale,
-                x3_scale,
-                mech,
-                model,
-                model_params,
-                known_pars,
-                zero_contact_override=zero_contact_override,
-            )
     except Exception:
         return float("inf"), INF_LOSS_PARTS
 
@@ -263,11 +227,40 @@ def loss_single_or_ms(
 
     _store_pred_traj(pred_traj_ref, pred_full)
 
-    x1_err_sum = float(np.sum(np.square(ode_data[0, :] - pred_full[0, :])))
-    x1_truth_sum = float(np.sum(np.square(ode_data[0, :])))
-    x3_err_sum = float(np.sum(np.square(ode_data[2, :] - pred_full[2, :])))
-    x3_truth_sum = float(np.sum(np.square(ode_data[2, :])))
-    count = max(1, len(times))
+    if loss_idx is None:
+        pred_loss = pred_full
+        ode_loss = ode_data
+        x2dot_loss = x2dot_data
+        contact_loss = contact_mask
+        times_loss = times
+    else:
+        pred_loss = pred_full[:, loss_idx]
+        ode_loss = ode_data[:, loss_idx]
+        x2dot_loss = x2dot_data[loss_idx]
+        contact_loss = contact_mask[loss_idx]
+        times_loss = times[loss_idx]
+
+    total_state, total_x2dot, total_x3range, total_ftsrange, _ = _loss_from_pred(
+        pred_loss,
+        ode_loss,
+        x2dot_loss,
+        contact_loss,
+        times_loss,
+        state12_scale,
+        x2dot_scale,
+        x3_scale,
+        mech,
+        model,
+        model_params,
+        known_pars,
+        zero_contact_override=zero_contact_override,
+    )
+
+    x1_err_sum = float(np.sum(np.square(ode_loss[0, :] - pred_loss[0, :])))
+    x1_truth_sum = float(np.sum(np.square(ode_loss[0, :])))
+    x3_err_sum = float(np.sum(np.square(ode_loss[2, :] - pred_loss[2, :])))
+    x3_truth_sum = float(np.sum(np.square(ode_loss[2, :])))
+    count = max(1, len(times_loss))
     x1_rec = relative_rmse_pct(x1_err_sum, x1_truth_sum, count, SCALE_EPS)
     x3_rec = relative_rmse_pct(x3_err_sum, x3_truth_sum, count, SCALE_EPS)
 

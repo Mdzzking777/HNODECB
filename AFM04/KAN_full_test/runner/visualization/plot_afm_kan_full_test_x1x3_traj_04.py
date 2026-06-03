@@ -8,21 +8,29 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from AFM04.KAN_full_test.runner.visualization._common import load_result_payloads, out_path, finalize_and_save, stage_title, window_title
+from AFM04.KAN_full_test.runner.visualization._common import (
+    finalize_and_save,
+    load_result_payloads,
+    out_path,
+    stage_title,
+    time_snapshot,
+    title_with_progress,
+    window_title,
+)
 
 
 def main() -> None:
     payloads = load_result_payloads()
-    fig, axes = plt.subplots(2, 3, figsize=(18, 9), sharex=False)
+    ncols = max(1, len(payloads))
+    fig, axes = plt.subplots(2, ncols, figsize=(6 * ncols, 9), sharex=False, squeeze=False)
     for col, payload in enumerate(payloads):
-        best_snapshot = payload["best"]["best_snapshot"]
-        snap = best_snapshot.get("full") or best_snapshot.get("val")
+        snap = time_snapshot(payload).get("full") or time_snapshot(payload).get("val")
         if snap is None:
-            raise KeyError("Neither 'full' nor 'val' snapshot found in payload['best']['best_snapshot']")
+            raise KeyError("Neither 'full' nor 'val' snapshot found in time snapshot")
         times_us = 1.0e6 * np.asarray(snap["times"], dtype=float)
         ode_true = np.asarray(snap["ode_true"], dtype=float)
         traj_pred = np.asarray(snap["traj_pred"], dtype=float)
-        title = f"{stage_title(payload)}: {window_title(payload)}"
+        title = title_with_progress(payload, f"{stage_title(payload)}: {window_title(payload)}")
 
         ax1 = axes[0, col]
         ax1.plot(times_us, ode_true[0, :], color="black", linewidth=2, label="x1 true")

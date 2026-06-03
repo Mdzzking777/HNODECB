@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
         "main start | "
         f"shard={config.shard_index}/{config.shard_count} "
         f"window_mode={config.window_mode} "
-        "backend=kan_rs_w1 "
+        f"backend=kan_rs_{config.window_mode} "
         f"result={config.result_path}"
     )
     try:

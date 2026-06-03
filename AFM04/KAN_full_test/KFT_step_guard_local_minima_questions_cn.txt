@@ -1,0 +1,490 @@
+标题：关于 KFT 中 step guard、local minima、KAN 表达能力极限与优化算法选择的疑问
+
+背景：
+我正在 AFM04 的 KAN_full_test (KFT) 中，用 KAN 作为未知 tip-sample interaction force Fts 的神经网络替代项。训练目标不是直接监督 Fts，而是通过 rollout 后的 x1/x2/x2dot 等动力学一致性 loss 来优化 NN 参数。
+
+当前现象：
+1. 打开 step guard 时，训练 loss 往往会很快收敛/停留在某个位置，曲线比较稳定，但可能陷入一个不再明显下降的区域。
+2. 关闭 step guard 后，loss 会出现巨大跳跃；有时 train loss 会先下降，然后突然大幅上升，再缓慢恢复，x3 reconstruction error 和 F_contact error 也会明显摆动。
+3. 因此我不确定：step guard 是在保护训练稳定性，还是也可能阻止模型穿过某些“狭窄通道”，从而错过通往更低 basin / global minimum 的路径。
+
+我希望向 GPT / 文献检索提出的核心问题：
+
+1. 如何判断当前结果是 KAN 的表达能力极限，还是 optimization local minima？
+   - 如果 KAN 拟合 W0 窗口时无法进一步复原 Fts / x3，应该如何区分这是模型结构不够强，还是优化过程卡在 local minimum？
+   - 在 unsupervised / physics-informed / ODE-constrained training 中，有哪些诊断方法可以判断“模型 capacity 不够”与“优化陷入坏 basin”？
+   - 是否可以通过多 seed、多架构、不同 optimizer、不同 loss weighting、不同 continuation strategy 等方式做实验性区分？
+
+2. 互联网上或论文中是否有相关方法专门解决这个问题？
+   - 是否有文献讨论：如何判断 neural network / PINN / neural ODE / KAN 训练中遇到的是 local minima、bad initialization、optimizer failure，还是 architecture expressivity limit？
+   - 是否有针对 physics-informed neural networks, neural ODE, system identification, force reconstruction, inverse dynamics, symbolic/functional approximation 的相关方法？
+   - 是否有推荐的 practical diagnostics，例如 loss landscape visualization, mode connectivity, Hessian/eigenvalue analysis, basin hopping, multi-start statistics, optimizer comparison, curriculum/continuation method, trust-region method 等？
+
+3. 为什么关闭 step guard 后会出现巨大 loss jump 或所谓 negative grad / bad gradient direction？
+   - 这是否意味着 gradient direction 在局部看起来是下降方向，但由于 step size 太大，实际走到了更高 loss 区域？
+   - 这是否可能代表通往更低 loss basin 的通道很窄，需要先经历短暂 loss increase？
+   - 还是更可能说明 optimizer / learning-rate adaptation / step size / numerical stiffness / ODE solver sensitivity 设置存在问题？
+   - 对这种 ODE-constrained NN training，Adam/AMSGRAD 是否容易出现这种跳跃？
+   - 是否应该尝试 LBFGS、trust-region、line search、hybrid Adam -> LBFGS、learning-rate annealing、gradient clipping、natural gradient、second-order method 等？
+
+4. step guard 应该如何设计才合理？
+   - 如果完全开启 step guard，可能过于保守；如果完全关闭，又会出现 loss 大跳。
+   - 是否应采用 soft step guard：允许小幅 loss increase，但对明显的大幅 jump 触发 rollback、降低 learning rate、line search 或 retry？
+   - 在 PINN / neural ODE / inverse problem 中，是否存在类似 step rejection、trust region、adaptive line search 的成熟做法？
+   - 如何避免 step guard 把模型锁死在 local minimum，同时又防止 optimizer 接受破坏性的更新？
+
+5. 是否应该使用 LBFGS？
+   - 对于这种 KAN + ODE rollout + inverse dynamics 的问题，LBFGS 是否比 Adam/AMSGRAD 更适合后期 fine-tuning？
+   - 是否应该先用 Adam/AMSGRAD 找到较好区域，再用 LBFGS 或 line-search optimizer 做精修？
+   - LBFGS 在非凸、ODE-sensitive、可能 stiff 的 loss landscape 中有哪些风险？
+
+我最想搞清楚的核心：
+当前 KFT 的 W0 训练结果不够理想，到底是因为：
+1. KAN architecture / input variables 的表达能力不足；
+2. 优化器和 step guard 让模型陷入 local minimum；
+3. loss landscape 本身存在狭窄 basin、bad curvature 或 stiff sensitivity；
+4. 还是当前的训练策略缺少合适的 optimizer transition / line search / trust-region / continuation method？
+
+请优先从理论和已有文献方法角度回答，而不是直接给代码修改建议。
+
+
+【16：53，14/05/2026】来自CHATGPT的留言，它通过阅读文献，提供了以下方案 （文献路径在C:\Users\Public\Documents\GitHub\HNODECB\user requirements\literature\Challenges in Training PINNs A Loss Landscape Perspective.pdf）：
+
+标题：
+从 Adam-only + hard step guard 到 Adam + Trust Region → L-BFGS + Strong Wolfe 的训练框架构思
+
+背景：
+当前 KFT 中，KAN 作为未知 tip-sample interaction force Fts 的替代模型，并不是通过 Fts 标签直接监督，而是通过 ODE rollout 后的动力学一致性 loss 进行间接优化。因此，训练过程不仅受 KAN 表达能力影响，也受到 ODE-constrained loss landscape、step size、optimizer dynamics 和 numerical sensitivity 的共同影响。
+
+目前使用的 Adam/AMSGrad + hard step guard retry 框架存在两个问题：
+
+1. Adam/AMSGrad 阶段虽然具有较好的前期探索能力，但在 ill-conditioned loss landscape 中可能收敛缓慢、震荡，甚至停留在较差 basin。
+2. hard step guard retry 只能根据 L_new 是否大于 L_old 来拒绝更新，属于非常粗糙的 step acceptance rule。它可以防止破坏性更新，但也可能过于保守，使模型难以穿过狭窄下降通道或进入更优 basin。
+
+Rathore et al. 在 “Challenges in Training PINNs: A Loss Landscape Perspective” 中指出，physics-informed loss 的训练困难很大程度来自 differential operators 导致的 ill-conditioning，并且 Adam + L-BFGS 通常优于单独 Adam 或单独 L-BFGS。作者在实验中对 Adam learning rate 进行 grid search，并在后期切换到 L-BFGS with strong Wolfe line search。:contentReference[oaicite:0]{index=0}
+
+本文的方案不是完全复制该流程，而是在不提前进行 Adam learning-rate grid search 的条件下，构造一个更适合当前 KFT 的训练框架：
+
+Adam/AMSGrad + Trust Region
+→
+L-BFGS + Strong Wolfe Line Search
+
+核心目标：
+用 trust region 替代当前 hard step guard retry 机制，使 Adam/AMSGrad 阶段具备更合理的 step acceptance control；随后用 L-BFGS + strong Wolfe line search 替代 Adam-only 的后期训练，以改善 ill-conditioned loss landscape 中的一阶优化停滞问题。
+
+------------------------------------------------------------
+1. 前阶段：Adam/AMSGrad + Trust Region
+------------------------------------------------------------
+
+前阶段仍然保留 Adam 或 AMSGrad，原因是 Adam 类一阶优化器适合训练初期的探索阶段。它不要求 Hessian 信息，计算成本较低，并且相比直接使用 quasi-Newton 方法，前期更不容易被 saddle point 吸引。
+
+但不同于原始 Adam-only 方案，本方案不再使用 hard step guard retry，而是引入 trust region 机制控制每一步更新。
+
+原始 hard step guard 的形式可以写为：
+
+    accept if L_new <= L_old
+
+其中：
+
+    L_old：更新前的 rollout loss
+    L_new：更新后的 rollout loss
+
+该规则的问题是，它只判断 loss 是否上升，却不判断当前 step 是否与局部模型预测一致，也不区分“小幅可接受上升”和“破坏性 jump”。
+
+trust region 的核心形式为：
+
+    minimize_p m_k(p)
+    subject to ||p|| <= Δ_k
+
+其中：
+
+    p：当前参数更新量
+    m_k(p)：当前参数 θ_k 附近的局部近似模型
+    Δ_k：trust region radius，即当前允许的最大更新半径
+    k：训练迭代编号
+
+更新是否被接受，不只看 L_new 是否小于 L_old，而是比较 actual reduction 和 predicted reduction：
+
+    ρ_k = [L(θ_k) - L(θ_k + p)] / [m_k(0) - m_k(p)]
+
+其中：
+
+    ρ_k：实际下降量与预测下降量之比
+    L(θ_k)：当前真实 loss
+    L(θ_k + p)：更新后的真实 loss
+    m_k(0)：局部模型预测的当前 loss
+    m_k(p)：局部模型预测的更新后 loss
+
+如果 ρ_k 较大，说明局部模型可信，接受更新，并可适当增大 Δ_k。
+如果 ρ_k 较小或为负，说明当前 step 不可信，拒绝更新，并缩小 Δ_k。
+
+因此，trust region 在本方案中的作用是：
+
+    hard step guard retry
+    →
+    model-based step acceptance and radius adaptation
+
+也就是说，它不是简单地“loss 变大就拒绝”，而是根据局部模型可信度决定是否接受 step 以及是否缩小/放大允许步长。
+
+------------------------------------------------------------
+2. 不提前进行 Adam learning-rate grid search 的处理
+------------------------------------------------------------
+
+Rathore et al. 的 Adam 阶段通过 grid search 选择 learning rate：
+
+    η_Adam ∈ {10^-5, 10^-4, 10^-3, 10^-2, 10^-1}
+
+并且在 Adam 阶段没有使用 line search；Adam 的 global learning rate 在进入 L-BFGS 之前保持为预设超参数。:contentReference[oaicite:1]{index=1}
+
+本方案的不同点是：
+
+    不提前进行 Adam learning-rate grid search
+
+这样做的动机是，KFT 中每次完整 rollout training 成本较高，提前做大量 lr 搜索并不经济。因此，本方案让 trust region 在训练过程中承担一部分 step-size safety control 的功能。
+
+换句话说，Adam 的 base learning rate 不再完全依赖外部 grid search，而是通过 trust region acceptance 来限制不可信更新：
+
+    Adam proposes direction
+    →
+    trust region controls whether the update is acceptable
+
+这里 Adam 负责给出更新方向，trust region 负责判断该更新在当前 ODE rollout loss landscape 中是否可信。
+
+------------------------------------------------------------
+3. 后阶段：L-BFGS + Strong Wolfe Line Search
+------------------------------------------------------------
+
+当 Adam/AMSGrad + trust region 阶段进入平台区后，切换到 L-BFGS。
+
+切换动机来自 Rathore et al. 的结论：PINN loss 可能由于 differential operators 产生严重 ill-conditioning，而 quasi-Newton 方法可以改善问题的 conditioning；Adam + L-BFGS 通常比单独 Adam 或单独 L-BFGS 表现更好。:contentReference[oaicite:2]{index=2}
+
+L-BFGS 阶段采用：
+
+    L-BFGS + strong Wolfe line search
+
+其中 L-BFGS 提供 quasi-Newton 搜索方向，strong Wolfe line search 负责选择合适 step size。作者也明确指出，L-BFGS 使用 strong Wolfe line search 是为了保持 L-BFGS 的稳定性。:contentReference[oaicite:3]{index=3}
+
+该阶段的作用是：
+
+1. 改善 Adam 后期在 ill-conditioned landscape 中收敛缓慢的问题；
+2. 利用近似二阶信息修正 Adam/AMSGrad 的局部更新方向；
+3. 用 strong Wolfe line search 控制 L-BFGS step size；
+4. 替代 Adam-only 在后期长时间震荡或停滞的训练模式。
+
+------------------------------------------------------------
+4. line search 与 trust region 在本方案中的关系
+------------------------------------------------------------
+
+本方案中，trust region 和 line search 不同时用于同一个 optimizer step。
+
+前阶段：
+
+    Adam/AMSGrad + Trust Region
+
+此时 trust region 替代 hard step guard retry，用于控制 Adam/AMSGrad 的更新是否可信。
+
+后阶段：
+
+    L-BFGS + Strong Wolfe Line Search
+
+此时 line search 是 L-BFGS 的 step-size control 机制。
+
+因此二者不是冲突关系，而是出现在不同阶段：
+
+    前阶段：trust region controls Adam/AMSGrad updates
+    后阶段：strong Wolfe line search controls L-BFGS updates
+
+整体上，它们共同替代原本的：
+
+    Adam/AMSGrad + hard step guard retry
+
+------------------------------------------------------------
+5. 与当前 Adam-only + hard step guard 的差异
+------------------------------------------------------------
+
+当前框架：
+
+    Adam/AMSGrad
+    +
+    hard step guard retry
+
+新框架：
+
+    Adam/AMSGrad + Trust Region
+    →
+    L-BFGS + Strong Wolfe Line Search
+
+核心差异包括：
+
+1. step guard 从 hard rejection 变为 trust-region-based acceptance。
+2. Adam 不再承担完整训练过程，而只作为前期探索阶段。
+3. 后期由 L-BFGS 接管，以处理 ill-conditioned loss landscape。
+4. L-BFGS 阶段使用 strong Wolfe line search，而不是 fixed step size。
+5. 整体流程从 first-order-only 变为 first-order + quasi-Newton hybrid。
+
+------------------------------------------------------------
+6. 预期意义
+------------------------------------------------------------
+
+该方案的主要意义不是单纯提升 optimizer 复杂度，而是将当前 KFT 训练问题重新表述为：
+
+    ill-conditioned ODE-constrained inverse problem
+
+而不是：
+
+    Adam learning rate tuning problem
+
+或：
+
+    KAN expressivity problem
+
+在这个框架下，W0 训练结果不理想时，可以进一步区分：
+
+1. Adam/AMSGrad 是否只是前期探索不足；
+2. hard step guard 是否过于保守；
+3. loss jump 是否来自 step size 与局部 curvature 不匹配；
+4. L-BFGS 是否能在后期继续降低 rollout loss；
+5. 如果 L-BFGS 后仍停滞，是否存在更深层的 under-optimization 或 model/input expressivity limit。
+
+------------------------------------------------------------
+总结
+------------------------------------------------------------
+
+本文构思的训练框架为：
+
+    Adam/AMSGrad + Trust Region
+    →
+    L-BFGS + Strong Wolfe Line Search
+
+其中：
+
+    Adam/AMSGrad：负责前期探索；
+    Trust Region：替代 hard step guard retry，控制前期 step acceptance；
+    L-BFGS：负责后期 quasi-Newton fine-tuning；
+    Strong Wolfe Line Search：控制 L-BFGS 阶段的 step size。
+
+该方案与 Rathore et al. 的 Adam → L-BFGS 思路一致，但针对当前 KFT 中不希望提前进行 Adam learning-rate grid search 的实际限制，引入 trust region 作为 Adam 阶段的动态 step control 机制。
+
+
+【Codex 工程侧讨论后的当前方案草案，14/05/2026】
+
+说明：
+Codex 的定位不是网络/文献搜索员，而是代码工程侧执行者。因此下面内容主要记录当前 KFT-GBO 可以如何工程化落地，以及哪些地方仍需要 GPT / 文献进一步确认。
+
+一、当前共识
+
+1. 本轮巨大工程只先作用于 KFT-GBO。
+   - 不先动 RS。
+   - 不先动 prerun。
+   - 不先动 QCS。
+   - 不先动 AFM04 正式训练阶段。
+   - 目标是先让 KFT-GBO 的 optimizer / step acceptance 机制可控、可解释、可对照。
+
+2. 保留旧机制为开关，但默认执行新机制。
+   - 旧机制：当前 legacy step guard retry。
+   - 新机制：Adam/AMSGrad proposes update direction → backtracking / Armijo-like acceptance controls step size。
+   - 这样既可以复现实验，也可以默认运行更成熟的新机制。
+
+3. 当前 adaptive lr 与 backtracking/line search 存在功能重叠。
+   - adaptive lr 是慢速、手动设计的 learning-rate 调节器。
+   - backtracking/Armijo-like line search 是每一步的 step-size 控制器。
+   - backtracking 同时兼具 step guard 的功能：如果 candidate step 不可信，就缩小 step；如果仍不可信，就拒绝。
+   - 因此第一版新机制中，建议关闭目前手写的 adaptive lr，让 base lr 固定，由 backtracking/line search 决定每一步 effective step size。
+
+4. Adam/AMSGrad 阶段不再使用原 legacy step guard。
+   - Adam/AMSGrad 仍负责给出更新方向。
+   - backtracking/Armijo-like line search 负责决定这一步走多远。
+   - 需要记录 base lr、alpha、effective_lr = base_lr * alpha。
+
+5. Adam → L-BFGS 的切换时机第一版先使用固定 epoch。
+   - 暂不做自动 plateau 检测切换。
+   - 例如先由参数控制：
+     Adam/AMSGrad + backtracking 跑 N 个 epoch；
+     然后切换到 L-BFGS + strong Wolfe line search 跑 M 个 outer steps。
+   - 固定切换最容易解释，也最容易与旧 KFT-GBO 对照。
+
+6. L-BFGS 阶段需要关闭 AGU。
+   - 关闭 AGU 不能避免 L-BFGS 多次调用 closure。
+   - 多次 closure 是 L-BFGS + strong Wolfe line search 本身决定的。
+   - 关闭 AGU 的意义是：避免 closure 内部反复改变 KAN grid，从而导致同一个 L-BFGS step 中 loss landscape 自己发生变化。
+   - 因此：Adam 阶段可以保留 AGU；进入 L-BFGS 后冻结 AGU。
+
+7. 目前不把 basin hopping 作为第一优先级。
+   - basin hopping 更像是跳出 basin 的全局策略。
+   - 当前 KFT 已经有 RS、多 trial、prerun，这些本质上已经提供了一部分 multi-start / preselection。
+   - 第一优先级应当是把局部优化器做成熟：先比较 legacy step guard、Adam+backtracking、Adam→L-BFGS。
+   - 如果这些局部优化增强后仍停在同类结果，再考虑 basin hopping、continuation、architecture/input 扩展等更大改动。
+
+二、建议的第一版训练框架
+
+KFT-GBO 第一版建议框架：
+
+    RS winner / manually selected trial
+    →
+    Adam/AMSGrad + backtracking / Armijo-like line search
+    →
+    fixed epoch switch
+    →
+    freeze AGU
+    →
+    L-BFGS + strong Wolfe line search
+
+但为了降低 bug 面，工程上可以分两步实现：
+
+阶段 A：
+
+    Adam/AMSGrad + backtracking / Armijo-like line search
+
+先不接 L-BFGS。目的是验证新 step acceptance 是否比 legacy step guard 更稳定、更少假性卡死、日志更可解释。
+
+阶段 B：
+
+    Adam/AMSGrad + backtracking
+    →
+    L-BFGS + strong Wolfe
+
+在阶段 A 验证稳定后，再加入 L-BFGS fine-tuning。
+
+三、日志和结果格式必须扩展
+
+新机制必须记录足够多的 optimizer / step acceptance 信息，否则之后无法判断改动是否真的有效。
+
+建议至少记录：
+
+1. phase
+   - adam_backtracking
+   - lbfgs
+
+2. optimizer
+   - adam
+   - amsgrad
+   - lbfgs
+
+3. step_controller
+   - legacy_guard
+   - armijo_backtracking
+   - off
+
+4. 每个 epoch / step 的关键量
+   - old_loss
+   - candidate_loss
+   - accepted_loss
+   - base_lr
+   - alpha
+   - effective_lr
+   - grad_dot_p
+   - armijo_rhs 或对应 acceptance threshold
+   - backtracking_retries
+   - accepted/rejected reason
+
+5. L-BFGS 阶段额外记录
+   - lbfgs_outer_step
+   - closure_calls
+   - loss_before_lbfgs_step
+   - loss_after_lbfgs_step
+   - line_search_status
+   - wall time
+
+四、需要抛给 GPT / 文献继续确认的问题
+
+核心 question mark：
+
+在当前 KFT 这种 KAN + ODE rollout + inverse dynamics / physics-informed loss landscape 中，line search / Armijo-like step acceptance 应该采用哪一种形式？
+
+1. 是否应该采用严格 monotone Armijo sufficient decrease？
+   - 即每一步都要求 loss 有足够下降。
+   - 优点：稳定、定义清楚、容易替代当前 step guard。
+   - 疑问：是否会过于保守，导致模型仍然无法穿过某些狭窄通道或进入更优 basin？
+
+2. 是否应该采用 non-monotone line search / relaxed Armijo？
+   - 即允许小幅、短暂、受控的 loss increase。
+   - 优点：可能更适合非凸、ODE-sensitive、ill-conditioned loss landscape。
+   - 疑问：如何定义可接受的 temporary loss increase？参考当前 loss、滑动窗口最大值、滑动窗口均值，还是其他 reference loss？
+
+3. 在 PINN / neural ODE / inverse problem / system identification 文献中，针对这类问题是否有成熟推荐？
+   - monotone Armijo
+   - non-monotone Armijo
+   - trust-region acceptance
+   - Wolfe / strong Wolfe line search
+   - filter method
+   - adaptive trust-region radius
+   - hybrid Adam → L-BFGS
+
+4. 如果目标是替代当前 rough step guard retry，并且又不希望过度保守，文献或实践中更推荐哪种 step acceptance rule？
+
+这个问题暂不由 Codex 下结论，等待 GPT / 文献搜索补充后再决定 KFT 第一版采用 strict monotone 还是 relaxed / non-monotone 方案。
+
+
+【文献阅读后的计划更新，14/05/2026】
+
+参考文献：
+
+1. C:\Users\Public\Documents\GitHub\HNODECB\user requirements\literature\Which Optimizer Works Best for Physics Informed Neural Networks and Kolmogorov-Arnold Networks.pdf
+2. C:\Users\Public\Documents\GitHub\HNODECB\user requirements\literature\Challenges in Training PINNs A Loss Landscape Perspective.pdf
+
+阅读后的关键判断：
+
+1. 两篇文献都支持把当前问题理解为 ill-conditioned ODE/PINN-like inverse optimization problem，而不应简单归结为 Adam learning-rate tuning 或 KAN architecture 问题。
+
+2. 两篇文献都支持 hybrid first-order + quasi-Newton 的方向。
+   - 先用 Adam/AMSGrad 做前期探索。
+   - 后期切换到 L-BFGS / BFGS-like quasi-Newton optimizer 做 fine-tuning。
+   - 这与当前 KFT 的需求一致。
+
+3. 文献中的 Armijo / Wolfe / Strong Wolfe / backtracking 基本属于 sufficient decrease 体系。
+   - 标准 Armijo/backtracking 并不是为了接受 temporary loss jump。
+   - 如果 search direction 是下降方向，则 Armijo sufficient decrease 要求新 loss 至少下降。
+   - 因此，KFT 第一版不采用 relaxed / non-monotone line search。
+
+4. KFT 第一版采用 monotone Armijo/backtracking。
+   - Adam/AMSGrad 提出方向。
+   - Armijo/backtracking 决定 step size alpha。
+   - 只接受满足 sufficient decrease 的 step。
+   - 不允许 accepted loss jump。
+
+5. 当前手写 adaptive lr 与 backtracking/line search 功能重叠。
+   - 第一版新机制中关闭当前 adaptive lr。
+   - 使用固定 base lr。
+   - 每一步由 backtracking alpha 决定 effective_lr = base_lr * alpha。
+
+6. L-BFGS 阶段使用 strong Wolfe line search。
+   - 这与两篇文献中常见的 L-BFGS 设置一致。
+   - 但需要注意：第二篇文献指出 L-BFGS + strong Wolfe 可能提前停止，甚至在 gradient norm 仍不小的时候停滞。
+   - 因此 L-BFGS 不是最终保证，而是 KFT 第一版 optimizer update 的合理第二阶段。
+
+7. L-BFGS 阶段冻结 AGU。
+   - 关闭 AGU 不能减少 L-BFGS closure 调用次数。
+   - 关闭 AGU 是为了避免 closure 多次调用过程中 KAN grid 被改变，从而破坏同一个 optimizer step 内 loss landscape 的一致性。
+
+8. basin hopping 暂不作为第一优先级。
+   - 当前 KFT 已有 RS、多 trial、prerun 等 multi-start / preselection 机制。
+   - 第一优先级是先把局部优化器从 legacy step guard retry 升级为更成熟的 optimizer pipeline。
+
+因此，目前确定的 KFT-GBO 更新框架为：
+
+    RS winner / manually selected trial
+    →
+    Adam/AMSGrad + monotone Armijo/backtracking
+    →
+    fixed epoch switch
+    →
+    freeze AGU
+    →
+    L-BFGS + strong Wolfe line search
+
+第一版实现原则：
+
+1. 只作用于 KFT-GBO。
+2. 不动 RS。
+3. 不动 prerun。
+4. 不动 QCS。
+5. 不动 AFM04 正式训练阶段。
+6. 保留 legacy step guard 为可选开关。
+7. 新机制作为 KFT-GBO 默认路径。
+8. 第一版不允许 accepted loss jump。
+9. 第一版不做 non-monotone line search。
+10. 第一版不做自动 plateau 切换，Adam → L-BFGS 先使用固定 epoch。
+
+该计划的独立工程规格总结见：
+
+    C:\Users\Public\Documents\GitHub\HNODECB\AFM04\KAN_full_test\KFT optimizer update.txt

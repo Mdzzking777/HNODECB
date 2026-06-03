@@ -34,13 +34,15 @@ from AFM04.stage2light.runner.visualization._common import (
 
 DEFAULT_CHECKPOINT_DIR = REPO_ROOT / "AFM04" / "stage2light" / "checkpoints"
 DEFAULT_OUT_DIR = REPO_ROOT / "AFM04" / "stage2light" / "logs" / "visualization"
-DEFAULT_OUT_FILE = "afm_param_stage2light_04_preopt_rank_grid.png"
+DEFAULT_OUT_FILE = "afm_param_stage2light_04_preopt_warmstart_grid.png"
 _BEST_VIZ_RE = re.compile(r"stage2light_best_p(\d+)\.viz\.pkl$")
 
 
 def _role_sort_key(role: str) -> tuple[int, str]:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
+        return (0, role_norm)
+    if role_norm == "middle":
         return (1, role_norm)
     if role_norm == "max_x1_pp_change":
         return (2, role_norm)
@@ -130,9 +132,14 @@ def _config_from_payload(payload: dict[str, Any]):
         "grid_range_lo",
         "grid_range_hi",
         "gnn_learnable",
-        "wpred_enabled",
-        "train_wpred_enabled",
-        "wpred_eps",
+        "soft_mask_enabled",
+        "soft_mask_trainable",
+        "soft_mask_s0_a0",
+        "soft_mask_s0_min_a0",
+        "soft_mask_s0_max_a0",
+        "soft_mask_alpha_a0",
+        "soft_mask_alpha_min_a0",
+        "soft_mask_alpha_max_a0",
         "ks_lo",
         "ks_hi",
         "cs_lo",
@@ -171,16 +178,15 @@ def _select_split(prepared: PreparedData, payload: dict[str, Any]) -> WindowSpli
 
 
 def _build_preopt_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
-    warmstart = payload.get("stage1_warmstart", {})
+    warmstart = payload.get("warmstart", payload.get("prestage2_warmstart", payload.get("stage1_warmstart", {})))
     if not isinstance(warmstart, dict) or not warmstart:
-        raise KeyError("Payload is missing stage1_warmstart metadata required for pre-opt visualization.")
+        raise KeyError("Payload is missing warmstart metadata required for pre-opt visualization.")
 
     cfg = _config_from_payload(payload)
     prepared = prepare_data(cfg)
     split = _select_split(prepared, payload)
     dtype = _torch_dtype(cfg.dtype)
     device = str(cfg.device)
-    train_wpred_enabled = bool(getattr(cfg, "train_wpred_enabled", getattr(cfg, "wpred_enabled", False)))
 
     model_seed = int(warmstart["seed"])
     ks_init = float(warmstart["ks0"])
@@ -203,8 +209,14 @@ def _build_preopt_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         grid_range=(cfg.grid_range_lo, cfg.grid_range_hi),
         dist=float(prepared.known_pars[6]),
         a0=float(prepared.known_pars[9]),
-        wpred_enabled=train_wpred_enabled,
-        wpred_eps=cfg.wpred_eps,
+        soft_mask_enabled=bool(cfg.soft_mask_enabled),
+        soft_mask_trainable=bool(cfg.soft_mask_trainable),
+        soft_mask_s0_a0=float(cfg.soft_mask_s0_a0),
+        soft_mask_s0_min_a0=float(cfg.soft_mask_s0_min_a0),
+        soft_mask_s0_max_a0=float(cfg.soft_mask_s0_max_a0),
+        soft_mask_alpha_a0=float(cfg.soft_mask_alpha_a0),
+        soft_mask_alpha_min_a0=float(cfg.soft_mask_alpha_min_a0),
+        soft_mask_alpha_max_a0=float(cfg.soft_mask_alpha_max_a0),
         gnn_learnable=cfg.gnn_learnable,
         device=device,
         dtype=dtype,
@@ -224,8 +236,15 @@ def _build_preopt_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     times = torch.as_tensor(split.times_full, dtype=dtype, device=device)
     mech_true = torch.as_tensor(prepared.mech_true, dtype=dtype, device=device)
 
+    source_detail = ""
     with torch.no_grad():
-        init_gain = float(model.initialize_gain_from_truth(train_states, train_fts))
+        warmstart_source = str(warmstart.get("source", "stage1")).strip().lower()
+        if warmstart_source == "prest2":
+            init_gain = float(model.initialize_gain_from_truth(train_states, train_fts))
+            source_detail = "shown = st1pl source of selected prest2 candidate"
+        else:
+            init_gain = float(model.initialize_gain_from_truth(train_states, train_fts))
+            source_detail = "shown = stage1pluslight warmstart"
         traj_pred = rollout_single_shooting_torch(
             force_module=model,
             known_pars=prepared.known_pars,
@@ -244,7 +263,8 @@ def _build_preopt_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
             eta_star=prepared.eta_star_true,
             mech_true=mech_true,
         )
-        fts_pred = model(teacher_states)
+        rollout_states = traj_pred.transpose(0, 1)
+        fts_pred = model(rollout_states)
         mech_pred = mech_module().detach().cpu().numpy()
 
     return {
@@ -259,12 +279,15 @@ def _build_preopt_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         "mech_true": prepared.mech_true,
         "init_gain": init_gain,
         "warmstart": warmstart,
+        "warmstart_source": warmstart_source,
+        "source_detail": source_detail,
     }
 
 
 def run_one(*, out_dir: Path = DEFAULT_OUT_DIR) -> Path:
     payloads = load_available_payloads()
     fig, axes = plt.subplots(len(payloads), 5, figsize=(30, 4.8 * len(payloads)), squeeze=False, sharex=False)
+    row_labels: list[str] = []
 
     for row, payload in enumerate(payloads):
         snap = _build_preopt_snapshot(payload)
@@ -276,16 +299,37 @@ def run_one(*, out_dir: Path = DEFAULT_OUT_DIR) -> Path:
         fts_true = np.asarray(snap["fts_true"], dtype=float)
         fts_pred = np.asarray(snap["fts_pred"], dtype=float)
         warmstart = snap["warmstart"]
+        warmstart_source = str(snap.get("warmstart_source", warmstart.get("source", "stage1"))).strip().lower()
+        source_detail = str(snap.get("source_detail", "")).strip()
 
-        title_prefix = (
-            f"{stage_title(payload)}: {window_title(payload)} | "
-            f"pre-opt rank={int(warmstart['rank'])} trial={int(warmstart['trial_id'])}"
-        )
+        if warmstart_source == "prest2" and int(warmstart.get("candidate_b", warmstart.get("candidate", 0)) or 0) > 0:
+            candidate_b = int(warmstart.get("candidate_b", warmstart.get("candidate", 0)))
+            rank = int(warmstart.get("source_stage1_rank", warmstart.get("original_rank", 0)) or 0)
+            mech = int(warmstart.get("source_mech_winner", 0) or 0)
+            parts = [f"source of prest2 candidate B={candidate_b}"]
+            if rank > 0:
+                parts.append(f"source st1 rank={rank}")
+            if mech > 0:
+                parts.append(f"mech winner={mech}")
+            warmstart_label = ", ".join(parts)
+        elif int(warmstart.get("mech_winner", 0) or 0) > 0:
+            warmstart_label = f"stage1pluslight mech winner={int(warmstart['mech_winner'])}"
+        elif int(warmstart.get("rank", 0) or 0) > 0:
+            warmstart_label = f"stage1pluslight rank={int(warmstart['rank'])}"
+        else:
+            warmstart_label = "stage1pluslight trial"
+        if source_detail:
+            warmstart_label = f"{source_detail} | {warmstart_label}"
+        window_label = window_title(payload)
+        stage_label = stage_title(payload)
+        if not window_label.startswith(f"{stage_label}:"):
+            window_label = f"{stage_label}: {window_label}"
+        row_labels.append(f"{window_label} | {warmstart_label} | trial={int(warmstart['trial_id'])}")
 
         ax0 = axes[row, 0]
-        ax0.plot(times_us, fts_true, color="black", linewidth=2, label="Fts true")
-        ax0.plot(times_us, fts_pred, color="crimson", linewidth=2, linestyle="--", label="Fts pred")
-        ax0.set_title(title_prefix + "\nFts before gradient-based opt")
+        ax0.plot(times_us, fts_true, color="black", linewidth=2, label="Fts teacher true")
+        ax0.plot(times_us, fts_pred, color="crimson", linewidth=2, linestyle="--", label="Fts rollout pred")
+        ax0.set_title("Fts after st1pl")
         ax0.set_xlabel("time (us)")
         ax0.set_ylabel("force (N)")
         ax0.grid(True, alpha=0.25)
@@ -294,7 +338,7 @@ def run_one(*, out_dir: Path = DEFAULT_OUT_DIR) -> Path:
         ax1 = axes[row, 1]
         ax1.plot(times_us, ode_true[0, :], color="black", linewidth=2, label="x1 true")
         ax1.plot(times_us, traj_pred[0, :], color="crimson", linewidth=2, linestyle="--", label="x1 pred")
-        ax1.set_title(title_prefix + "\nx1 before gradient-based opt")
+        ax1.set_title("x1 after st1pl")
         ax1.set_xlabel("time (us)")
         ax1.set_ylabel("x1")
         ax1.grid(True, alpha=0.25)
@@ -303,7 +347,7 @@ def run_one(*, out_dir: Path = DEFAULT_OUT_DIR) -> Path:
         ax2 = axes[row, 2]
         ax2.plot(times_us, ode_true[1, :], color="black", linewidth=2, label="x2 true")
         ax2.plot(times_us, traj_pred[1, :], color="crimson", linewidth=2, linestyle="--", label="x2 pred")
-        ax2.set_title(title_prefix + "\nx2 before gradient-based opt")
+        ax2.set_title("x2 after st1pl")
         ax2.set_xlabel("time (us)")
         ax2.set_ylabel("x2")
         ax2.grid(True, alpha=0.25)
@@ -312,7 +356,7 @@ def run_one(*, out_dir: Path = DEFAULT_OUT_DIR) -> Path:
         ax3 = axes[row, 3]
         ax3.plot(times_us, x2dot_true, color="black", linewidth=2, label="x2dot true")
         ax3.plot(times_us, x2dot_pred, color="crimson", linewidth=2, linestyle="--", label="x2dot pred")
-        ax3.set_title(title_prefix + "\nx2dot before gradient-based opt")
+        ax3.set_title("x2dot after st1pl")
         ax3.set_xlabel("time (us)")
         ax3.set_ylabel("x2dot")
         ax3.grid(True, alpha=0.25)
@@ -321,13 +365,18 @@ def run_one(*, out_dir: Path = DEFAULT_OUT_DIR) -> Path:
         ax4 = axes[row, 4]
         ax4.plot(times_us, ode_true[2, :], color="black", linewidth=2, label="x3 true")
         ax4.plot(times_us, traj_pred[2, :], color="crimson", linewidth=2, linestyle="--", label="x3 pred")
-        ax4.set_title(title_prefix + "\nx3 before gradient-based opt")
+        ax4.set_title("x3 after st1pl")
         ax4.set_xlabel("time (us)")
         ax4.set_ylabel("x3")
         ax4.grid(True, alpha=0.25)
         ax4.legend(loc="best")
 
-    fig.suptitle("AFM04 stage2light warmstart snapshot before any gradient-based optimization", fontsize=14, y=1.02)
+    source_text = "\n".join(row_labels)
+    fig.suptitle(
+        "AFM04 stage2light warmstart source snapshot after st1pl\n" + source_text,
+        fontsize=14,
+        y=1.02,
+    )
     return finalize_and_save(fig, out_path(DEFAULT_OUT_FILE, out_dir))
 
 

@@ -1,0 +1,172 @@
+Fts NN replacement: random search -> GBO initial point question
+================================================================
+
+Date: 2026-05-08
+Scope: AFM04 / KFT-MFT style functionality tests
+
+Purpose of this note
+--------------------
+
+This note is intended as a question draft to be given to ChatGPT or another web-search-capable assistant.
+Please use web search to investigate whether there are established methods, papers, or practical algorithms
+for the dilemma described below.
+
+Context
+-------
+
+We are studying a simplified problem:
+
+    Replace Fts, a complex force function, with a neural network.
+
+For this question, temporarily ignore:
+
+    other optimizable physical parameters,
+    hidden/unknown physical variables,
+    uncertainty in ks/cs or other mechanical parameters.
+
+Focus only on:
+
+    the neural-network parameters used to approximate Fts.
+
+Current workflow
+----------------
+
+1. We use a random-search phase over NN parameters / NN initializations.
+
+2. The purpose of this random-search phase is to provide gradient-based optimization with a good
+   initial point / starting point.
+
+3. After random search, the best trial according to the random-search loss is selected as the initial
+   point for gradient-based optimization.
+
+Question / concern
+------------------
+
+We suspect that the best trial in the random-search phase may not be the best starting point for the
+later gradient-based optimization phase.
+
+More precisely:
+
+    A random-search trial itself is not a local minimum, because no gradient optimization has happened yet.
+
+However:
+
+    The random-search winner may lie in an attraction basin whose initial loss is good, but whose
+    post-optimization endpoint is not the global minimum / ground truth / best reachable solution.
+
+It is possible that another trial X has slightly worse initial train loss than the random-search winner,
+but after entering gradient-based optimization, trial X has more loss-drop potential and eventually reaches
+a better final result.
+
+So the core concern is:
+
+    best random-search initial loss
+    may not equal
+    best final gradient-optimized loss.
+
+Deeper core concern
+-------------------
+
+There is an even more fundamental uncertainty:
+
+    Does the NN parameter space contain local minima / attraction basins such that, even from an apparently
+    good starting point, gradient-based optimization still cannot reach the ground-truth Fts function?
+
+In other words, the concern is not only about choosing between trial 781 and trial X.
+The deeper concern is whether the NN representation and optimization landscape have regions where:
+
+    the initial loss looks good,
+    the early optimization behavior may also look reasonable,
+    but the optimizer is still trapped away from the true Fts / global optimum.
+
+This would mean that even a "good" random-search start may be fundamentally insufficient, because the later
+gradient-based optimization could be confined to a basin that cannot recover the ground-truth function.
+
+So the biggest question is:
+
+    Are there local minima or non-global basins in NN parameter space that prevent recovery of the
+    ground-truth Fts, even when the initial point appears good?
+
+And if yes:
+
+    How can we detect this situation,
+    avoid it,
+    or design a search/optimization protocol that reduces the chance of being trapped there?
+
+Concrete example
+----------------
+
+Suppose random search selects trial 781 because it has the best initial train loss.
+
+But maybe:
+
+    trial 781 starts very good but quickly plateaus,
+    while trial X starts slightly worse but descends more effectively during gradient-based optimization.
+
+Then trial X could ultimately be better than trial 781.
+
+Research question for web search
+--------------------------------
+
+Please search broadly for methods, theories, or practical algorithms that address this dilemma:
+
+    When using random search to choose neural-network initializations for a later gradient-based
+    optimization phase, how should we avoid selecting a candidate that only has good initial loss but
+    poor final optimization potential?
+
+Specific things to investigate
+------------------------------
+
+1. Is there an established name for this problem?
+
+2. Are there known methods for selecting initial points not only by initial loss, but also by expected
+   post-gradient-optimization performance?
+
+3. Are there methods that combine random search and short gradient-based training runs to select better
+   candidates?
+
+4. Are there algorithms that allocate small training budgets to many candidates, then allocate larger
+   budgets only to promising candidates?
+
+5. Are there methods from global optimization, multi-start optimization, hyperparameter optimization,
+   neural-network initialization, or nonconvex optimization that are directly relevant?
+
+6. Are there practical recommendations for small scientific neural networks where each full training run
+   is expensive, but many initializations can be evaluated cheaply?
+
+7. What would be a reasonable experimental protocol to test whether the random-search winner is actually
+   the best gradient-optimization starting point?
+
+8. How can we determine whether failure to reach ground truth is caused by:
+
+       a bad initial point,
+       a local minimum / bad basin in NN parameter space,
+       insufficient NN expressive power,
+       insufficient optimization budget,
+       or an identifiability issue where different NN parameters produce similar observable trajectories?
+
+9. Are there diagnostic tools for distinguishing "this seed is bad" from "the NN loss landscape itself
+   contains traps that prevent recovery of ground truth"?
+
+Important terminology
+---------------------
+
+Avoid saying:
+
+    "The random-search trial is a local minimum."
+
+Better wording:
+
+    "The random-search winner may lie in an attraction basin whose initial loss is good, but whose
+    post-gradient-optimization endpoint is not necessarily the best available endpoint."
+
+Expected output from the search
+-------------------------------
+
+Please provide:
+
+    relevant method names,
+    key papers or references,
+    conceptual explanation,
+    practical algorithms,
+    and a recommendation for how to modify the current random-search -> GBO workflow.

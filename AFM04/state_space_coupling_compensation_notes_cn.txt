@@ -1,0 +1,94 @@
+AFM04 state-space equation 中的 coupling / compensation 备忘
+================================================================
+
+本文记录一个核心辨识性问题：从 AFM 的 state-space equation 出发，某些变量并不是彼此独立地被观测或约束，因此在优化过程中可能出现 coupling / compensation。
+
+
+1. ks 与 cs 的 coupling / compensation
+--------------------------------------
+
+在当前 AFM state-space 框架中，样品侧隐藏状态 x3 的动力学可写为类似形式：
+
+    x3dot = (-Fts - ks * x3) / cs
+
+等价地：
+
+    cs * x3dot + ks * x3 + Fts = 0
+
+这说明 ks、cs、x3、Fts 并不是被独立观测到的对象。尤其在实验环境中，x3 与 x3dot 不可直接测量，因此 ks 和 cs 可能通过改变隐藏状态的时间尺度、阻尼强度、弹簧项贡献来互相补偿。
+
+因此，优化结果可能出现以下现象：
+
+    1. x1 / x2 / x2dot loss 下降；
+    2. rollout trajectory 在可观测量上表现合理；
+    3. 但 ks / cs 偏离 ground truth；
+    4. 该 ks / cs 组合在动力学上可用，却未必是物理上唯一或真实的组合。
+
+这不是简单的数值误差，而是 state-space identifiability 的问题。
+
+
+2. x3 与 NN_raw 的 coupling / compensation
+------------------------------------------
+
+第二个 coupling 更隐蔽，也更容易被误解。它不是简单的 x3 与 Fts coupling，而是 x3 trajectory 与 NN_raw force model 之间的 coupling。
+
+当前 force chain 可抽象写为：
+
+    Fts_eff = soft_mask * g_nn * NN_raw(x1, x2, x3)
+
+如果 x3 trajectory 漂移，那么 NN 的第三个输入维度也随之改变。此时 NN_raw 可以在错误的 x3 轨道上学习出一个补偿性函数，使得最终进入 RHS 的有效 force 仍然让 x1 / x2 / x2dot loss 下降。
+
+也就是说，系统可能形成：
+
+    wrong x3 trajectory + adapted NN_raw(x1, x2, wrong x3)
+
+这组组合在动力学上可以降低 observable loss，但并不代表 x3 或 NN_raw 本身具有正确物理意义。
+
+因此需要区分：
+
+    Fts_eff 是否在 rollout 中足够合理
+    与
+    NN_raw 是否学到了真实 force law
+
+这两个问题并不等价。
+
+
+3. 为什么强调“NN_raw 而不是 Fts”
+---------------------------------
+
+Fts_eff 是经过 soft mask、gain 等 force chain 之后真正进入 state-space RHS 的有效力。它可能因为 force anchoring、soft mask、x2dot residual 等约束而变得相对合理。
+
+但 NN_raw 是在当前 rollout trajectory 所提供的输入空间上被训练出来的函数。如果 x3 trajectory 本身发生漂移，那么 NN_raw 学到的函数也会被该错误输入空间污染。
+
+因此，更精确的说法是：
+
+    Fts_eff 可能被约束到较合理；
+    但 NN_raw 与 x3 trajectory 之间仍可能发生结构性补偿。
+
+
+4. 对 W0 问题的启示
+-------------------
+
+W0 处于首次接触附近，隐藏动力学、force transition、x3dot 信息可能更敏感。若仅使用 (x1, x2, x3) 作为 NN 输入，而 x3 与 x3dot 又不可观测，那么系统更容易找到一条动力学上可行但物理上不唯一的补偿路径。
+
+这可以解释为什么：
+
+    1. W0 比 W1 更难稳定外推；
+    2. soft mask 能显著改善 far-field force restless 问题，但不能彻底解决 identifiability；
+    3. ks / cs 可能发生补偿；
+    4. x3 drift 与 NN_raw adaptation 可能共同出现；
+    5. 可观测 loss 下降不必然意味着 hidden state 与 force model 已经物理正确。
+
+
+5. 当前结论
+-----------
+
+从 state-space equation 的数学结构出发，应承认至少存在两类 coupling / compensation：
+
+    A. ks / cs coupling:
+       ks 与 cs 可以通过隐藏状态动力学的时间尺度和力平衡关系互相补偿。
+
+    B. x3 / NN_raw coupling:
+       错误的 x3 trajectory 可以与被适配的 NN_raw force model 共同降低 observable loss。
+
+这两个问题都属于 AFM04 中 hidden-state identification 的核心风险。

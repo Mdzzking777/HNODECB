@@ -12,9 +12,9 @@ import torch
 
 from AFM04.KAN_full_test.config import default_config as default_kan_config
 from AFM04.KAN_full_test.data import PreparedData, WindowSplit, prepare_data
-from AFM04.KAN_full_test.kan_backend import KANForceModule
 from AFM04.KAN_full_test.losses import TorchLossParts, evaluate_split
 from AFM04.KAN_full_test.rollout import StateGuardTriggered, fts_truth_from_states_torch
+from AFM04.stage2light.kan_backend import KANForceModule
 from AFM04.test_case_settings.afm_dmt_kv_settings.afm_dmt_kv_model_settings import CS, KS
 
 
@@ -29,14 +29,20 @@ def _torch_dtype(name: str) -> torch.dtype:
 
 def _window_to_torch(split: WindowSplit, *, dtype: torch.dtype, device: str) -> dict[str, torch.Tensor]:
     return {
+        "ode_full": torch.as_tensor(split.ode_full, dtype=dtype, device=device),
         "ode_train": torch.as_tensor(split.ode_train, dtype=dtype, device=device),
         "ode_val": torch.as_tensor(split.ode_val, dtype=dtype, device=device),
+        "x2dot_full": torch.as_tensor(split.x2dot_full, dtype=dtype, device=device),
         "x2dot_train": torch.as_tensor(split.x2dot_train, dtype=dtype, device=device),
         "x2dot_val": torch.as_tensor(split.x2dot_val, dtype=dtype, device=device),
+        "contact_full": torch.as_tensor(split.contact_full.astype(float), dtype=dtype, device=device),
         "contact_train": torch.as_tensor(split.contact_train.astype(float), dtype=dtype, device=device),
         "contact_val": torch.as_tensor(split.contact_val.astype(float), dtype=dtype, device=device),
+        "times_full": torch.as_tensor(split.times_full, dtype=dtype, device=device),
         "times_train": torch.as_tensor(split.times_train, dtype=dtype, device=device),
         "times_val": torch.as_tensor(split.times_val, dtype=dtype, device=device),
+        "train_idx": torch.as_tensor(split.train_idx, dtype=torch.long, device=device),
+        "val_idx": torch.as_tensor(split.val_idx, dtype=torch.long, device=device),
     }
 
 
@@ -55,7 +61,7 @@ def _parts_dict(parts: TorchLossParts) -> dict[str, float]:
         "cont": float(parts.cont),
         "x1_rec": float(parts.x1_rec),
         "x3_rec": float(parts.x3_rec),
-        "fts_teacher_rec": float(parts.fts_teacher_rec),
+        "fts_teacher_rec": float(getattr(parts, "fts_teacher_rec", getattr(parts, "fts_rollout_rec", float("nan")))),
     }
 
 
@@ -88,11 +94,45 @@ def _trial_seed(base_seed: int, seed_bank_index: int) -> int:
     return int(base_seed + seed_bank_index)
 
 
-def prepare_kan_stage1_runtime(repo_root: str | Path, *, auto_generate_dataset: bool = False) -> dict[str, Any]:
+def _observable_grid_inputs_from_ode(
+    *,
+    ode_train: torch.Tensor,
+) -> torch.Tensor:
+    """Build AGU samples in raw physical coordinates.
+
+    x1/x2 come from observed data.  x3 is a neutral raw-domain axis only; it
+    does not encode true/predicted x3 and therefore does not guide AGU.
+    """
+
+    n = int(ode_train.shape[1])
+    inputs = torch.empty((n, 3), dtype=ode_train.dtype, device=ode_train.device)
+    inputs[:, 0:2] = ode_train[0:2, :].transpose(0, 1)
+    if n <= 1:
+        inputs[:, 2] = 0.0
+    else:
+        x1_abs = float(torch.max(torch.abs(ode_train[0, :])).detach().cpu()) if n > 0 else 0.0
+        x3_amp = max(0.1 * x1_abs, 1.0e-12)
+        inputs[:, 2] = torch.linspace(-x3_amp, x3_amp, n, dtype=ode_train.dtype, device=ode_train.device)
+    return inputs
+
+
+def prepare_kan_stage1_runtime(
+    repo_root: str | Path,
+    *,
+    auto_generate_dataset: bool = False,
+    window_mode: str | None = None,
+    arch_window_us: float | None = None,
+    val_stride: int | None = None,
+    val_offset: int | None = None,
+) -> dict[str, Any]:
     kcfg = default_kan_config(repo_root)
     kcfg = replace(
         kcfg,
         auto_generate_dataset=bool(auto_generate_dataset),
+        window_mode=str(window_mode).strip() if window_mode is not None else kcfg.window_mode,
+        arch_window_us=float(arch_window_us) if arch_window_us is not None else kcfg.arch_window_us,
+        val_stride=int(val_stride) if val_stride is not None else kcfg.val_stride,
+        val_offset=int(val_offset) if val_offset is not None else kcfg.val_offset,
         random_search_window_index=1,
         train_window_index=0,
     )
@@ -103,8 +143,8 @@ def prepare_kan_stage1_runtime(repo_root: str | Path, *, auto_generate_dataset: 
     train_states = torch.as_tensor(split.ode_train.T, dtype=dtype, device=kcfg.device)
     train_fts = torch.as_tensor(split.fts_train_true, dtype=dtype, device=kcfg.device)
 
-    train_max_abs_x1 = float(np.max(np.abs(split.ode_train[0, :]))) if split.ode_train.shape[1] > 0 else float("nan")
-    train_max_abs_x2 = float(np.max(np.abs(split.ode_train[1, :]))) if split.ode_train.shape[1] > 0 else float("nan")
+    train_max_abs_x1 = float(np.max(np.abs(split.ode_full[0, :]))) if split.ode_full.shape[1] > 0 else float("nan")
+    train_max_abs_x2 = float(np.max(np.abs(split.ode_full[1, :]))) if split.ode_full.shape[1] > 0 else float("nan")
     x1_abs_guard = (
         float(kcfg.random_search_x1_guard_mult) * train_max_abs_x1
         if kcfg.random_search_fail_fast_enabled and np.isfinite(train_max_abs_x1) and train_max_abs_x1 > 0.0
@@ -169,15 +209,24 @@ def stage1pluslight_kan_random_trial(
         grid_range=(cfg.grid_range_lo, cfg.grid_range_hi),
         dist=float(prepared.known_pars[6]),
         a0=float(prepared.known_pars[9]),
-        wpred_enabled=cfg.wpred_enabled,
-        wpred_eps=cfg.wpred_eps,
         gnn_learnable=cfg.gnn_learnable,
+        soft_mask_enabled=True,
+        soft_mask_trainable=False,
+        soft_mask_s0_a0=20.0,
+        soft_mask_s0_min_a0=1.0,
+        soft_mask_s0_max_a0=100.0,
+        soft_mask_alpha_a0=0.25,
+        soft_mask_alpha_min_a0=0.02,
+        soft_mask_alpha_max_a0=5.0,
         device=cfg.device,
         dtype=dtype,
     ).to(cfg.device)
     with torch.no_grad():
         if cfg.adaptive_grid_enabled:
-            model.update_grid_from_states(train_states)
+            grid_inputs = _observable_grid_inputs_from_ode(
+                ode_train=tensors["ode_train"],
+            )
+            model.update_grid_from_normalized_inputs(grid_inputs)
         init_gnn = float(model.initialize_gain_from_truth(train_states, train_fts))
 
     failure_reason = ""
@@ -193,32 +242,34 @@ def stage1pluslight_kan_random_trial(
                 force_module=model,
                 known_pars=prepared.known_pars,
                 mech_true=mech,
-                ode_true=tensors["ode_train"],
-                x2dot_true=tensors["x2dot_train"],
-                contact_mask=tensors["contact_train"],
-                times=tensors["times_train"],
+                ode_true=tensors["ode_full"],
+                x2dot_true=tensors["x2dot_full"],
+                contact_mask=tensors["contact_full"],
+                times=tensors["times_full"],
                 ode_method=cfg.ode_method,
                 ode_rtol=cfg.ode_rtol,
                 ode_atol=cfg.ode_atol,
                 eta_star_true=prepared.eta_star_true,
                 x1_abs_guard=x1_abs_guard,
                 x2_abs_guard=x2_abs_guard,
+                loss_indices=tensors["train_idx"],
             )
             if cfg.random_search_use_val:
                 val_total, val_parts, val_traj = evaluate_split(
                     force_module=model,
                     known_pars=prepared.known_pars,
                     mech_true=mech,
-                    ode_true=tensors["ode_val"],
-                    x2dot_true=tensors["x2dot_val"],
-                    contact_mask=tensors["contact_val"],
-                    times=tensors["times_val"],
+                    ode_true=tensors["ode_full"],
+                    x2dot_true=tensors["x2dot_full"],
+                    contact_mask=tensors["contact_full"],
+                    times=tensors["times_full"],
                     ode_method=cfg.ode_method,
                     ode_rtol=cfg.ode_rtol,
                     ode_atol=cfg.ode_atol,
                     eta_star_true=prepared.eta_star_true,
                     x1_abs_guard=x1_abs_guard,
                     x2_abs_guard=x2_abs_guard,
+                    loss_indices=tensors["val_idx"],
                 )
     except StateGuardTriggered as exc:
         failure_reason = str(exc)
@@ -257,9 +308,11 @@ def stage1pluslight_kan_random_trial(
                 "nn_force_mode": "kan_force_model",
                 "nn_backend": "pykan",
                 "stage1plus_standalone": True,
-                "stage1plus_search_mode": "kscs_grid_kan_seedbank",
+                "stage1plus_search_mode": f"kscs_grid_kan_seedbank_{cfg.window_mode}",
+                "stage1plus_window_mode": str(cfg.window_mode),
+                "stage1plus_arch_window_us": float(cfg.arch_window_us),
                 "window_role": str(split.role),
-                "ranking_metric": "val_loss" if cfg.random_search_use_val else "train_loss",
+                "ranking_metric": "train_loss",
                 "kan_grid": int(cfg.grid),
                 "kan_spline_k": int(cfg.spline_k),
                 "kan_base_fun": str(cfg.base_fun),
@@ -290,10 +343,12 @@ def stage1pluslight_kan_random_trial(
 
     train_loss = float(train_total.detach())
     val_loss = float(val_total.detach()) if val_total is not None else float("nan")
-    ranking_loss = train_loss if not cfg.random_search_use_val else (val_loss if np.isfinite(val_loss) else float("inf"))
+    ranking_loss = train_loss
     metric_parts = _parts_dict(val_parts) if val_parts is not None else _parts_dict(train_parts)
     metric_traj = val_traj if val_traj is not None else train_traj
-    metric_ode_true = tensors["ode_val"] if val_traj is not None else tensors["ode_train"]
+    metric_indices = tensors["val_idx"] if val_traj is not None else tensors["train_idx"]
+    metric_traj = metric_traj[:, metric_indices]
+    metric_ode_true = tensors["ode_full"][:, metric_indices]
     metric_nn_err = _rollout_left_nn_err(
         force_module=model,
         traj=metric_traj,
@@ -321,9 +376,11 @@ def stage1pluslight_kan_random_trial(
             "nn_force_mode": "kan_force_model",
             "nn_backend": "pykan",
             "stage1plus_standalone": True,
-            "stage1plus_search_mode": "kscs_grid_kan_seedbank",
+            "stage1plus_search_mode": f"kscs_grid_kan_seedbank_{cfg.window_mode}",
+            "stage1plus_window_mode": str(cfg.window_mode),
+            "stage1plus_arch_window_us": float(cfg.arch_window_us),
             "window_role": str(split.role),
-            "ranking_metric": "val_loss" if cfg.random_search_use_val else "train_loss",
+            "ranking_metric": "train_loss",
             "kan_grid": int(cfg.grid),
             "kan_spline_k": int(cfg.spline_k),
             "kan_base_fun": str(cfg.base_fun),

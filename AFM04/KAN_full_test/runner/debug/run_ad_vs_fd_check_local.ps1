@@ -21,12 +21,18 @@ while ($true) {
 
 Set-Location -Path $repoRoot
 
+$pythonExe = Join-Path $repoRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path -Path $pythonExe)) {
+  $pythonExe = "python"
+}
+
 Write-Host "Running KFT AD-vs-FD check"
 Write-Host "Repo root   -> $repoRoot"
+Write-Host "Python      -> $pythonExe"
 Write-Host "Shard index -> $ShardIndex"
 Write-Host "Max points  -> $MaxPoints"
 
-python -m AFM04.KAN_full_test.runner.debug.check_ad_vs_fd --shard-index $ShardIndex --max-points $MaxPoints
+& $pythonExe -m AFM04.KAN_full_test.runner.debug.check_ad_vs_fd --shard-index $ShardIndex --max-points $MaxPoints
 $exitCode = $LASTEXITCODE
 
 if ($exitCode -ne 0) {

@@ -1,0 +1,334 @@
+KFT soft mask concept: a physics prior for noncontact calmness
+==============================================================
+
+核心定位
+--------
+
+Soft mask 是一个物理先验，而不是新的 ground-truth 监督项。
+
+它的目标不是告诉模型真实 Fts 是什么，而是告诉模型：
+
+在明显远离 sample surface 的区域，除非可观测动力学强烈要求，否则应优先选择更平息、更平滑、更物理的 Fts explanation。
+
+这个概念尤其服务于 KFT / W0 reconstruction 中观察到的问题：NN/KAN 可能在 noncontact far-field 区域产生 restless force response，并通过这种不物理的 far-field force 在 rollout 中形成隐藏补偿路径。
+
+
+为什么需要 mask
+----------------
+
+作为科学家，我们大概知道：
+
+1. 当 tip 明显远离 sample surface 时，严格意义上不应存在显著 Fts。
+2. 因此，如果模型在远离区域持续产生高频、剧烈、无物理必要的 Fts 波动，应当受到物理先验约束。
+3. 这个约束不是因为我们知道真实 Fts 数值，而是因为我们知道一个边界性物理事实：far-field interaction response 应该趋于平息。
+
+所以 mask 的作用是把“远离表面时 Fts 应该 calm down”这个物理知识引入训练/rollout。
+
+
+为什么必须是 soft
+-----------------
+
+不能用简单的 binary contact status 把所有 noncontact force 粗暴清零。
+
+原因是：
+
+1. 严格定义的 contact region 之外，不代表 Fts 必然完全为 0。
+2. 在逐渐靠近 sample surface 的中程区域，即使尚未进入严格 contact，也可能存在 adhesion、long-range interaction、pre-contact interaction、transition dynamics 或其他尚未完全建模的相互作用。
+3. 如果把 all noncontact 区域都硬压成 0，就可能误杀真实存在但较弱的中程相互作用。
+
+所以 soft mask 表达的是连续衰减的物理偏好：
+
+1. 远离表面时，对 restless Fts 的抑制较强。
+2. 靠近表面但尚未进入严格 contact 时，抑制逐渐减弱。
+3. 接触区附近，保留模型表达复杂 Fts 的自由度。
+
+
+方案 A: soft mask as a loss term
+--------------------------------
+
+方案 A 将 soft mask 作为额外 regularization / physics prior 写进 loss。
+
+概念形式：
+
+在远离表面的区域，如果 NN/KAN 预测出过大的、过快变化的、或明显 restless 的 Fts，则产生额外惩罚。
+
+优点：
+
+1. 不直接修改模型的 force family。
+2. NN/KAN 仍然可以在 noncontact region 输出非零 Fts。
+3. 如果某些 near-surface noncontact force 对可观测动力学是必要的，它仍有机会保留。
+4. 它更像 regularizer，而不是结构性改写模型。
+
+风险：
+
+1. 它是在完整窗口 rollout 之后才通过 loss 施加惩罚。
+2. 如果 restless far-field force 已经在积分过程中形成隐藏补偿，方案 A 可能来得太晚。
+3. 它可能过于 soft，无法阻断早期 bad basin / compensation path。
+
+
+方案 B: soft mask inside RHS force evaluation
+--------------------------------------------
+
+方案 B 将 soft mask 直接作用在 NN/KAN raw output 后面，使真正进入 ODE RHS 的 force 变成 effective force。
+
+概念形式：
+
+raw Fts 由 NN/KAN 产生，然后根据 hard contact status 和 soft noncontact mask 得到 effective Fts。
+
+它的关键优势是：
+
+1. mask 在 ODE 积分过程中即时生效。
+2. 它不是 rollout 结束后再惩罚，而是直接限制进入 RHS 的 force。
+3. 如果 bad basin 来自 far-field restless force 的早期补偿，方案 B 更可能从第一步 rollout 就阻断这种通道。
+
+风险：
+
+1. 它会修改 effective force family。
+2. 如果 mask 设计太强，可能伤害中程 / near-surface noncontact interaction。
+3. 如果 transition 区域设置不当，可能把本来真实存在的 pre-contact force 压掉。
+
+
+目前倾向的详细方案：two-gate learnable monotonic soft mask
+-----------------------------------------------------------
+
+我们目前更倾向于方案 B 的一个受限版本：
+
+hard noncontact gate + learnable monotonic soft mask。
+
+它有两层门槛。
+
+第一层门槛：hard contact status
+-------------------------------
+
+mask 只允许在 hard noncontact status 时启用。
+
+也就是说：
+
+1. 在 contact 区，mask 不起作用。
+2. 在 contact 区，effective force 等于 NN/KAN raw force。
+3. 这样可以防止 mask 权限过高，避免它干扰 contact dynamics / Hertz-like response。
+
+第二层门槛：soft mask inside noncontact
+--------------------------------------
+
+在 hard noncontact 区域内部，我们仍不做 hard zero mask。
+
+原因是 noncontact 内部还可能包含：
+
+1. near-surface interaction
+2. adhesion tail
+3. pre-contact interaction
+4. transition dynamics
+5. 未知中程相互作用
+
+所以在 noncontact 区域内，再使用一个 learnable monotonic soft mask 来区分 far-field 与 near-surface。
+
+
+推荐公式
+--------
+
+令：
+
+F_raw(t) = KAN(x1(t), x2(t), x3(t))
+
+F_eff(t) = M(t) * F_raw(t)
+
+其中 F_eff(t) 是真正进入 ODE RHS 的 effective tip-sample force。
+
+总 mask 写为：
+
+M(t) = c(t) + [1 - c(t)] * m_phi(s(t))
+
+因此：
+
+F_eff(t) = { c(t) + [1 - c(t)] * m_phi(s(t)) } * F_raw(t)
+
+其中：
+
+1. c(t) 是 hard contact status，取值 0 或 1。
+2. c(t) = 1 时，M(t) = 1，因此 contact 区完全不被 mask。
+3. c(t) = 0 时，M(t) = m_phi(s(t))，即只在 noncontact 区启用 soft mask。
+4. s(t) 是 tip-sample separation proxy，表示远离 sample surface 的程度。
+5. m_phi(s) 是 learnable monotonic soft mask。
+
+KFT 试点实现中，hard contact status 由当前 rollout state 的 separation 判定：
+
+c(t) = 1 if s(t) <= a0, otherwise c(t) = 0
+
+也就是说，它不是使用隐藏真值监督，而是在 RHS 当前状态上应用物理接触阈值。
+
+
+推荐的 learnable sigmoid mask
+-----------------------------
+
+第一版可使用可解释的 sigmoid 形式：
+
+m_phi(s) = sigmoid(alpha * (s0 - s))
+
+其中：
+
+1. alpha > 0
+2. s0 是 transition center
+3. far-field floor m_min 固定为 0，不作为 learnable parameter
+
+性质：
+
+1. s 越小，表示越靠近 sample surface，m_phi(s) 越接近 1。
+2. s 越大，表示越远离 sample surface，m_phi(s) 越接近 0。
+3. m_phi(s) 只能 attenuate raw force，不能 amplify raw force。
+4. 0 <= m_phi(s) <= 1。
+5. dm_phi / ds <= 0。
+
+这表达了物理先验：
+
+tip 越远离 sample surface，effective interaction force 应该越弱。
+
+
+learnable parameters
+--------------------
+
+候选 learnable parameters：
+
+1. s0: transition center
+2. alpha: transition sharpness / inverse width
+
+第一版采用：
+
+learnable:
+
+1. s0
+2. alpha
+
+fixed:
+
+1. m_min = 0
+
+理由：
+
+1. far-field separation 足够大时，物理上应当 Fts_eff -> 0。
+2. m_min 不作为 learnable parameter，可以防止 mask 额外获得一个可调补偿自由度。
+3. 第一版只让 mask 学“从哪里开始衰减”和“衰减多宽”。
+4. noncontact 中程区域是否被保留，主要由 s0 和 alpha 决定，而不是由 far-field floor 决定。
+
+注意：m_min = 0 不等于所有 noncontact force 都被压成 0。只有当 s 明显大于 s0 时，m_phi(s) 才会接近 0；near-surface noncontact 仍然可以有 m_phi(s) 接近 1。
+
+
+constrained parameterization
+----------------------------
+
+为了保证物理约束，不能直接使用裸参数。
+
+推荐使用 constrained transform：
+
+1. alpha = softplus(alpha_raw) + alpha_floor
+2. s0 = bounded_transform(s0_raw)
+3. m_min = 0，写死，不学习
+
+真正 learnable 的是：
+
+1. alpha_raw
+2. s0_raw
+
+真正进入公式的是受约束后的：
+
+1. alpha
+2. s0
+3. m_min = 0
+
+
+关于 transition width 的不确定性
+--------------------------------
+
+我们并不知道 transition 应该多宽。
+
+因此不能把某个固定 width 当作物理真理。
+
+learnable monotonic mask 的一个重要优势是：它不需要我们手动指定一个唯一 transition width，而是在受物理约束的前提下，从 rollout dynamics 中学习 attenuation profile。
+
+但是，第一版仍应保守：
+
+1. s0 应被限制在合理范围内。
+2. alpha 不应允许无限大，避免 soft mask 退化成 hard mask。
+3. m_min 固定为 0，表达 far-field interaction vanishing 的物理极限。
+4. contact 区必须恒等通过，即 M(t)=1。
+
+
+关于 raw force 与 mask 的耦合
+-----------------------------
+
+raw Fts 与 mask 可能存在耦合。
+
+但是在当前方案中，我们接受这一点：
+
+最终被认定为物理有效的 Fts 不是 raw Fts，而是二者的组合产品：
+
+Fts = F_eff = M(t) * F_raw(t)
+
+因此，解释时应优先分析 effective force，而不是单独分析 raw KAN output。
+
+需要记录与可视化：
+
+1. raw Fts
+2. mask value M(t)
+3. effective Fts
+4. contact status
+5. separation proxy s(t)
+
+
+与方案 A 的关系
+---------------
+
+方案 A 更保守，因为它不修改 force family。
+
+方案 B 更强，因为它在 RHS 中直接改变 effective force，并可能更有效地阻断早期 compensation basin。
+
+当前判断：
+
+1. 如果目的是诊断 noncontact restless 是否有害，方案 A 是温和起点。
+2. 如果核心怀疑是 early rollout compensation，方案 B 更对症。
+3. learnable monotonic soft mask 是方案 B 的高级版本，但第一版必须加足保护。
+
+
+第一版建议
+----------
+
+第一版建议采用：
+
+1. hard contact gate
+2. noncontact-only soft mask
+3. sigmoid monotonic mask
+4. learnable s0
+5. learnable alpha
+6. fixed m_min = 0
+7. contact 区 M(t)=1
+8. noncontact 区 M(t)=m_phi(s)
+9. 记录 raw Fts / mask / effective Fts
+10. 可视化 mask profile
+
+第一版不建议：
+
+1. hard zero mask
+2. all noncontact force forced to zero
+3. 让 mask 作用于 contact 区
+4. 把 m_min 当作 learnable parameter
+5. 不记录 mask profile 就直接解释训练结果
+
+
+核心科学问题
+------------
+
+我们需要用实验回答：
+
+1. 当前 W0 reconstruction 困难是否部分来自 far-field noncontact force freedom？
+2. 在 RHS 中限制 far-field restless force 是否能帮助模型进入更物理的 basin？
+3. soft mask 是否改善可观测 reconstruction，而不是仅仅让 force 图看起来更平滑？
+4. mask 是否误伤 near-surface / pre-contact interaction？
+5. fixed B-light 与 learnable monotonic B 相比，哪一个更稳定、更可解释？
+
+
+一句话总结
+----------
+
+当前敲定的 soft mask 方向是：
+
+只在 hard noncontact 区域启用一个受物理约束的 learnable monotonic soft mask，使 far-field restless force 在 ODE RHS 中被即时削弱，同时尽量保留 near-surface noncontact interaction 的表达自由。

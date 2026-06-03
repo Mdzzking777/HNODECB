@@ -1,0 +1,584 @@
+标题：KFT optimizer update
+
+日期：14/05/2026
+
+目标：
+
+为 AFM04/KAN_full_test 的 KFT-GBO 阶段建立一个更成熟、更可解释的 optimizer pipeline，用于替代当前较粗糙的 legacy step guard retry 机制。
+
+本更新只针对 KFT-GBO，不改变 RS、prerun、QCS 或 AFM04 正式训练阶段。
+
+
+一、背景判断
+
+当前 KFT-GBO 使用 Adam/AMSGrad + legacy step guard retry。
+
+现象：
+
+1. 打开 legacy step guard 时，loss 比较稳定，但容易停留在某个平台。
+2. 关闭 step guard 时，loss 可能出现巨大 jump，x3 error 和 F_contact error 也会大幅摆动。
+3. 当前问题更像是 ODE-constrained / PINN-like inverse problem 中的 ill-conditioned optimization，而不是单纯 learning-rate tuning。
+
+两篇文献支持以下方向：
+
+1. first-order optimizer 适合作为前期探索。
+2. quasi-Newton optimizer 适合作为后期 fine-tuning。
+3. Adam + L-BFGS 通常优于单独 Adam 或单独 L-BFGS。
+4. Armijo / Wolfe / Strong Wolfe / backtracking 属于 sufficient decrease 体系。
+5. L-BFGS + strong Wolfe 可能提前停滞，因此需要完整日志，而不是盲目信任。
+
+
+二、第一版总框架
+
+KFT-GBO 第一版 optimizer pipeline：
+
+    RS winner / manually selected trial
+    →
+    Adam/AMSGrad + monotone Armijo/backtracking
+    →
+    fixed epoch switch
+    →
+    freeze AGU
+    →
+    L-BFGS + strong Wolfe line search
+
+其中：
+
+1. Adam/AMSGrad 负责前期探索。
+2. monotone Armijo/backtracking 负责 Adam 阶段的 step-size acceptance。
+3. L-BFGS + strong Wolfe 负责后期 quasi-Newton fine-tuning。
+4. AGU 只允许在 Adam 阶段运行；进入 L-BFGS 后冻结 AGU。
+
+
+三、作用范围
+
+第一版只修改 KFT-GBO 路径。
+
+明确不修改：
+
+1. KFT random search。
+2. KFT prerun。
+3. QCS。
+4. AFM04 stage1pluslight。
+5. AFM04 prest2。
+6. AFM04 stage2light。
+7. archive 中已有归档结果。
+
+
+四、开关设计
+
+需要保留旧机制为开关，但新机制作为 KFT-GBO 默认路径。
+
+建议新增或整理配置项：
+
+    HNODECB_AFM04_KAN_TEST_STEP_CONTROLLER
+
+候选值：
+
+    legacy_guard
+    armijo_backtracking
+    off
+
+默认值：
+
+    armijo_backtracking
+
+含义：
+
+1. legacy_guard
+   使用当前旧版 step guard retry 逻辑，用于复现实验。
+
+2. armijo_backtracking
+   使用 Adam/AMSGrad direction + monotone Armijo/backtracking。
+
+3. off
+   不使用 step acceptance，主要用于诊断，不建议作为默认实验设置。
+
+
+五、Adam/AMSGrad + monotone Armijo/backtracking
+
+第一版 Adam 阶段不允许 accepted loss jump。
+
+基本流程：
+
+1. 在当前参数 theta 处计算 train loss L_old。
+2. backward 得到当前梯度 g。
+3. 使用 Adam/AMSGrad 的内部状态提出一个候选更新方向 p。
+4. 从 alpha = 1 开始尝试：
+
+       theta_trial = theta + alpha * p
+
+5. 计算 L_trial。
+6. 若满足 monotone Armijo sufficient decrease，则接受：
+
+       L_trial <= L_old + c1 * alpha * grad_dot_p
+
+   其中：
+
+       grad_dot_p = g dot p
+
+7. 若不满足，则缩小 alpha：
+
+       alpha = alpha * shrink
+
+8. 重试直到满足条件，或者达到最大 backtracking 次数。
+9. 若所有尝试都失败，则回滚到 theta，并记录 rejected step。
+
+第一版建议：
+
+1. 关闭当前手写 adaptive lr。
+2. base lr 固定。
+3. 每一步记录 effective_lr：
+
+       effective_lr = base_lr * alpha
+
+4. 只接受 sufficient decrease，不接受 loss jump。
+
+建议配置项：
+
+    HNODECB_AFM04_KAN_TEST_LR_ADAPT = 0
+    HNODECB_AFM04_KAN_TEST_ARMIJO_C1 = 1.0e-4
+    HNODECB_AFM04_KAN_TEST_BACKTRACK_SHRINK = 0.5
+    HNODECB_AFM04_KAN_TEST_BACKTRACK_MAX = 10
+    HNODECB_AFM04_KAN_TEST_BACKTRACK_MIN_ALPHA = 1.0e-8
+
+
+六、Adam 到 L-BFGS 的切换
+
+第一版使用固定 epoch 切换，不做自动 plateau 检测。
+
+建议配置项：
+
+    HNODECB_AFM04_KAN_TEST_OPTIMIZER_SCHEDULE
+    HNODECB_AFM04_KAN_TEST_ADAM_EPOCHS
+    HNODECB_AFM04_KAN_TEST_LBFGS_STEPS
+
+候选设置：
+
+    optimizer_schedule = adam_armijo_lbfgs
+
+含义：
+
+1. 前 ADAM_EPOCHS 个 epoch 使用 Adam/AMSGrad + Armijo/backtracking。
+2. 之后切换到 L-BFGS + strong Wolfe。
+3. L-BFGS 阶段执行 LBFGS_STEPS 个 outer steps。
+
+
+七、L-BFGS + strong Wolfe
+
+L-BFGS 阶段使用 PyTorch LBFGS 或等价实现。
+
+建议第一版：
+
+    torch.optim.LBFGS(
+        model.parameters(),
+        lr=1.0,
+        max_iter=1,
+        history_size=100,
+        line_search_fn="strong_wolfe",
+    )
+
+注意：
+
+1. L-BFGS 每个 outer step 会多次调用 closure。
+2. closure 每次调用都可能进行 ODE rollout + backward，因此成本明显高于 Adam epoch。
+3. AGU 必须在 L-BFGS 阶段冻结。
+4. L-BFGS strong Wolfe 可能提前停滞，因此必须记录 closure 次数、loss_before、loss_after 和 gradient norm。
+
+
+八、AGU 规则
+
+Adam 阶段：
+
+1. AGU 可保持当前 KFT 规则。
+2. AGU 仍基于 x1_true, x2_true 和 neutral third axis。
+
+L-BFGS 阶段：
+
+1. 强制冻结 AGU。
+2. 不允许 closure 内部触发 grid update。
+3. 不允许同一个 L-BFGS step 中改变 KAN grid。
+
+
+九、日志和结果格式
+
+必须扩展 history 和 log，否则后续无法解释 optimizer 行为。
+
+每个 epoch / step 至少记录：
+
+    phase
+    optimizer
+    step_controller
+    old_loss
+    candidate_loss
+    accepted_loss
+    base_lr
+    alpha
+    effective_lr
+    grad_dot_p
+    armijo_rhs
+    backtracking_retries
+    accepted
+    reject_reason
+    grad_norm
+    epoch_sec
+
+L-BFGS 阶段额外记录：
+
+    lbfgs_outer_step
+    lbfgs_closure_calls
+    loss_before_lbfgs_step
+    loss_after_lbfgs_step
+    line_search_fn
+    lbfgs_wall_time
+
+日志中应明确打印：
+
+1. 当前 phase。
+2. 当前 optimizer。
+3. 当前 step controller。
+4. 每次 backtracking 的 alpha 和 candidate loss。
+5. 每次 accepted/rejected 的原因。
+6. L-BFGS closure 调用次数。
+
+
+十、验证策略
+
+第一轮验证不追求一次性得出最终最优结果，而是比较 optimizer behavior。
+
+建议使用同一个 RS winner / manual trial，对比三组：
+
+1. legacy_guard
+2. armijo_backtracking
+3. off
+
+然后再比较：
+
+1. Adam/AMSGrad + armijo_backtracking only
+2. Adam/AMSGrad + armijo_backtracking → L-BFGS strong Wolfe
+
+主要观察：
+
+1. train loss 是否更稳定下降。
+2. val loss 是否改善。
+3. x1 reconstruction 是否改善。
+4. x3 reconstruction 是否改善。
+5. F_contact error 是否改善。
+6. 是否仍然在 20/30 epochs 左右出现明显平台。
+7. 是否减少巨大 loss jump。
+8. L-BFGS 是否继续带来下降，还是出现 strong Wolfe 停滞。
+
+
+十一、暂不做的事情
+
+第一版暂不做：
+
+1. non-monotone line search。
+2. relaxed Armijo。
+3. basin hopping。
+4. NNCG。
+5. SSBFGS / SSBroyden。
+6. 自动 plateau 切换。
+7. architecture/input variable 改动。
+8. loss term 改动。
+9. QCS 同步改造。
+10. prerun 同步改造。
+
+
+十二、阅读两个 optimizer 代码库后的源码级补充启示
+
+说明：
+以下内容不是单纯来自论文结论，而是来自对 opt_for_pinns 与 Optimizing_the_Optimizer_PINNs 源代码/Notebook 的阅读。
+这些内容用于补充当前 KFT optimizer update 的工程细节，不改变第一版主框架。
+
+1. Adam 到 L-BFGS 切换时，应重新创建 L-BFGS optimizer。
+
+opt_for_pinns 的 Adam_LBFGS 在到达 switch epoch 时会重新实例化 LBFGS。
+这意味着 LBFGS history 从切换点重新开始，而不是继承 Adam 阶段的状态。
+KFT-GBO 第一版也应采用这个原则：
+
+    Adam/AMSGrad phase ends
+    → create fresh LBFGS optimizer
+    → freeze AGU
+    → run LBFGS strong Wolfe phase
+
+2. L-BFGS 的 outer step 与 closure call 必须严格区分。
+
+在 PyTorch LBFGS 中，一次 optimizer.step(closure) 内部可能调用多次 closure。
+因此，KFT 日志中不能只写 epoch loss，还必须记录：
+
+    lbfgs_outer_step
+    lbfgs_closure_calls
+    loss_before_lbfgs_step
+    loss_after_lbfgs_step
+
+否则后续无法判断 L-BFGS 是真正推进了 optimization，还是只是在内部 line search 中多次评估后停滞。
+
+3. 第一版 L-BFGS 建议保持 max_iter=1，避免隐藏太多内部迭代。
+
+opt_for_pinns 中有一个实际问题：外层 training loop 的 epoch 与 LBFGS 内部 iteration / closure 次数并不完全等价。
+为了让 KFT 第一版更容易解释，建议先使用：
+
+    max_iter = 1
+
+这样每一个 KFT-GBO 记录的 L-BFGS step 更接近一个可解释的 outer step。
+如果未来需要提高效率，可以再把 max_iter 增大，但那时必须同步扩展更细粒度的 closure-level logging。
+
+4. Armijo/backtracking 不能直接照搬，需要 rollback-safe 工程保护。
+
+opt_for_pinns 中的 GD/NNCG Armijo 实现更接近论文原型。
+KFT 的 ODE rollout 更容易出现 nonfinite loss、ODE failure 或极端跳跃，因此第一版必须额外加入：
+
+    max_backtracking
+    min_alpha
+    nonfinite candidate loss rejection
+    parameter restore / rollback
+    reject_reason logging
+
+也就是说，KFT 的 backtracking 不只是数学上的 line search，而必须是可以安全回滚的 step controller。
+
+5. 当前阶段不建议直接引入 NNCG。
+
+opt_for_pinns 的 NNCG 需要 Hessian-vector product、Nyström approximation、preconditioner update 和 PCG。
+它确实可能对 PINN loss landscape 有帮助，但工程复杂度明显高于 Adam + backtracking + L-BFGS。
+因此 NNCG 应继续保持在第一版暂不做列表中。
+
+6. 不建议通过替换 SciPy 内部文件来引入 SSBFGS / SSBroyden。
+
+Optimizing_the_Optimizer_PINNs 的 PyTorch/NumPy 路线依赖修改 SciPy 的 _optimize.py。
+这对 KFT 不适合作为默认工程路线，因为它会降低可复现性，尤其不适合未来 HPC 环境。
+如果未来需要 self-scaled BFGS/Broyden，应考虑在 KFT 内部实现局部版本，或使用明确依赖的独立 optimizer，而不是 monkeypatch SciPy。
+
+7. Second-order / quasi-Newton 阶段可以采用 block/chunk 思路。
+
+Optimizing_the_Optimizer_PINNs 的 BFGS 不是一次性长跑到底，而是按 Nchange 分块运行。
+每个 block 结束后保存并检查 Hessian inverse，再进入下一块。
+对 KFT 的启示是：
+
+    L-BFGS phase 可以保留 outer block 的概念
+
+第一版不一定要实现复杂 block restart，但日志和 checkpoint 设计应允许未来扩展为：
+
+    Adam block
+    LBFGS block 1
+    LBFGS block 2
+    ...
+
+8. 如果未来实现自定义 quasi-Newton，需要 Hessian/历史状态 sanity check。
+
+Optimizing_the_Optimizer_PINNs 会对 H0 做对称化，并用 Cholesky 检查正定性，失败时 reset 为 identity。
+PyTorch LBFGS 不直接暴露完整 H inverse，但如果未来 KFT 实现自定义 BFGS/SSBFGS/Broyden，就必须加入类似的 state sanity check。
+
+9. AGU freeze 的理由被进一步加强。
+
+两个代码库中的 line search / quasi-Newton 逻辑都默认 closure 多次评估的是同一个 objective。
+如果 KFT 在同一个 LBFGS step 或 line search 内部更新 KAN grid，则 objective 自身发生变化，line search 的 loss comparison 将不再干净。
+因此：
+
+    Adam phase: AGU allowed
+    LBFGS phase: AGU frozen
+    closure internal: no grid update
+
+这不是可选细节，而是 line search / quasi-Newton 正确性的工程前提。
+
+10. 日志系统应区分 summary log 与 detailed event log。
+
+源码阅读后可以确定：如果每个 closure、每次 backtracking 都直接打印到主 terminal，日志会非常吵，也不利于长实验。
+建议第一版采用两层记录：
+
+    summary log:
+        每个 epoch / outer step 一行，便于人读。
+
+    detailed event log or jsonl:
+        每次 backtracking trial、每次 rejection、每个 LBFGS closure call 的细节，便于事后分析。
+
+这样既能保持实验过程可读，又不会丢失 optimizer 行为细节。
+
+进一步确定的日志细节：
+
+1. 每个 epoch / outer step 都必须记录一条 summary。
+   这条 summary 应同时进入：
+
+       main history
+       human-readable driver log
+
+   main history 可以是 json、jsonl 或 csv，但必须是结构化格式，供后续可视化和 postprocess 使用。
+   human-readable driver log 中也应每个 epoch / outer step 打印一行 summary，供运行时人工阅读。
+
+2. Adam/AMSGrad + backtracking 阶段的 summary 建议至少包含：
+
+       epoch
+       phase
+       optimizer
+       step_controller
+       loss_before
+       loss_after
+       grad_norm
+       base_lr
+       alpha
+       effective_lr
+       backtracking_retries
+       accepted
+       reject_reason
+       epoch_sec
+
+   其中 backtracking_retries 是该 epoch 内尝试缩小 alpha 的总次数。
+   accepted 表示最终是否接受该 epoch 的参数更新。
+   reject_reason 只在 rejected step 或异常 step 时非空。
+
+3. backtracking 的每次尝试不全部打印到主日志。
+
+   主日志只打印该 epoch 的总结，例如：
+
+       epoch 37 | adam_backtracking | loss 1.23e-4 -> 1.19e-4 | accepted | retries=2 | alpha=0.25
+
+   每次 backtracking trial 的细节写入 detailed event log，例如：
+
+       epoch
+       trial_index
+       alpha
+       candidate_loss
+       armijo_rhs
+       accepted
+       reject_reason
+
+   这样主日志不会被大量 alpha trial 淹没，但必要时仍能回看每一次尝试。
+
+4. L-BFGS closure call 也不逐次打印到主日志。
+
+   主日志每个 L-BFGS outer step 只打印一行 summary，例如：
+
+       lbfgs step 12 | loss 8.20e-5 -> 7.91e-5 | closure_calls=6 | sec=18.4
+
+   每次 closure call 的细节进入 detailed event log，例如：
+
+       lbfgs_outer_step
+       closure_call_index
+       closure_loss
+       grad_norm
+       nonfinite
+       wall_time_sec
+
+5. 第一版日志输出建议分为三类文件：
+
+       human-readable driver log:
+           给人运行时阅读，每 epoch / outer step 一行 summary。
+
+       structured history:
+           给可视化和后处理读取，每 epoch / outer step 一条结构化记录。
+
+       optimizer event log:
+           给 debug 读取，记录 backtracking trial、rejection、rollback、LBFGS closure call 等细节。
+
+   这三类文件的职责必须区分清楚，避免主日志过度膨胀，也避免重要 optimizer 细节丢失。
+
+
+十三、工程执行计划
+
+说明：
+本节独立于前面的方法框架，记录实际落地顺序。
+虽然 optimizer 的直接使用场景包括 KFT-GBO 和 KFT-prerun，但第一轮不建议同时大范围修改二者。
+应先让 KFT-GBO 成为可靠样板，再迁移到 KFT-prerun。
+
+执行顺序：
+
+1. 第一阶段：只改 KFT-GBO 的 Adam/AMSGrad 阶段。
+
+   目标：
+   先验证新的 step controller 是否能稳定替代 legacy step guard。
+
+   内容：
+
+       Adam/AMSGrad + Armijo/backtracking
+       保留 legacy_guard 开关
+       保留 off 诊断开关
+       关闭旧手写 adaptive lr
+       加入 summary history
+       加入 optimizer event log
+       加入 human-readable driver log summary
+
+   第一阶段暂不接入 L-BFGS。
+
+   理由：
+   如果一开始同时加入 L-BFGS，就很难判断变化来自新的 Adam step controller，还是来自 quasi-Newton fine-tuning。
+
+2. 第二阶段：在 KFT-GBO 中加入 L-BFGS phase。
+
+   目标：
+   在第一阶段稳定后，测试 Adam/backtracking 到 L-BFGS strong Wolfe 的完整 pipeline。
+
+   内容：
+
+       固定 epoch 切换
+       Adam/AMSGrad + Armijo/backtracking
+       → freeze AGU
+       → fresh LBFGS optimizer
+       → L-BFGS + strong Wolfe
+
+   必须记录：
+
+       lbfgs_outer_step
+       lbfgs_closure_calls
+       loss_before_lbfgs_step
+       loss_after_lbfgs_step
+       lbfgs_wall_time
+
+   理由：
+   GBO 是真正的长程 gradient-based optimization，最直接对应本 optimizer update 的目标。
+
+3. 第三阶段：把已验证的 optimizer controller 迁移到 KFT-prerun。
+
+   目标：
+   让 prerun 的短程 training 与正式 GBO 使用同一套可解释的 step acceptance 体系。
+
+   内容：
+
+       prerun layer A 使用同一套 step controller
+       prerun layer B 使用同一套 step controller
+       保留 prerun 自己的 candidate ranking / promotion flow
+       保留独立日志，避免与正式 GBO history 混淆
+
+   理由：
+   prerun 会影响 winner/candidate flow。
+   如果先改 prerun，后续很难判断最终结果改善来自 optimizer，还是来自候选筛选逻辑变化。
+
+4. 明确暂不修改 RS。
+
+   理由：
+   RS 不是 gradient-based optimization。
+   当前 optimizer update 的对象是 backprop-based training phase，而不是 random search phase。
+
+5. 每个阶段完成后都要能单独对照旧机制。
+
+   至少应支持以下对照：
+
+       legacy_guard
+       armijo_backtracking
+       off
+
+   第一轮不追求直接得到最优物理结果，而是先确认：
+
+       是否减少巨大 loss jump
+       是否减少无意义 rollback/retry
+       是否让 accepted step 更可解释
+       是否让 GBO 后期还有继续下降空间
+       是否保留完整可追踪日志
+
+
+十四、当前明确结论
+
+KFT optimizer update 第一版采用：
+
+    Adam/AMSGrad + monotone Armijo/backtracking
+    →
+    L-BFGS + strong Wolfe
+
+第一版不允许 accepted loss jump。
+
+第一版关闭当前手写 adaptive lr。
+
+第一版只作用于 KFT-GBO。
+
+第一版保留 legacy step guard 作为可选复现路径。
+
+第一版的核心目标不是立刻证明 W0 一定能完美复原，而是建立一个更成熟、可解释、可记录、可对照的 optimizer pipeline。

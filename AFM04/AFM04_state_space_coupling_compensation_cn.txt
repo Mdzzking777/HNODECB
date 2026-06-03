@@ -1,0 +1,387 @@
+AFM04 state-space coupling / compensation notes
+================================================
+
+Purpose
+-------
+
+This note records two structural compensation risks in the AFM state-space
+formulation:
+
+1. ks and cs can be coupled / compensated.
+2. x3 and the NN force model can be coupled / compensated.
+
+These two points are not merely numerical optimizer issues. They come from the
+state-space formulation and the fact that some variables are not directly
+measured in the experimental setting.
+
+This document is also written as a background note for external discussion
+with ChatGPT / literature search. Therefore it explicitly states the model
+setting, what is measured, what is unknown, and what current engineering
+methods are being used.
+
+
+0. AFM state-space setting
+--------------------------
+
+The AFM system is modeled with state variables
+
+    x1: tip displacement / measured trajectory-related state
+    x2: velocity-related state
+    x3: internal sample deformation / latent internal state
+
+A simplified state-space form is
+
+    x1dot = x2
+
+    x2dot = (Fd * cos(omega * t) - c * x2 - k * x1 + Fts) / m
+
+    x3dot = (-Fts - ks * x3) / cs
+
+where Fts is the tip-sample interaction force. In AFM04, Fts is represented by
+a neural model, usually a KAN:
+
+    Fts_raw = KAN(x1, x2, x3)
+
+and the effective force used in the ODE RHS may include additional force-chain
+modifiers, such as soft mask:
+
+    Fts_eff = soft_mask * g_nn * Fts_raw
+
+Measured / known information:
+
+    x1 and x2 are treated as experimentally available trajectory information.
+    x2dot can be obtained or approximated from the measured trajectory.
+    drive force, cantilever parameters, and time are known.
+
+Unknown or optimized information:
+
+    x3 is not directly measured.
+    ks and cs are unknown mechanistic parameters.
+    KAN parameters are unknown.
+    Fts is not directly measured, but can be indirectly constrained through
+    the state-space equation for x2dot.
+
+Important distinction:
+
+    Fts is not directly observed, but it is indirectly anchored by measured
+    x1/x2/x2dot dynamics.
+
+    x3 is an internal state and is not directly observed in the experimental
+    setting.
+
+    Therefore, a low trajectory loss does not automatically imply that x3,
+    ks, cs, or KAN_raw have been uniquely identified.
+
+
+1. ks / cs compensation
+-----------------------
+
+In the AFM model, the internal sample state satisfies a relation of the form
+
+    x3dot = (-Fts - ks * x3) / cs
+
+or equivalently
+
+    cs * x3dot + ks * x3 + Fts = 0
+
+Here ks and cs do not appear as two isolated quantities. They jointly control
+the internal relaxation dynamics of x3:
+
+    ks controls the elastic/restoring contribution through ks * x3.
+    cs controls the time-scale/damping contribution through cs * x3dot.
+
+Because x3 and x3dot are not directly measured, different combinations of
+ks, cs, x3 trajectory, and Fts can sometimes produce similar observed
+x1 / x2 / x2dot behavior. Therefore a low rollout loss does not automatically
+prove that ks and cs have been uniquely or physically identified.
+
+This is the ks / cs compensation risk:
+
+    A wrong ks can be partly compensated by cs.
+    A wrong cs can be partly compensated by the learned x3 trajectory.
+    The observed trajectory may still look acceptable even when the internal
+    mechanical parameters are not close to ground truth.
+
+This is especially important when using prestage2 / stage2light to rank
+mechanistic grid candidates. A candidate with lower train loss may still be a
+compensated solution rather than the physically closest mechanistic solution.
+
+
+2. x3 / NN compensation, not simply Fts compensation
+---------------------------------------------------
+
+The second compensation risk is between the latent internal state x3 and the
+neural force model.
+
+In the current KAN/AFM force chain, the effective force used by the RHS can be
+viewed schematically as
+
+    Fts_eff = soft_mask * g_nn * NN_raw(x1, x2, x3)
+
+The important point is that the NN is not learning in an abstract, fixed input
+space. It is evaluated along the rollout trajectory. If the rollout x3 drifts,
+then the NN is being queried at a different set of x3 values. The NN can then
+learn a force map that works on this wrong x3 trajectory while still producing
+acceptable x1 / x2 / x2dot losses inside the training window.
+
+Therefore the compensation is not simply:
+
+    Fts_pred vs Fts_true
+
+The deeper compensation is:
+
+    x3 trajectory + NN_raw force map
+
+against the observed dynamics.
+
+This distinction matters. Even if Fts_eff is reasonably anchored in part of the
+training window, the learned NN_raw may still not represent the true force law
+over the physical state space. It may instead represent a force law adapted to
+the model's own compensated x3 trajectory.
+
+In short:
+
+    Fts_eff can look locally reasonable.
+    x3 can still be wrong.
+    NN_raw can still be learning a compensated force family.
+
+
+3. Why this matters for W0
+-------------------------
+
+W0 is the first-contact window. Our post-processing analyses suggest that W0 is
+more fragile for extrapolation than later windows: information related to x3dot
+is harder to infer from only (x1, x2, x3), and similar observed states can
+correspond to more variable internal dynamics.
+
+This means W0 is more vulnerable to both compensation mechanisms:
+
+    ks / cs compensation can hide in the internal x3 dynamics.
+    x3 / NN compensation can produce a locally useful force map that is not
+    robust outside the training window.
+
+Soft mask helps by suppressing unphysical far-field force responses, and the
+x2dot / force-anchoring style losses help constrain Fts_eff. However, these do
+not fully remove the identifiability problem. They reduce one compensation path;
+they do not prove uniqueness of ks, cs, x3, or NN_raw.
+
+
+4. Practical implications
+-------------------------
+
+The following points should be treated as working principles for AFM04, KFT,
+prest2, and stage2light analysis:
+
+1. Low train loss is not sufficient evidence of physical correctness.
+
+2. ks/cs closeness, x3 behavior, Fts_eff behavior, and NN_raw behavior should
+   be interpreted separately.
+
+3. A candidate can win by train loss while still being a compensated
+   mechanistic solution.
+
+4. Fts anchoring helps, but it does not by itself guarantee that x3 and NN_raw
+   are physically meaningful.
+
+5. Future designs that pass effective x3dot information into the force model
+   may reduce the x3 / NN compensation risk, but they must be handled carefully
+   because any x3dot-like input generated by rollout is itself predicted and can
+   introduce new compensation paths.
+
+
+5. Terminology
+--------------
+
+ks / cs compensation:
+
+    Compensation between the elastic and damping parameters in the internal
+    x3 dynamics.
+
+x3 / NN structural compensation:
+
+    Compensation between the unobserved internal state trajectory x3 and the
+    learned NN_raw force map.
+
+Fts_eff:
+
+    The effective force actually used by the RHS after all force-chain
+    modifiers, such as soft mask and scaling.
+
+NN_raw:
+
+    The raw neural force output before force-chain modifiers. This object can
+    be coupled to the learned x3 trajectory even when Fts_eff appears locally
+    plausible.
+
+
+6. Current strategies and remaining uncertainty
+-----------------------------------------------
+
+For ks / cs compensation, the current AFM04 strategy is an empirical screening
+strategy rather than a rigorously proven identifiability solution.
+
+The intended logic is:
+
+1. stage1pluslight uses a mechanistic grid over ks / cs together with NN seeds.
+
+   The original expectation is that a mechanistic grid closer to the true ks/cs
+   should have better overall robustness across different NN seeds. In other
+   words, even if individual NN seeds fluctuate, the near-truth mech grid should
+   show better average behavior.
+
+2. This expectation is limited in practice.
+
+   The NN seeds are finite and pseudo-random. If we rely on a very large number
+   of seeds to estimate average behavior reliably, the computational cost
+   becomes very high.
+
+3. Therefore prestage2 / prest2 is introduced.
+
+   prest2 runs a small number of gradient-based optimization epochs for selected
+   mech grid + NN seed candidates. The working belief is that a truly good mech
+   grid and its associated strong NN seed should begin to reveal itself during
+   these short GBO runs.
+
+Therefore, for ks / cs compensation, the current solution is:
+
+    st1pl coarse mech-grid + seed screening
+    followed by prest2 short-GBO exposure.
+
+The principle is that even though compensation may occur frequently, the best
+mechanistic grid should still emerge under these screening pressures.
+
+
+For x3 / KAN-parameter compensation, the situation is weaker.
+
+Soft mask is not a complete solution to this coupling. It constrains the
+effective force entering the RHS, especially in far-field noncontact regions.
+However, even if the final Fts_eff is correct or locally reasonable, x3 and the
+KAN raw parameters may still compensate each other:
+
+    wrong x3 trajectory + compensated KAN_raw parameters
+    -> acceptable Fts_eff in the training window
+
+Therefore soft mask can reduce certain unphysical force channels, but it does
+not prove that x3 and KAN parameters have been separated or physically
+identified.
+
+At the current stage, there is no effective dedicated solution for the coupling
+between x3 and KAN parameters.
+
+
+7. Engineering methods that may mitigate x3 / NN compensation
+-------------------------------------------------------------
+
+Although there is no complete solution for x3 / KAN-parameter compensation,
+several current engineering methods may partially mitigate or expose the
+problem.
+
+1. Soft mask
+
+   Soft mask constrains the effective force used by the ODE RHS:
+
+       Fts_eff = soft_mask * g_nn * KAN_raw(x1, x2, x3)
+
+   Its purpose is to discourage unphysical far-field / noncontact force
+   responses. In practice, it reduces the ability of the NN to use restless
+   noncontact force as a hidden compensation channel.
+
+   However, soft mask does not prove that x3 and KAN_raw are physically
+   separated. Even if the final effective force Fts_eff is correct, x3 and KAN
+   parameters may still be coupled.
+
+   Core unresolved concern:
+
+       Even if the final output Fts is correct, x3 and KAN parameters may still
+       be compensating each other.
+
+2. Force anchoring through the x2dot equation
+
+   Since
+
+       m * x2dot + c * x2 + k * x1 - Fd * cos(omega * t) - Fts = 0
+
+   the measured x1/x2/x2dot information can indirectly anchor Fts_eff. This
+   makes it harder for arbitrary NN force outputs to survive if they violate
+   the observed cantilever dynamics.
+
+   However, this still anchors the effective force, not necessarily the
+   decomposition into:
+
+       x3 trajectory + KAN_raw force map
+
+   Therefore, force anchoring helps constrain Fts_eff but does not fully solve
+   x3 / KAN identifiability.
+
+3. Full rollout training
+
+   The model is evaluated through rollout rather than pure one-step supervised
+   fitting. This means a compensated x3 / KAN solution must remain dynamically
+   self-consistent over a time window.
+
+   This is useful because unstable or unphysical compensation may reveal itself
+   through rollout error.
+
+   However, a self-consistent compensated solution can still exist.
+
+4. Optimizer improvements: Adam + backtracking, LBFGS + strong Wolfe
+
+   KFT and AFM04 now use more controlled gradient-based optimization,
+   including Adam/AMSGrad with backtracking and a custom LBFGS path with strong
+   Wolfe line search.
+
+   These methods improve numerical stability and reduce the chance that the
+   optimizer itself creates misleading behavior.
+
+   However, optimizer improvements do not remove structural non-identifiability.
+   They can help us find a better local solution, but if the model admits a
+   compensated basin, the optimizer may still converge there.
+
+5. Diagnostic post-processing
+
+   Full-horizon rollout plots, Fts reconstruction plots, x3-related diagnostics,
+   and window extrapolation tests help reveal when a solution is only locally
+   valid inside the training window.
+
+   These diagnostics do not solve the coupling, but they make it visible.
+
+
+Summary of current status
+-------------------------
+
+For ks / cs coupling:
+
+    There is an empirical strategy:
+    st1pl mech-grid + NN-seed screening, followed by prest2 short-GBO exposure.
+
+    But this lacks strict academic proof that the true mech grid must emerge
+    under finite pseudo-random NN seeds and short GBO screening.
+
+For x3 / KAN-parameter coupling:
+
+    There are mitigation tools:
+    soft mask, force anchoring, full rollout training, optimizer stabilization,
+    and post-processing diagnostics.
+
+    But these tools do not fully prove that x3 and KAN parameters have been
+    decoupled or physically identified.
+
+    The main unresolved issue remains:
+
+        correct or plausible Fts_eff does not guarantee correct x3 or physically
+        meaningful KAN_raw parameters.
+
+
+Open uncertainty raised by the user
+-----------------------------------
+
+"Based on the above, whether we have a solution or not, I still keep a large
+amount of uncertainty. For the ks/cs coupling solution, I think it lacks strict
+academic-literature proof. For the coupling between x3 and KAN parameters, we
+lack a solution."
+
+In Chinese:
+
+    基于以上，无论是有方案还是没方案，我都保持了很大的不确定性。
+    对于 ks, cs 耦合的解决方案，我认为缺少严格的学术文献证明；
+    对于 x3 和 KAN 的 parameters 之间的耦合，我们缺少方案。
