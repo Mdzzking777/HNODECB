@@ -1,0 +1,392 @@
+AFM04 / AFM05 Synthetic Data Notions
+====================================
+
+Source files checked
+--------------------
+
+Main synthetic trajectory generator:
+  Datageneration/DMT_KV/generate_trajectory_DMT_KV.py
+
+Formal AFM04 physics settings:
+  AFM04/test_case_settings/afm_dmt_kv_settings/afm_dmt_kv_model_settings.py
+
+Formal AFM04 physics functions:
+  AFM04/test_case_settings/afm_dmt_kv_settings/afm_dmt_kv_model_functions.py
+
+AFM04 dataset generator:
+  AFM04/datasets/afm_dataset_generator.py
+
+AFM04 window helper:
+  AFM04/stage1pluslight/windows.py
+
+Dataset files used by AFM04
+---------------------------
+
+ode_data:
+  AFM04/datasets/e0.0/data/ode_data_afm_dmt_kv.npz
+
+pert_df:
+  AFM04/datasets/e0.0/data/pert_df_afm_dmt_kv.npz
+
+ode_data shape:
+  (3, 125001)
+
+ode_data rows:
+  row 0 = x1
+  row 1 = x2
+  row 2 = x3
+
+pert_df columns:
+  t
+  x1
+  x2
+  x3
+  x2dot
+  contact
+  s
+  x3dot
+  delta_dot
+  fts
+
+State notions
+-------------
+
+x1:
+  Tip displacement.
+  Unit: m.
+
+x2:
+  Tip velocity, equal to x1dot.
+  Unit: m/s.
+
+x3:
+  Sample surface / Kelvin-Voigt deformation.
+  Unit: m.
+
+x2dot:
+  Tip acceleration, computed directly from the ODE.
+  Unit: m/s^2.
+
+x3dot:
+  Sample deformation velocity, computed directly from the explicit DMT-KV closure.
+  Unit: m/s.
+
+s:
+  Tip-sample distance.
+  Formula: s = dist + x1 - x3.
+  Unit: m.
+
+contact:
+  Contact indicator.
+  Formula: contact = 1 if s <= a0, otherwise 0.
+
+fts:
+  Tip-sample interaction force.
+  Unit: N.
+
+Constants
+---------
+
+Cantilever constants:
+
+k:
+  Value: 29.9
+  Unit: N/m
+  Meaning: cantilever stiffness.
+
+f0:
+  Value: 313570
+  Unit: Hz
+  Meaning: resonance / drive frequency.
+
+wd:
+  Value: 1.970218416772303e6
+  Unit: rad/s
+  Formula: wd = 2*pi*f0.
+
+Q:
+  Value: 371
+  Unit: dimensionless
+  Meaning: quality factor.
+
+m:
+  Value: 7.702690352568424e-12
+  Unit: kg
+  Formula: m = k / wd^2.
+
+c:
+  Value: 4.09056129146217e-8
+  Unit: N*s/m
+  Formula: c = m*wd/Q.
+
+Contact and geometry constants:
+
+Estar:
+  Value: 1.5e7
+  Unit: Pa
+  Meaning: effective elastic modulus.
+
+eta_star:
+  Value: 1.3
+  Unit: Pa*s
+  Meaning: Kelvin-Voigt viscosity-like coefficient.
+
+R:
+  Value: 1.0e-8
+  Unit: m
+  Meaning: tip radius.
+
+A:
+  Value: 6.0e-20
+  Unit: J
+  Meaning: Hamaker constant.
+
+a0:
+  Value: 3.0e-10
+  Unit: m
+  Meaning: contact / molecular cutoff distance.
+
+beta:
+  Value: 5.0e11
+  Unit: 1/m
+  Meaning: sigmoid sharpness for the DMT-Hertz transition.
+
+dist:
+  Value: 2.4e-8
+  Unit: m
+  Meaning: equilibrium tip-sample offset in s = dist + x1 - x3.
+
+Drive constant:
+
+Fd:
+  Value: 4.10e-9
+  Unit: N
+  Meaning: drive force amplitude.
+
+Simulation constants:
+
+t_end:
+  Value: 2.0e-3
+  Unit: s
+
+nsteps:
+  Value: 125000
+
+dt:
+  Value: 1.6e-8
+  Unit: s
+  Equivalent: 16 ns
+
+Sampling frequency:
+  Value: 6.25e7
+  Unit: Hz
+  Equivalent: 62.5 MHz
+  Formula: fs = 1 / dt
+
+W0 window span:
+  Value: 6.288e-6
+  Unit: s
+  Note: code variable names sometimes say WINDOW_US / arch_window_us, but the actual numeric value is in seconds.
+
+Mechanistic parameters
+----------------------
+
+These are the mechanistic parameters estimated in AFM04. They are not NN/KAN parameters.
+
+ks true:
+  Value: 0.1
+  Unit: N/m
+  Meaning: Kelvin-Voigt sample stiffness.
+
+cs true:
+  Value: 2.4e-7
+  Unit: N*s/m
+  Meaning: Kelvin-Voigt sample damping.
+
+st1pl grid range:
+
+ks range:
+  [0.005, 5.0] N/m
+
+cs range:
+  [5.0e-8, 5.0e-6] N*s/m
+
+Force law and state-space equation
+----------------------------------
+
+Distance:
+
+  s = dist + x1 - x3
+
+Smooth transition:
+
+  g(s) = sigmoid(beta * (s - a0))
+
+Indentation:
+
+  delta = max(a0 - s, 0)
+
+Adhesion term:
+
+  adhesion = -A*R / (6 * max(g(s)*(s-a0) + a0, 1e-15)^2)
+
+Hertz term:
+
+  f_hertz = (4/3) * Estar * sqrt(R) * delta^(3/2)
+
+Kelvin-Voigt coefficient:
+
+  kv_coeff = eta_star * sqrt(R) * sqrt(delta)
+
+Static force:
+
+  f_static = adhesion + (1 - g) * f_hertz
+
+Explicit x3dot closure:
+
+  x3dot = (-f_static + kv_coeff*x2 - ks*x3) / (cs + kv_coeff)
+
+Indentation rate:
+
+  delta_dot = x3dot - x2, if delta > 0
+  delta_dot = 0,          otherwise
+
+Full tip-sample force:
+
+  Fts = f_static + kv_coeff * delta_dot
+
+State-space equation:
+
+  x1dot = x2
+
+  x2dot = (Fd*cos(wd*t) - k*x1 - c*x2 + Fts) / m
+
+  x3dot = (-f_static + kv_coeff*x2 - ks*x3) / (cs + kv_coeff)
+
+Initial conditions
+------------------
+
+Full trajectory initial condition:
+
+  t  = 0 s
+  x1 = 0 m
+  x2 = 0 m/s
+  x3 = 0 m
+
+At the full initial point:
+
+  s       = 2.4e-8 m
+  contact = 0
+  x2dot   = 532.2590161659325 m/s^2
+  x3dot   = 7.233796296296298e-7 m/s
+  Fts     = -1.7361111111111113e-13 N
+
+First contact point
+-------------------
+
+This is the first point where s <= a0 in the full synthetic trajectory.
+
+Global index:
+  14696
+
+Time:
+  0.000235136 s
+  235.136 us
+
+State:
+  x1 = -2.346621102354383e-8 m
+     = -23.4662110235 nm
+
+  x2 = -0.005459171725037813 m/s
+
+  x3 =  2.8136999187924474e-10 m
+     =  0.2813699919 nm
+
+Other values:
+  s       = 2.524189845769242e-10 m
+          = 0.2524189846 nm
+
+  contact = 1
+
+  x2dot   = 90914.78129415167 m/s^2
+
+  x3dot   = 0.004472548553914694 m/s
+
+  Fts     = -1.101548652127451e-9 N
+
+AFM04 W0 / first-contact window
+-------------------------------
+
+Important indexing distinction:
+
+  The full synthetic trajectory first-contact index is 14696.
+
+  Formal AFM04 stage1pluslight / stage2light first calls truncate_to_first_contact.
+  Therefore, inside the formal AFM04 training data, W0 starts at local index 0.
+
+W0 global index range:
+
+  14696 ... 15089
+
+W0 local index range after truncate_to_first_contact:
+
+  0 ... 393
+
+W0 length:
+
+  394 points
+
+W0 time range:
+
+  t_start = 0.000235136 s = 235.136 us
+  t_stop  = 0.000241424 s = 241.424 us
+
+W0 duration:
+
+  6.288e-6 s = 6.288 us
+
+W0 start state:
+
+  Same as the first contact point above.
+
+W0 stop point:
+
+  Global index = 15089
+  Time         = 0.000241424 s = 241.424 us
+
+  x1 = -2.3030138550996344e-8 m
+     = -23.0301385510 nm
+
+  x2 = -0.013872848402626143 m/s
+
+  x3 =  6.216618332725428e-10 m
+     =  0.6216618333 nm
+
+  s       = 3.481996157311126e-10 m
+          = 0.3481996157 nm
+
+  contact = 0
+
+  x2dot   = 89210.20190150457 m/s^2
+
+  x3dot   = 0.0031775995385261648 m/s
+
+  Fts     = -8.247900725735337e-10 N
+
+Data generation notes
+---------------------
+
+1. The synthetic trajectory is noise-free for e0.0.
+
+2. x2dot, x3dot, delta_dot, and Fts are not obtained by numerical differentiation.
+   They are computed directly from the ODE / force-law closure.
+
+3. The synthetic trajectory is sampled every 16 ns, so the sampling frequency is 62.5 MHz.
+
+4. ode_data only stores the three state variables x1, x2, x3.
+
+5. pert_df stores auxiliary observables and diagnostics:
+   x2dot, contact, s, x3dot, delta_dot, and fts.
+
+6. AFM04 formal W0 training does not begin at full trajectory index 0.
+   It begins after truncation at first contact.

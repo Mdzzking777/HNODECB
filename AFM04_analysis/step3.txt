@@ -1,0 +1,442 @@
+AFM04 Step 3: local identifiability analysis by trajectory sensitivities
+===========================================================================
+
+Purpose
+-------
+This note records the complete mathematical definition and execution sequence
+of the current AFM04 Step 3 implementation. The formulas below are derived from
+the AFM04 code, principally:
+
+  AFM04/step3_parameters_identifiability/
+      compute_afm04_step3_identifiability.py
+      post_analyze_afm04_step3_identifiability.py
+
+The HNODECB biology examples provide the methodological starting point, while
+the AFM04 observable set, normalization, parameter grouping, finite-difference
+coordinates, threshold convention, and post-analysis are AFM04-specific.
+
+
+1. What Step 3 asks
+-------------------
+Let theta_star denote one completed Stage 2 Light local solution. Step 3 asks:
+
+  Which infinitesimal parameter perturbations around theta_star can occur while
+  producing almost no change in the observable rollout trajectory?
+
+It is therefore a local practical-identifiability analysis. It is not a proof
+of global or structural identifiability.
+
+
+2. Entry point and fixed experimental context
+---------------------------------------------
+The pipeline first selects one completed st2l result, best payload, or checkpoint.
+The current local runner defaults to the completed result payload. From that
+payload Step 3 reconstructs:
+
+  - the trained KAN force model;
+  - gain and soft-mask state;
+  - the mechanistic state;
+  - the same data window;
+  - the initial state u0;
+  - the ODE solver method, rtol, and atol stored by st2l.
+
+The initial state is taken from the first point of the selected data window:
+
+  u0 = [x1(t0), x2(t0), x3(t0)]^T.
+
+The initial condition is held fixed and is not included in the formal Step 3
+parameter vector.
+
+
+3. Formal trained-parameter vector
+----------------------------------
+The formal parameter mode is called "trained". It includes every scalar element
+of every model or mechanistic parameter for which requires_grad is true:
+
+  theta = [theta_KAN, log_gNN, theta_mask, raw_ks, raw_cs]^T.
+
+More explicitly, the groups used in post-analysis are:
+
+  theta_KAN   : active numeric KAN parameters;
+  log_gNN     : the directly trainable logarithmic gain coordinate;
+  theta_mask  : trainable soft-mask coordinates, including the coordinates
+                controlling s0 and alpha when enabled;
+  raw_ks      : the internal trainable coordinate for k_s;
+  raw_cs      : the internal trainable coordinate for c_s.
+
+Inactive symbolic KAN parameters are excluded when symbolic_enabled is false.
+The initial state u0 is excluded.
+
+Important coordinate qualification:
+
+  The formal projection targets are mech.raw_ks[0] and mech.raw_cs[0]. They are
+  internal trainable coordinates, not automatically the physical k_s and c_s
+  axes. Their physical interpretation depends on the mechanistic parameterization
+  stored in the st2l payload.
+
+
+4. Fast mechanistic diagnostic mode
+-----------------------------------
+The optional "mech" mode uses only
+
+  theta_mech = [log(k_s), log(c_s)]^T.
+
+This two-parameter calculation is useful as a fast local diagnostic of the
+mechanistic subspace. It does not capture compensation with KAN, gain, or the
+soft mask and is therefore not the formal full-parameter Step 3 analysis.
+
+
+5. Baseline rollout and observable map
+--------------------------------------
+For a parameter vector theta, the model is integrated over the selected time
+window. The default observable channels are
+
+  x1, x2, and x2dot.
+
+The hidden x3 trajectory and the model-implied F_ts are not included by default.
+Let T be the number of sampled time points. For each observable channel q define
+the RMS scale from the reference data:
+
+                   1   T
+  s_q = RMS(q) = [ --- sum q_true(t_n)^2 ]^(1/2).
+                   T  n=1
+
+The normalized predicted channel is
+
+  q_hat_norm(theta) = q_hat(theta) / s_q.
+
+This is channel-wise RMS scaling. It is not the mean-scale KAN input normalizer:
+no mean is subtracted in this Step 3 observable scaling.
+
+The flattened observable trajectory vector is
+
+                         [ x1_hat_norm(theta)    ]
+  y_obs(theta)         = [ x2_hat_norm(theta)    ],
+                         [ x2dot_hat_norm(theta) ]
+
+with length
+
+  N = 3T
+
+for the default three-channel calculation.
+
+The implementation differentiates the normalized predicted outputs rather than
+explicitly storing a residual Jacobian. This is equivalent for local curvature
+because the reference trajectory is independent of theta. If
+
+  r(theta) = y_obs(theta) - y_true_norm,
+
+then
+
+  d r / d theta = d y_obs / d theta.
+
+
+6. Formal finite-difference sensitivity matrix
+----------------------------------------------
+The formal trained mode uses a relative central perturbation for every nonzero
+scalar parameter theta_i_star:
+
+  theta_i_plus  = theta_i_star (1 + epsilon),
+  theta_i_minus = theta_i_star (1 - epsilon).
+
+All other coordinates are held at theta_star. The default finite-difference
+step is
+
+  epsilon = 1e-4.
+
+The i-th sensitivity column is computed as
+
+             y_obs(theta_i_plus) - y_obs(theta_i_minus)
+  S[:, i] = ------------------------------------------------.
+                              2 epsilon
+
+Consequently, S[:, i] is a derivative with respect to a dimensionless relative
+coordinate. To first order,
+
+  S[:, i] approximately equals theta_i_star * d y_obs / d theta_i.
+
+It is not the derivative with respect to the dimensional parameter theta_i itself.
+
+Exact zero-base policy:
+
+  If theta_i_star is numerically zero, the current implementation does not apply
+  an additive perturbation. It assigns
+
+    S[:, i] = 0.
+
+  This policy matches the current relative-coordinate code but can create an
+  artificial null direction for parameters whose stored base value is exactly
+  zero. This limitation must be remembered when interpreting the spectrum.
+
+
+7. Mechanistic-mode finite differences
+--------------------------------------
+The fast mech mode perturbs physical parameters multiplicatively:
+
+  k_s_plus  = k_s_star exp(+epsilon),
+  k_s_minus = k_s_star exp(-epsilon),
+
+and similarly for c_s. Therefore
+
+  S[:, k_s] approximately equals d y_obs / d log(k_s),
+  S[:, c_s] approximately equals d y_obs / d log(c_s).
+
+This coordinate convention is not identical to the raw_ks/raw_cs convention in
+the formal trained mode.
+
+
+8. Parameter-column sharding
+----------------------------
+Each column S[:, i] requires two independent rollouts, so the formal sensitivity
+construction may be divided into parameter-column shards. If
+
+  S = [S_1, S_2, ..., S_K],
+
+each shard computes only its assigned columns. The complete S is reconstructed
+by concatenating the shard columns in the original parameter order.
+
+The final Gram matrix is constructed only after merging. Eigenpairs from
+individual shards cannot be merged because the complete matrix contains
+cross-shard blocks such as S_1^T S_2.
+
+
+9. Sensitivity Gram matrix
+--------------------------
+After assembling all N-by-P sensitivity columns, AFM04 computes
+
+               1
+  H_GN = F =  --- S^T S,
+               N
+
+and explicitly symmetrizes it numerically:
+
+  F <- (F + F^T) / 2.
+
+This expression is exactly the matrix constructed by the code.
+
+Interpretation:
+
+  - It is a normalized trajectory-sensitivity Gram matrix.
+  - It is a Gauss-Newton Hessian approximation, up to the constant chosen in
+    the loss definition.
+  - It is FIM-like. It becomes a Fisher information matrix, up to a scalar noise
+    factor, if the normalized observation errors are assumed independent,
+    Gaussian, and homoscedastic.
+
+For example, if
+
+  L(theta) = (1 / (2N)) ||r(theta)||_2^2,
+
+then the Gauss-Newton Hessian is
+
+  nabla^2_GN L = (1/N) S^T S = F.
+
+Calling F an exact statistical FIM without stating an observation-noise model
+would be stronger than what the current code establishes. "Approximate FIM" or
+"trajectory-sensitivity Gram matrix" is the most precise terminology.
+
+
+10. Eigensystem and local parameter directions
+-----------------------------------------------
+The symmetric eigendecomposition is
+
+  F v_i = lambda_i v_i,
+
+with orthonormal eigenvectors and eigenvalues sorted in ascending order:
+
+  lambda_1 <= lambda_2 <= ... <= lambda_P.
+
+For a small perturbation delta_theta,
+
+  ||S delta_theta||_2^2 / N
+      = delta_theta^T F delta_theta.
+
+Along an eigenvector v_i,
+
+  ||S (a v_i)||_2^2 / N = a^2 lambda_i.
+
+Hence:
+
+  large lambda_i : a locally sensitive or stiff parameter combination;
+  small lambda_i : a weakly observable, sloppy, or compensating combination.
+
+Small negative eigenvalues at machine precision may appear from floating-point
+roundoff even though S^T S is theoretically positive semidefinite. The code
+therefore uses abs(lambda_i) in the numerical null-space criterion.
+
+
+11. Approximate null space
+--------------------------
+For a selected threshold tau, define the numerical near-null index set
+
+  I_tau = {i : |lambda_i| <= tau}.
+
+Let V_tau contain the corresponding eigenvectors as columns:
+
+  V_tau = [v_i] for i in I_tau.
+
+The approximate null subspace and its orthogonal projector are
+
+  N_tau = span(V_tau),
+
+  P_tau = V_tau V_tau^T.
+
+The post-analysis primary threshold is computed as
+
+  tau_primary = max(tau_abs, rho * max_i |lambda_i|).
+
+Current defaults are
+
+  tau_abs = 1e-8,
+  rho     = 0,
+
+so the default primary threshold is 1e-8. The standard post-analysis sweep also
+examines 1e-12, 1e-10, and 1e-8. The null-projection group visualization is
+currently configured to show
+
+  tau in {1e-5, 1e-6, 1e-7, 1e-8}.
+
+The thesis figures that retain only tau = 1e-5 are a selected post-analysis view;
+they do not change the matrix F or the underlying eigendecomposition.
+
+
+12. Projection of k_s and c_s axes onto the null space
+------------------------------------------------------
+In formal trained mode, let e_j be the Euclidean unit vector corresponding to
+one target raw coordinate:
+
+  j = mech.raw_ks[0] or mech.raw_cs[0].
+
+Its projection into the approximate null space is
+
+  p_j = P_tau e_j
+      = V_tau (V_tau^T e_j).
+
+The total null-projection energy is
+
+  E_j = ||p_j||_2^2
+      = e_j^T P_tau e_j,
+
+with
+
+  0 <= E_j <= 1.
+
+The code also reports
+
+  projection_norm = sqrt(E_j),
+
+  residual_norm   = sqrt(1 - E_j).
+
+Interpretation:
+
+  E_j close to 0:
+    the target coordinate has little overlap with the selected near-null
+    subspace and is locally better constrained by the chosen observables;
+
+  E_j close to 1:
+    the target coordinate lies largely in near-null combinations and can be
+    changed together with compensating parameters while producing little
+    observable change.
+
+This is a local coordinate-dependent statement, not a global confidence interval.
+
+
+13. Parameter-group decomposition of null-projection energy
+-----------------------------------------------------------
+The projection vector p_j has one component for every scalar trained parameter.
+For each parameter group g, AFM04 computes
+
+  E_(j,g) = sum_{i in g} p_j[i]^2.
+
+The groups are
+
+  KAN, Gain, Soft Mask, raw k_s, raw c_s, and Other Mechanistic.
+
+The group energies satisfy
+
+  sum_g E_(j,g) = E_j.
+
+The plotted percentage within the projection is
+
+                         E_(j,g)
+  fraction_(j,g) = -------------------- * 100%.
+                            E_j
+
+The target's self energy is
+
+  E_(j,self) = p_j[j]^2,
+
+while the compensation energy excluding the target itself is
+
+  E_(j,comp) = E_j - E_(j,self).
+
+If the null projection of raw_ks contains substantial KAN-group energy, the
+linearized system admits a combination of raw_ks and KAN changes for which
+
+  S delta_theta approximately equals 0.
+
+This is the mathematical meaning of local KAN-mechanistic compensation: the
+observable channels x1, x2, and x2dot cannot strongly distinguish that joint
+parameter displacement near the selected candidate.
+
+
+14. Complete AFM04 Step 3 execution sequence
+---------------------------------------------
+The current pipeline proceeds as follows:
+
+  1. Select and validate one completed st2l entry.
+  2. Reconstruct the trained model, mechanistic state, data window, u0, and ODE
+     solver settings from that entry.
+  3. Run the baseline rollout at theta_star.
+  4. Compute channel RMS scales and construct y_obs(theta_star).
+  5. Enumerate every scalar trained parameter in its stored order.
+  6. For each parameter, run plus and minus finite-difference rollouts and form
+     one sensitivity column.
+  7. If sharding is enabled, merge all parameter columns into the complete S.
+  8. Construct F = S^T S / N and symmetrize it.
+  9. Compute and sort all eigenvalues and eigenvectors.
+ 10. Save the spectrum, dominant eigenvector components, parameter metadata,
+     and baseline summaries.
+ 11. For each selected tau, identify the approximate null eigenvectors.
+ 12. Project the raw_ks and raw_cs unit axes into the selected null subspace.
+ 13. Decompose each projection energy into KAN, Gain, Soft Mask, k_s, c_s, and
+     other mechanistic groups.
+ 14. Produce eigen-spectrum, threshold-sweep, and null-projection visualizations.
+
+
+15. What Step 3 can and cannot establish
+----------------------------------------
+Step 3 can establish, locally and numerically, whether the chosen observable
+trajectory is insensitive to particular combinations of trained parameters near
+one completed st2l solution. It can reveal KAN-mechanistic compensation and show
+whether k_s/c_s conclusions are robust to the null threshold.
+
+Step 3 does not by itself establish:
+
+  - global identifiability;
+  - structural identifiability for all admissible trajectories;
+  - uniqueness outside the selected local basin;
+  - independence from parameter coordinates or scaling;
+  - independence from the chosen time window and observable channels;
+  - a statistical confidence interval without an explicit noise model;
+  - correctness of a candidate merely because its loss is low.
+
+The conclusions are conditional on:
+
+  theta_star, the selected window, u0, the observable set, RMS scaling, the
+  finite-difference epsilon, the internal parameterization, the ODE tolerances,
+  and the null threshold tau.
+
+
+16. Recommended concise mathematical description
+-------------------------------------------------
+For a thesis-level summary:
+
+  AFM04 Step 3 evaluates local practical identifiability around each completed
+  hybrid-model candidate by constructing a finite-difference sensitivity matrix
+  of the RMS-normalized observable trajectories, forming the trajectory-
+  sensitivity Gram matrix F = S^T S / N, and eigendecomposing F. Near-null
+  eigenvectors are then used to project the raw k_s and c_s parameter axes onto
+  the approximate null space. Decomposing these projection energies across KAN,
+  gain, soft-mask, and mechanistic parameter groups quantifies the local
+  compensation responsible for weak mechanistic identifiability.

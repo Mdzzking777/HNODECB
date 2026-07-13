@@ -138,6 +138,7 @@ def _build_model_and_mech(payload: dict) -> tuple[KANForceModule, LearnableMechM
         cs_bounds=(float(cfg["cs_lo"]), float(cfg["cs_hi"])),
         dtype=dtype,
         device=device,
+        parameterization=str(cfg.get("mech_parameterization", "sigmoid_bounded")),
     ).to(device)
 
     state_dict = payload.get("final_state_dict")

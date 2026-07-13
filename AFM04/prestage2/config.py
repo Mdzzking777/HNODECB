@@ -40,7 +40,9 @@ class Prestage2Config:
     checkpoint_every: int
     auto_generate_dataset: bool
     candidate_metric: str
+    stage2_total_epochs: int
     stage2_adam_epochs: int
+    stage2_lbfgs_epochs: int
 
 
 def default_config(repo_root: str | Path | None = None) -> Prestage2Config:
@@ -64,6 +66,17 @@ def default_config(repo_root: str | Path | None = None) -> Prestage2Config:
     for path in (log_dir, shard_log_dir, visualization_dir, result_dir, candidate_run_root):
         path.mkdir(parents=True, exist_ok=True)
 
+    stage2_total_epochs = max(1, _env_int("HNODECB_AFM04_STAGE2LIGHT_EPOCHS", stage2_schedule.epochs))
+    stage2_adam_epochs = max(
+        0,
+        _env_int(
+            "HNODECB_AFM04_PREST2_STAGE2_ADAM_EPOCHS",
+            _env_int("HNODECB_AFM04_STAGE2LIGHT_ADAM_EPOCHS", stage2_schedule.adam_epochs),
+        ),
+    )
+    stage2_adam_epochs = min(stage2_adam_epochs, stage2_total_epochs)
+    stage2_lbfgs_epochs = max(0, stage2_total_epochs - stage2_adam_epochs)
+
     return Prestage2Config(
         repo_root=repo_root,
         output_root=output_root,
@@ -85,13 +98,9 @@ def default_config(repo_root: str | Path | None = None) -> Prestage2Config:
             os.environ.get("HNODECB_AFM04_PREST2_CANDIDATE_METRIC", "final_train_loss").strip()
             or "final_train_loss"
         ),
-        stage2_adam_epochs=max(
-            0,
-            _env_int(
-                "HNODECB_AFM04_PREST2_STAGE2_ADAM_EPOCHS",
-                _env_int("HNODECB_AFM04_STAGE2LIGHT_ADAM_EPOCHS", stage2_schedule.adam_epochs),
-            ),
-        ),
+        stage2_total_epochs=stage2_total_epochs,
+        stage2_adam_epochs=stage2_adam_epochs,
+        stage2_lbfgs_epochs=stage2_lbfgs_epochs,
     )
 
 

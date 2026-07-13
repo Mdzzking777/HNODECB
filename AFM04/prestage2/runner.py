@@ -65,6 +65,20 @@ def _rank_label_name(layer_name: str) -> str:
     return "top mech winner A" if _canonical_layer_name(layer_name) == LAYER_A else "candidate B"
 
 
+def _stage2light_prefix_schedule(*, stage2_adam_epochs: int, target_total_epochs: int) -> tuple[int, int]:
+    """Project the formal st2l optimizer schedule onto the first N epochs.
+
+    Layers decide only how many st2l epochs a trial is allowed to reach.  The
+    optimizer phase of each epoch still belongs to st2l: epoch 1 follows st2l
+    epoch 1, epoch 21 follows st2l epoch 21, and so on.
+    """
+
+    total = max(0, int(target_total_epochs))
+    adam = min(max(0, int(stage2_adam_epochs)), total)
+    lbfgs = max(0, total - adam)
+    return adam, lbfgs
+
+
 def make_driver_log_path(log_dir: Path) -> Path:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return log_dir / f"log2_04_prest2_local_driver_{stamp}.txt"
@@ -323,6 +337,13 @@ def _stage2light_log_has_hard_zero_step_stop(log_path: Path) -> bool:
         return False
     with log_path.open("r", encoding="utf-8", errors="ignore") as f:
         return any("lbfgs_hard_zero_step" in line for line in f)
+
+
+def _stage2light_log_has_x3_refit_stop(log_path: Path) -> bool:
+    if not log_path.is_file():
+        return False
+    with log_path.open("r", encoding="utf-8", errors="ignore") as f:
+        return any(("x3 normalizer refit failed" in line) or ("x3_normalizer_refit_failed" in line) for line in f)
 
 
 def _stage2light_payload_hard_zero_step_stop(payload: dict[str, Any]) -> bool:
@@ -676,6 +697,50 @@ def _extract_candidate_record(
         "epoch_retry_max_attempt": int(retry_summary["epoch_retry_max_attempt"]),
         "epoch_retry_max_denom": int(retry_summary["epoch_retry_max_denom"]),
     }
+    for key in (
+        "initial_grid_support_source",
+        "initial_grid_support",
+        "initial_grid_support_x1_min",
+        "initial_grid_support_x1_max",
+        "initial_grid_support_x2_min",
+        "initial_grid_support_x2_max",
+        "initial_grid_support_x3_min",
+        "initial_grid_support_x3_max",
+        "rs_x3_normalizer_valid",
+        "rs_x3_normalizer_source",
+        "rs_x3_pred_mean",
+        "rs_x3_pred_scale",
+        "rs_x3_pred_min",
+        "rs_x3_pred_max",
+        "rs_x3_norm_support_min",
+        "rs_x3_norm_support_max",
+        "x3_agu_support_current",
+    ):
+        if key in warmstart:
+            record[key] = warmstart[key]
+        elif isinstance(previous_record, dict) and key in previous_record:
+            record[key] = previous_record[key]
+    x3_refit_meta = payload.get("x3_refit_meta")
+    if isinstance(x3_refit_meta, dict):
+        record["x3_refit_meta"] = x3_refit_meta
+        try:
+            record["rs_x3_normalizer_valid"] = True
+            record["rs_x3_normalizer_source"] = str(x3_refit_meta.get("source", "prestage2_stage2light_preopt_refit"))
+            record["rs_x3_pred_mean"] = float(x3_refit_meta["refit_x3_mean"])
+            record["rs_x3_pred_scale"] = float(x3_refit_meta["refit_x3_scale"])
+            record["rs_x3_pred_min"] = float(x3_refit_meta.get("x3_pred_min", float("nan")))
+            record["rs_x3_pred_max"] = float(x3_refit_meta.get("x3_pred_max", float("nan")))
+            record["rs_x3_norm_support_min"] = float(x3_refit_meta["x3_norm_support_min"])
+            record["rs_x3_norm_support_max"] = float(x3_refit_meta["x3_norm_support_max"])
+        except Exception:
+            record["rs_x3_normalizer_valid"] = False
+    initial_grid_support_meta = payload.get("initial_grid_support_meta")
+    if isinstance(initial_grid_support_meta, dict):
+        record["initial_grid_support_meta"] = initial_grid_support_meta
+    if "initial_grid_support" in payload:
+        record["initial_grid_support"] = payload.get("initial_grid_support")
+    if "x3_agu_support_current" in payload:
+        record["x3_agu_support_current"] = payload.get("x3_agu_support_current")
     if isinstance(previous_record, dict):
         record["source_layer_a_final_val_loss"] = float(previous_record.get("final_val_loss", float("inf")))
         record["source_layer_a_final_val_epoch"] = int(previous_record.get("final_val_epoch", -1))
@@ -734,11 +799,6 @@ def run_prestage2_shard(
             "AFM04 prestage2 shard start | "
             f"layer={canonical_layer} | shard={shard_index}/{cfg.shard_count} | items={item_summary}",
         )
-        if canonical_layer == LAYER_A:
-            trial_epochs = cfg.layer_a_epochs
-        else:
-            trial_epochs = cfg.layer_b_epochs
-
         for loop_idx, item in enumerate(items, start=1):
             source_mech_winner = int(item.get("source_mech_winner", 0))
             source_stage1_rank = int(item.get("source_stage1_rank", 0))
@@ -773,6 +833,17 @@ def run_prestage2_shard(
                     shutil.rmtree(candidate_root)
                 candidate_root.mkdir(parents=True, exist_ok=True)
 
+            if canonical_layer == LAYER_A:
+                target_total_epochs = int(cfg.layer_a_epochs)
+            else:
+                target_total_epochs = int(previous_record.get("epochs_completed", cfg.layer_a_epochs)) + int(
+                    cfg.layer_b_epochs
+                )
+            prefix_adam_epochs, prefix_lbfgs_epochs = _stage2light_prefix_schedule(
+                stage2_adam_epochs=int(cfg.stage2_adam_epochs),
+                target_total_epochs=target_total_epochs,
+            )
+
             env = dict(os.environ)
             for key in (
                 "HNODECB_AFM04_STAGE2LIGHT_INPUT_RANK",
@@ -789,14 +860,15 @@ def run_prestage2_shard(
             stage2_cfg = default_stage2light_config(cfg.repo_root)
             env["HNODECB_AFM04_STAGE2LIGHT_WINDOW_MODE"] = str(stage2_cfg.window_mode)
             env["HNODECB_AFM04_STAGE2LIGHT_WINDOW_US"] = f"{float(stage2_cfg.arch_window_us):.12e}"
-            env["HNODECB_AFM04_STAGE2LIGHT_EPOCHS"] = str(trial_epochs)
-            child_adam_epochs = min(int(cfg.stage2_adam_epochs), int(trial_epochs))
-            child_lbfgs_epochs = max(0, int(trial_epochs) - child_adam_epochs)
-            env["HNODECB_AFM04_STAGE2LIGHT_ADAM_EPOCHS"] = str(child_adam_epochs)
-            env["HNODECB_AFM04_STAGE2LIGHT_LBFGS_EPOCHS"] = str(child_lbfgs_epochs)
+            env["HNODECB_AFM04_STAGE2LIGHT_EPOCHS"] = str(target_total_epochs)
+            env["HNODECB_AFM04_STAGE2LIGHT_ADAM_EPOCHS"] = str(prefix_adam_epochs)
+            env["HNODECB_AFM04_STAGE2LIGHT_LBFGS_EPOCHS"] = str(prefix_lbfgs_epochs)
             env["HNODECB_AFM04_STAGE2LIGHT_CHECKPOINT_EVERY"] = str(cfg.checkpoint_every)
             env["HNODECB_AFM04_STAGE2LIGHT_LOG_EVERY"] = "1"
-            env["HNODECB_AFM04_STAGE2LIGHT_VAL_EVAL_MODE"] = "final_only"
+            # prest2 is a prefix projection of the formal st2l process.  Do not
+            # silently switch validation semantics here; even validation rollouts
+            # must follow st2l so the prefix remains auditable.
+            env["HNODECB_AFM04_STAGE2LIGHT_VAL_EVAL_MODE"] = str(stage2_cfg.val_eval_mode)
             env["HNODECB_AFM04_STAGE2LIGHT_TRAIN_WINDOW_INDEX"] = "0"
             env["HNODECB_AFM04_STAGE2LIGHT_SOFT_MASK"] = "1"
             env["HNODECB_AFM04_STAGE2LIGHT_SOFT_MASK_TRAINABLE"] = "1"
@@ -809,6 +881,7 @@ def run_prestage2_shard(
             env["HNODECB_AFM04_STAGE2LIGHT_LR"] = "1e-3"
             env["HNODECB_AFM04_STAGE2LIGHT_LR_ADAPT"] = "0"
             env["HNODECB_AFM04_STAGE2LIGHT_LR_ADAPT_UP_ONLY"] = "0"
+            env["HNODECB_AFM04_STAGE2LIGHT_MECH_PARAMETERIZATION"] = "log_relative"
             env["HNODECB_AFM04_STAGE2LIGHT_LR_MIN"] = "1e-6"
             env["HNODECB_AFM04_STAGE2LIGHT_LR_MAX"] = "1e-2"
             env["HNODECB_AFM04_STAGE2LIGHT_LR_ETA"] = "0.05"
@@ -827,7 +900,7 @@ def run_prestage2_shard(
             env["HNODECB_AFM04_STAGE2LIGHT_BACKTRACK_SHRINK"] = "0.5"
             env["HNODECB_AFM04_STAGE2LIGHT_BACKTRACK_MAX"] = "10"
             env["HNODECB_AFM04_STAGE2LIGHT_BACKTRACK_MIN_ALPHA"] = "1e-8"
-            env["HNODECB_AFM04_STAGE2LIGHT_LBFGS_ENABLED"] = "1"
+            env["HNODECB_AFM04_STAGE2LIGHT_LBFGS_ENABLED"] = "1" if prefix_lbfgs_epochs > 0 else "0"
             env["HNODECB_AFM04_STAGE2LIGHT_LBFGS_STRONG_WOLFE"] = "1"
             env["HNODECB_AFM04_STAGE2LIGHT_LBFGS_LR"] = "1.0"
             env["HNODECB_AFM04_STAGE2LIGHT_LBFGS_MAX_ITER"] = "1"
@@ -852,12 +925,6 @@ def run_prestage2_shard(
                     f"trial={source_stage1_trial_id} | root={candidate_root}"
                 )
             else:
-                total_epochs = int(previous_record.get("epochs_completed", cfg.layer_a_epochs)) + int(cfg.layer_b_epochs)
-                env["HNODECB_AFM04_STAGE2LIGHT_EPOCHS"] = str(total_epochs)
-                child_adam_epochs = min(int(cfg.stage2_adam_epochs), int(total_epochs))
-                child_lbfgs_epochs = max(0, int(total_epochs) - child_adam_epochs)
-                env["HNODECB_AFM04_STAGE2LIGHT_ADAM_EPOCHS"] = str(child_adam_epochs)
-                env["HNODECB_AFM04_STAGE2LIGHT_LBFGS_EPOCHS"] = str(child_lbfgs_epochs)
                 env["HNODECB_AFM04_STAGE2LIGHT_WARMSTART_SOURCE"] = "stage1"
                 env["HNODECB_AFM04_STAGE2LIGHT_WARMSTART_FROM_STAGE1"] = "1"
                 env["HNODECB_AFM04_STAGE2LIGHT_INPUT_PATH"] = str(cfg.stage1_input_path)
@@ -868,11 +935,17 @@ def run_prestage2_shard(
                     f"top mech winner A={source_top_mech_winner_a} | "
                     f"{_mw_seed_rank_label(previous_record)} | "
                     f"trial={source_stage1_trial_id} | "
-                    f"resume_root={candidate_root} | epochs_total_target={total_epochs}"
+                    f"resume_root={candidate_root} | epochs_total_target={target_total_epochs}"
                 )
 
             child_log_path = _stage2light_child_log_path(candidate_root)
-            _log_line(log, f"{launch_msg} | stage2light_log={child_log_path}")
+            _log_line(
+                log,
+                f"{launch_msg} | "
+                f"st2l_prefix_target={target_total_epochs} | "
+                f"optimizer_prefix=adam:{prefix_adam_epochs},lbfgs:{prefix_lbfgs_epochs} | "
+                f"stage2light_log={child_log_path}",
+            )
             proc = subprocess.run(
                 [sys.executable, "-m", "AFM04.stage2light.main", "--shard-index", "1"],
                 cwd=str(cfg.repo_root),
@@ -891,7 +964,13 @@ def run_prestage2_shard(
                     f"exit={proc.returncode} | "
                     f"{_retry_summary_line(retry_summary)}",
                 )
-                if _stage2light_log_has_hard_zero_step_stop(child_log_path):
+                hard_zero_stop = _stage2light_log_has_hard_zero_step_stop(child_log_path)
+                x3_refit_stop = _stage2light_log_has_x3_refit_stop(child_log_path)
+                if hard_zero_stop or x3_refit_stop:
+                    if hard_zero_stop:
+                        skip_reason = "lbfgs_hard_zero_step_stop"
+                    else:
+                        skip_reason = "x3_normalizer_refit_failed"
                     skipped_records.append(
                         {
                             "layer_name": canonical_layer,
@@ -905,7 +984,7 @@ def run_prestage2_shard(
                             "source_stage1_trial_id": int(source_stage1_trial_id),
                             "candidate_root": str(candidate_root.resolve()),
                             "stage2light_log_path": str(child_log_path.resolve()),
-                            "skip_reason": "lbfgs_hard_zero_step_stop",
+                            "skip_reason": skip_reason,
                             "exit_code": int(proc.returncode),
                             "retry_summary": retry_summary,
                         }
@@ -927,7 +1006,7 @@ def run_prestage2_shard(
                     )
                     _log_line(
                         log,
-                        f"item skipped after candidate-level LBFGS hard zero-step stop | "
+                        f"item skipped after candidate-level {skip_reason} | "
                         f"{_mw_seed_rank_label(item)} | trial={source_stage1_trial_id}",
                     )
                     continue
@@ -939,7 +1018,8 @@ def run_prestage2_shard(
             if not result_path.is_file():
                 raise FileNotFoundError(f"prest2 candidate result missing: {result_path}")
             payload = torch.load(result_path, map_location="cpu", weights_only=False)
-            if _stage2light_payload_hard_zero_step_stop(payload):
+            payload_hard_zero_stop = _stage2light_payload_hard_zero_step_stop(payload)
+            if payload_hard_zero_stop:
                 retry_summary = _summarize_stage2light_retry_log(child_log_path)
                 skipped_records.append(
                     {
@@ -977,7 +1057,7 @@ def run_prestage2_shard(
                 )
                 _log_line(
                     log,
-                    "item skipped after candidate-level LBFGS hard zero-step stop | "
+                    "item skipped after candidate-level lbfgs_hard_zero_step_stop | "
                     f"{_mw_seed_rank_label(item)} | trial={source_stage1_trial_id} | "
                     f"stop_epoch={int(payload.get('stop_epoch', -1))} | "
                     f"{_retry_summary_line(retry_summary)}",
@@ -1238,7 +1318,9 @@ def run_driver(cfg: Prestage2Config | None = None) -> dict[str, Any]:
             f"shards={cfg.shard_count} | "
             f"layerA_mech_winners={len(layer_a_items)} | layerA_epochs={cfg.layer_a_epochs} | "
             f"layerB_top_mech_winners_A={cfg.layer_b_top_candidates} | layerB_epochs={cfg.layer_b_epochs} | "
-            f"stage2_adam_prefix_epochs={cfg.stage2_adam_epochs} | "
+            f"st2l_schedule=total:{cfg.stage2_total_epochs},adam:{cfg.stage2_adam_epochs},"
+            f"lbfgs:{cfg.stage2_lbfgs_epochs} | "
+            "prest2_layers_select_prefix_length_only | "
             f"metric={cfg.candidate_metric} | "
             f"stage1_input={cfg.stage1_input_path} | stage1_trials={stage1_trial_count}",
             echo=True,

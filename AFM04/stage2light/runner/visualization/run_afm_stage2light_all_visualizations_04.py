@@ -10,6 +10,7 @@ from pathlib import Path
 SCRIPT_ORDER = [
     "plot_afm_stage2light_fcontact_traj_04.py",
     "plot_afm_stage2light_losses_04.py",
+    "plot_afm_stage2light_grad_norm_04.py",
     "plot_afm_stage2light_mech_04.py",
     "plot_afm_stage2light_recon_nn_04.py",
     "plot_afm_stage2light_state_x2dot_04.py",

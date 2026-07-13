@@ -1,0 +1,312 @@
+AFM05 x3 AGU support banding plan
+==================================
+
+Purpose
+-------
+AFM05 stage1pluslight currently uses one common x3 AGU/KAN support for all
+mechanistic grid points. The latest st1pl run suggests this can introduce a
+support bias:
+
+  - small ks + large cs tends to keep x3_norm_KAN inside support;
+  - large ks + small cs tends to push x3_norm_KAN outside support;
+  - therefore the low-loss region may partly reflect support comfort rather
+    than physical proximity to the unknown ground truth.
+
+The goal is to design a region-specific x3 AGU support rule. Each mechanistic
+region gets an x3 support wide enough to reduce support overflow, but not so
+wide that the spline resolution is wasted.
+
+
+Current empirical evidence
+--------------------------
+Using the completed AFM05 st1pl merged result:
+
+  AFM05/stage1pluslight/results_afm/afm_param_stage1pluslight_05.pkl
+
+and defining overflow as:
+
+  |x3_norm_KAN| > 1
+
+the current statistics are:
+
+  - all viable finite trials: 99,330
+  - outside_1_frac > 0: 85.50%
+  - outside_1_frac >= 0.5: 78.12%
+  - outside_1_frac >= 0.9: 57.06%
+
+By broad grid quadrant:
+
+  - small ks + large cs:
+      mean outside_1_frac = 0.2691
+      any overflow        = 44.09%
+      >=90% overflow      = 7.16%
+
+  - small ks + small cs:
+      mean outside_1_frac = 0.7972
+      any overflow        = 98.68%
+      >=90% overflow      = 47.89%
+
+  - large ks + large cs:
+      mean outside_1_frac = 0.8850
+      any overflow        = 98.43%
+      >=90% overflow      = 72.13%
+
+  - large ks + small cs:
+      mean outside_1_frac = 0.9965
+      any overflow        = 100.00%
+      >=90% overflow      = 100.00%
+
+This supports the hypothesis that support overflow is strongly structured
+over the mechanistic grid.
+
+
+Coordinate system
+-----------------
+Because the mechanistic grid is logarithmic, the banding should be performed
+in normalized log coordinates, not in raw SI values.
+
+Define:
+
+  K = (log10(ks) - log10(ks_min)) / (log10(ks_max) - log10(ks_min))
+  C = (log10(cs) - log10(cs_min)) / (log10(cs_max) - log10(cs_min))
+
+Then:
+
+  K in [0, 1]
+  C in [0, 1]
+
+The line from:
+
+  small ks, large cs  ->  large ks, small cs
+
+is:
+
+  K + C = 1
+
+The perpendicular direction is:
+
+  r = K - C
+
+Interpretation:
+
+  r << 0 : small ks + large cs, lower support-risk region
+  r ~= 0 : middle region
+  r >> 0 : large ks + small cs, higher support-risk region
+
+
+Proposed banding rule
+---------------------
+Partition the mechanistic grid by r = K - C.
+
+Initial recommendation:
+
+  Use 5 or 7 bands, not too many.
+
+Reason:
+
+  - too few bands reduces the benefit over a global support;
+  - too many bands makes each support estimate noisy and seed-dependent.
+
+Example with 5 bands:
+
+  band 1: very negative r, small ks + large cs
+  band 2: moderately negative r
+  band 3: middle r
+  band 4: moderately positive r
+  band 5: very positive r, large ks + small cs
+
+Each band receives its own x3 AGU support:
+
+  support_b = [x3_support_min_b, x3_support_max_b]
+
+where the support is estimated from the pilot st1pl result and then widened
+by a small margin.
+
+
+How to estimate support per band
+--------------------------------
+For each band, collect all trials whose mechanistic grid point falls in that
+band. From their current st1pl rollout diagnostics, collect:
+
+  x3_norm_KAN_min
+  x3_norm_KAN_max
+  x3_norm_KAN_outside_1_frac
+
+For robustness, avoid using raw min/max as the first design choice. Suggested
+statistics:
+
+  lower_b = quantile(x3_norm_KAN_min, 0.01)
+  upper_b = quantile(x3_norm_KAN_max, 0.99)
+
+Then add margin:
+
+  width_b = upper_b - lower_b
+  margin_b = max(0.10 * width_b, 0.10)
+
+  support_b = [lower_b - margin_b, upper_b + margin_b]
+
+If a band has a strongly one-sided x3 distribution, it is acceptable for the
+support to be asymmetric. For example:
+
+  [-1.8, 0.2]
+
+is preferable to:
+
+  [-1.8, 1.8]
+
+when the positive side is never used.
+
+
+Important distinction
+---------------------
+This support is only the KAN/AGU input support for the x3 node. It must not
+change the physical units or physical state-space equations.
+
+All physical RHS/LHS quantities remain in SI units.
+
+The band-specific support affects only how the normalized x3 input is covered
+by KAN spline grid points.
+
+
+Expected benefit
+----------------
+This design should reduce unfairness caused by x3 support overflow.
+
+Specifically:
+
+  - high-risk regions are less likely to be punished merely because x3_norm
+    falls outside the initial support;
+  - low-risk regions do not lose too much spline resolution by being forced
+    to use a globally huge support;
+  - st1pl rankings should become less dominated by support comfort.
+
+
+Risks and limitations
+---------------------
+1. This does not prove ground-truth proximity.
+
+   Even after support banding, st1pl remains a random-search stage over KAN
+   seeds and mechanistic grid points. Low loss still means only that the
+   current seed + mech point reconstructs observed tip-side trajectories well.
+
+2. This is based on a pilot st1pl run.
+
+   The band support is inferred from a previous rollout distribution. It is
+   an empirical correction, not a mathematical guarantee.
+
+3. Too wide a support wastes spline resolution.
+
+   If support is too broad, the same number of grid intervals must cover a
+   larger x3 range, reducing local expressivity.
+
+4. Too narrow a support preserves the original bias.
+
+   If support is too narrow, high-risk regions remain disadvantaged.
+
+5. Band-specific support changes the comparison basis.
+
+   After the change, each mechanistic region is evaluated with a different
+   x3 spline support. This is intentional, but it must be documented because
+   it changes the st1pl experimental condition.
+
+
+Implementation plan
+-------------------
+Step 1: diagnostic script
+
+  Create a script that reads:
+
+    AFM05/stage1pluslight/results_afm/afm_param_stage1pluslight_05.pkl
+
+  and outputs a table by band:
+
+    band_id
+    r_min, r_max
+    trial_count
+    ks_node range
+    cs_node range
+    q01(x3_norm_KAN_min)
+    q50(x3_norm_KAN_min)
+    q99(x3_norm_KAN_min)
+    q01(x3_norm_KAN_max)
+    q50(x3_norm_KAN_max)
+    q99(x3_norm_KAN_max)
+    mean outside_1_frac
+    fraction outside_1_frac > 0
+    fraction outside_1_frac >= 0.5
+    fraction outside_1_frac >= 0.9
+
+Step 2: choose number of bands
+
+  Start with 5 bands. If the diagnostic shows sharp transitions, consider 7.
+
+Step 3: define support table
+
+  Store the selected support table in code or config, e.g.
+
+    AFM05/stage1pluslight/config.py
+
+  or a small JSON/TXT file under:
+
+    AFM05/stage1pluslight/support/
+
+Step 4: assign support during trial construction
+
+  For each trial:
+
+    - compute K and C from ks0/cs0;
+    - compute r = K - C;
+    - select band_id;
+    - use that band's x3 support when constructing initial_grid_support.
+
+Step 5: add provenance fields
+
+  Each trial record should include:
+
+    x3_support_band_id
+    x3_support_band_r
+    x3_support_band_bounds
+    x3_support_min_used
+    x3_support_max_used
+    x3_support_source
+
+Step 6: rerun st1pl
+
+  After support banding, rerun st1pl and compare:
+
+    - rank distribution over ks/cs;
+    - mechanistic winners by best behavior;
+    - mechanistic winners by mean behavior;
+    - x3_norm_KAN_outside_1_frac distribution;
+    - whether top ranks remain concentrated at small ks + large cs.
+
+
+Decision criteria
+-----------------
+The banding method is useful if:
+
+  - support overflow is substantially reduced across the grid;
+  - no single mechanistic corner receives an obvious artificial advantage;
+  - top ranks are not explained mainly by being inside support;
+  - loss landscape becomes more interpretable.
+
+The method should be reconsidered if:
+
+  - rankings become extremely sensitive to arbitrary band boundaries;
+  - top results move only because one band receives much wider support;
+  - the support table becomes too wide everywhere, effectively reducing to a
+    global wide support with worse spline resolution.
+
+
+Short conclusion
+----------------
+Region-specific x3 AGU support based on:
+
+  r = K - C
+
+is a reasonable next AFM05 st1pl correction. It directly addresses the observed
+support bias while avoiding the crude alternative of making one global x3
+support very wide.
+
+The next concrete action should be to generate the band diagnostics table from
+the completed st1pl result and choose a first 5-band support table.

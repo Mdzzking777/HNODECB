@@ -1,0 +1,244 @@
+AFM04 / AFM05 optimizer definition
+==================================
+
+Purpose
+-------
+This note records what the optimizer means in the AFM04 / AFM05
+back-propagation workflow, what it acts on, and why the project uses the
+Adam + L-BFGS sequence with Strong Wolfe line search.
+
+
+1. What is an optimizer?
+------------------------
+An optimizer is the numerical algorithm that updates trainable model
+parameters in order to reduce the training loss.
+
+In each gradient-based training epoch, the model performs a rollout, evaluates
+the training loss, computes gradients by back-propagation, and then the
+optimizer changes the trainable parameters:
+
+  theta <- theta + update(theta, grad L(theta))
+
+where:
+
+  theta = trainable parameters
+  L     = training loss
+
+The optimizer does not define the physical equations, the data, or the loss
+itself. It only decides how the trainable parameters should move after the
+loss gradient has been computed.
+
+
+2. Role in the AFM back-propagation workflow
+--------------------------------------------
+In AFM04 / AFM05, the optimizer is the parameter-update mechanism used whenever
+we run gradient-based back-propagation. Prest2 and stage2light are important
+examples, but the optimizer itself is not conceptually tied to screening.
+
+Conceptually, the optimizer adjusts the hybrid model so that the rollout
+matches the observed quantities, such as x1, x2, and x2dot, while also allowing
+the mechanistic parameters and the KAN/NN force component to change.
+
+The important point is:
+
+  lower loss does not automatically mean better mechanistic identifiability.
+
+Because the KAN/NN component and the mechanistic parameters can compensate for
+each other, an optimizer may find a low-loss local solution whose mechanistic
+parameters are not necessarily close to the ground truth.
+
+
+3. What parameters does it act on?
+----------------------------------
+The optimizer acts only on trainable parameters. In our AFM hybrid model, these
+may include:
+
+  1. KAN / NN parameters
+     - spline coefficients
+     - base-function weights
+     - other trainable KAN edge parameters
+
+  2. Output gain parameter
+     - log_gnn
+     - g_nn = exp(log_gnn)
+
+  3. Soft-mask parameters, if enabled and trainable
+     - raw_s0-like parameter
+       This is mapped to s0, which controls where the smooth non-contact
+       attenuation begins.
+     - raw_alpha-like parameter
+       This is mapped to alpha, which controls how sharp or gradual the
+       transition is.
+
+     In physical notation, the soft mask is approximately:
+
+       if d(x) <= a0:
+           m_soft(x) = 1
+       else:
+           m_soft(x) = sigmoid(alpha * (s0 - d(x)))
+
+     Therefore, the two trainable soft-mask degrees of freedom are the
+     transition location s0 and the transition steepness alpha. The code stores
+     bounded raw parameters rather than directly storing unconstrained s0 and
+     alpha.
+
+  4. Mechanistic parameters, if enabled and trainable
+     - k_s
+     - c_s
+
+The optimizer does not directly optimize:
+
+  - the observed data,
+  - the train / validation split,
+  - the ODE time grid,
+  - the AGU grid as a normal trainable parameter,
+  - state_mean or state_scale as normal trainable parameters,
+  - x3 support as a normal trainable parameter.
+
+Those quantities may be prepared or updated by other procedures, but they are
+not the direct target of Adam or L-BFGS parameter updates.
+
+
+4. Adam
+-------
+Adam is a first-order adaptive gradient optimizer. It uses the gradient of the
+loss and maintains moving averages of:
+
+  m_t: first moment estimate, similar to momentum
+  v_t: second moment estimate, similar to gradient-energy scaling
+
+A simplified form is:
+
+  m_t = beta1 * m_{t-1} + (1 - beta1) * grad L(theta_t)
+  v_t = beta2 * v_{t-1} + (1 - beta2) * grad L(theta_t)^2
+
+After bias correction, Adam updates each parameter using a gradient step scaled
+by the adaptive denominator sqrt(v_t) + eps.
+
+Why Adam is useful here:
+
+  - it provides adaptive first-order updates using gradient moments;
+  - it can handle parameters with different numerical scales;
+  - it is less sensitive to imperfect initial conditions than pure Newton-like
+    methods;
+  - it is practical when the loss landscape is nonconvex and the model contains
+    heterogeneous parameter groups.
+
+In this workflow, Adam is the adaptive first-order phase. It should be
+understood as a general back-propagation optimizer, not as a procedure whose
+meaning depends on prest2 screening.
+
+
+5. L-BFGS
+---------
+L-BFGS means Limited-memory Broyden-Fletcher-Goldfarb-Shanno. It is a
+quasi-Newton optimizer.
+
+Unlike Adam, L-BFGS tries to use local curvature information. It does not store
+the full Hessian matrix. Instead, it stores a limited number of recent
+curvature pairs:
+
+  s_k = theta_{k+1} - theta_k
+  y_k = grad L(theta_{k+1}) - grad L(theta_k)
+
+These pairs are used to build an approximate inverse Hessian action, which
+produces a more curvature-aware search direction.
+
+Why L-BFGS is useful here:
+
+  - it uses local curvature information more directly than Adam;
+  - it often gives better local convergence for full-batch deterministic
+    objectives;
+  - it is suitable when a differentiable rollout objective is already stable
+    enough for line-search based updates.
+
+In this workflow, L-BFGS is the curvature-aware phase. It refines the current
+trainable parameters under the same loss definition and differentiable rollout
+model.
+
+
+6. Strong Wolfe line search
+---------------------------
+L-BFGS proposes a search direction p. The line search chooses a step length
+alpha along that direction:
+
+  theta_new = theta + alpha * p
+
+Strong Wolfe line search accepts alpha only if it satisfies two conditions:
+
+  1. Sufficient decrease:
+
+     L(theta + alpha p) <= L(theta) + c1 * alpha * grad L(theta)^T p
+
+  2. Curvature condition:
+
+     |grad L(theta + alpha p)^T p| <= c2 * |grad L(theta)^T p|
+
+The first condition prevents steps that do not reduce the loss enough. The
+second condition prevents accepting a step that is too short or curvature-wise
+unreliable.
+
+In practical terms, Strong Wolfe line search makes L-BFGS less likely to take
+an unstable or overly aggressive step.
+
+
+7. Adam + L-BFGS schedule
+-------------------------
+The project uses a two-phase optimization logic:
+
+  Phase 1: Adam
+      adaptive first-order gradient updates
+
+  Phase 2: L-BFGS with Strong Wolfe line search
+      local curvature-aware refinement
+
+This is a common and practical hybrid strategy:
+
+  - Adam handles heterogeneous parameter scales and nonconvex early updates.
+  - L-BFGS uses curvature information and line search to refine the same
+    differentiable objective.
+
+Different stages may run different prefixes of this general schedule. For
+example, a short training run may use only the Adam prefix, while a longer
+gradient-based run may continue into L-BFGS. This is a scheduling choice, not a
+change in what the optimizer means.
+
+
+8. Relation to rollout and loss evaluation
+------------------------------------------
+For one training epoch, the typical logic is:
+
+  1. build the current hybrid model;
+  2. roll out the ODE trajectory over the training window;
+  3. compute the training loss from the predicted observables;
+  4. back-propagate through the differentiable computation graph;
+  5. update trainable parameters with Adam or L-BFGS;
+  6. evaluate validation loss for monitoring and selection.
+
+For L-BFGS, the optimizer may evaluate the loss multiple times inside one outer
+epoch because the line search has to test candidate step lengths.
+
+
+9. Important interpretation
+---------------------------
+The optimizer is not a guarantee of physical correctness. It only minimizes the
+specified training loss under the current model, parameterization, normalizer,
+gain, soft mask, support, and rollout setup.
+
+Therefore, if the KAN/NN component can compensate for the mechanistic
+parameters, the optimizer may reduce loss while making k_s and c_s less
+identifiable. This is why optimizer results must be interpreted together with
+trajectory checks, force reconstruction, mechanistic paths, and later local
+identifiability analysis.
+
+
+10. Short thesis-style description
+----------------------------------
+In the gradient-based stages, trainable hybrid-model parameters are updated by
+back-propagating the rollout loss through the differentiable model. Adam is
+used as an adaptive first-order optimizer, and L-BFGS with Strong Wolfe line
+search is used as a curvature-aware refinement method when the schedule reaches
+that phase. The optimized variables include the trainable KAN parameters,
+output gain, the two soft-mask degrees of freedom when enabled (transition
+location s0 and transition steepness alpha), and the mechanistic parameters
+k_s and c_s when they are allowed to vary.

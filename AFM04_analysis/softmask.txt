@@ -1,0 +1,254 @@
+AFM04 / AFM05 general KAN soft mask definition
+==============================================
+
+Purpose
+-------
+This note records the general definition of the soft mask used by the KAN/NN
+force component in AFM04 and AFM05. It is written in the same style as the
+normalizer and gain notes: it describes the shared mechanism, not one specific
+run.
+
+
+Core force chain
+----------------
+For a state vector
+
+  x = [x1, x2, x3]
+
+the KAN/NN force-side output is constructed as:
+
+  x_norm   = normalizer(x)
+  y_raw    = KAN_raw(x_norm)
+  m_soft   = soft_mask(x)
+  g_nn     = exp(log_gnn)
+  F_NN     = g_nn * m_soft * y_raw
+
+Equivalently:
+
+  F_NN = exp(log_gnn) * soft_mask(x) * KAN_raw((x - mu) / s)
+
+The soft mask is therefore a multiplicative gate on the neural force
+contribution. It is not the physical mass m. In this note, m_soft(x) is used to
+avoid confusing it with the mass parameter in the mechanical ODE.
+
+
+Geometric variable used by the mask
+-----------------------------------
+The mask is computed from the tip-sample separation-like quantity:
+
+  d(x) = Z + x1 - x3
+
+where Z is the static distance / offset used by the AFM model. The contact
+threshold is a0.
+
+The code treats the contact side as:
+
+  d(x) <= a0
+
+and the non-contact side as:
+
+  d(x) > a0
+
+
+Mask formula
+------------
+The implemented mask is:
+
+  if d(x) <= a0:
+      m_soft(x) = 1
+  else:
+      m_soft(x) = sigmoid(alpha * (s0 - d(x)))
+
+where:
+
+  sigmoid(z) = 1 / (1 + exp(-z))
+
+Thus:
+
+  - in contact or near contact, the KAN force is not attenuated;
+  - far away from contact, the KAN force is smoothly attenuated;
+  - s0 controls the location of the non-contact transition;
+  - alpha controls the steepness of the transition.
+
+The mask is continuous on the non-contact side and is clipped to exactly one on
+the contact side.
+
+
+Parameterization
+----------------
+The code does not store s0 and alpha directly as unconstrained free values.
+Instead, it stores raw parameters and maps them through bounded sigmoid
+parameterizations:
+
+  s0    in [s0_min, s0_max]
+  alpha in [alpha_min, alpha_max]
+
+The bounds are expressed relative to a0:
+
+  s0_min = soft_mask_s0_min_a0 * a0
+  s0_max = soft_mask_s0_max_a0 * a0
+
+  alpha_min = soft_mask_alpha_min_a0 / a0
+  alpha_max = soft_mask_alpha_max_a0 / a0
+
+The default-style initial values are also defined relative to a0:
+
+  s0_init    = soft_mask_s0_a0 * a0
+  alpha_init = soft_mask_alpha_a0 / a0
+
+This makes the mask scale with the physical contact length scale rather than
+with arbitrary numerical units.
+
+
+Stage behavior
+--------------
+stage1pluslight / st1pl:
+
+  In the current AFM04/AFM05 random-search st1pl implementation, the soft mask
+  is enabled but not trainable. It is part of the fixed KAN force map used for
+  each random-search rollout. It affects both:
+
+    - the force sent into the RHS during rollout;
+    - the masked raw amplitude used by gain initialization.
+
+  In other words, st1pl evaluates:
+
+    F_NN = g_nn * soft_mask(x) * KAN_raw(x_norm)
+
+  but it does not optimize the soft-mask parameters during random search.
+
+prestage2 / prest2 and stage2light / st2l:
+
+  In gradient-based optimization, the soft mask can be configured as trainable.
+  When soft_mask_trainable is True, the raw parameters controlling s0 and alpha
+  are updated by the optimizer together with the other trainable parameters.
+
+  The mask is still evaluated at every KAN forward call from the current state
+  x. It is not recomputed from a completed epoch trajectory as a separate
+  statistic; it is simply part of the differentiable force function.
+
+step3 identifiability:
+
+  The soft-mask parameters form their own parameter group. In AFM04 step3
+  projection-energy plots this group is reported as Soft Mask.
+
+
+Relation to gain initialization
+-------------------------------
+The gain initialization uses the masked raw output:
+
+  y_masked_i = soft_mask(x_i) * KAN_raw(normalizer(x_i))
+
+Then:
+
+  A_raw = q95(|y_masked|)
+  g_nn  = q95(|F_ref|) / max(A_raw, 1e-12)
+
+Therefore, the soft mask can change the gain initialization even if the KAN raw
+function and the training states are unchanged.
+
+This is important:
+
+  - the gain is an output amplitude calibrator;
+  - the soft mask changes the effective raw amplitude before gain calibration;
+  - the two are coupled during initialization through A_raw.
+
+If the mask suppresses many non-contact samples, A_raw can become smaller and
+the initialized gain can become larger. Conversely, if the mask is close to one
+over most training samples, A_raw is closer to the bare KAN raw amplitude.
+
+
+Relation to the normalizer
+--------------------------
+The normalizer acts on the KAN input:
+
+  x_norm = (x - mu) / s
+
+The soft mask acts on the physical state:
+
+  m_soft = soft_mask(x)
+
+The gain acts on the KAN output:
+
+  F_NN = g_nn * m_soft * KAN_raw(x_norm)
+
+Thus:
+
+  - the normalizer changes the coordinate system seen by KAN;
+  - the soft mask gates the neural force by tip-sample geometry;
+  - the gain rescales the neural force amplitude.
+
+The soft mask does not change x1, x2, x3, k_s, c_s, or their physical units.
+It only attenuates or preserves the KAN force contribution according to the
+current state geometry.
+
+
+AFM04 vs AFM05 interpretation
+-----------------------------
+AFM04:
+
+  AFM04 has synthetic true x3(t) and true F_ts(t). During gain initialization,
+  the training states can include the true x3 trajectory. The soft mask is then
+  evaluated on states that are consistent with the synthetic truth.
+
+AFM05:
+
+  AFM05 does not have true x3(t) or true F_ts(t). In st1pl, the state samples
+  used for initialization contain observed x1, observed x2, and a constructed
+  x3-compatible entry state. In prest2/st2l, x3 mean/scale/support may be
+  updated from st1pl x3_pred(t), and the mask is then evaluated on the current
+  model states during rollout and optimization.
+
+General rule:
+
+  The mask is legal as long as it uses only the state available to the current
+  model/evaluation path. In AFM05 it must not secretly use true x3 or true F_ts.
+
+
+Why the soft mask matters
+-------------------------
+Without a mask, the KAN can produce a non-negligible force even in regions that
+are physically far from contact. This can cause the neural force to compensate
+for unrelated tip-side dynamics and can make early rollouts unnecessarily
+stiff or biased.
+
+The soft mask encodes a weak physical prior:
+
+  the neural tip-sample force should matter most near contact and should be
+  suppressed far away from contact.
+
+It does not specify the detailed contact law. The detailed shape is still left
+to the KAN and the mechanical parameters. The mask only controls where the KAN
+force is allowed to be active.
+
+
+Reproducibility implication
+---------------------------
+For two runs to have the same effective KAN force, it is not enough to use the
+same KAN seed. They must also use the same:
+
+  - state normalizer,
+  - soft mask settings,
+  - soft mask trainability,
+  - s0 and alpha values,
+  - gain initialization,
+  - training / rollout states.
+
+Because:
+
+  F_NN = exp(log_gnn) * soft_mask(x) * KAN_raw((x - mu) / s)
+
+even identical KAN raw parameters can produce different force fields if the
+soft mask or the states on which it is evaluated are different.
+
+
+One-line summary
+----------------
+The soft mask is a differentiable, geometry-based gate:
+
+  soft_mask(x) = 1                         if Z + x1 - x3 <= a0
+               = sigmoid(alpha*(s0-d(x))) if Z + x1 - x3 > a0
+
+that suppresses the KAN force away from contact and leaves it active near
+contact, while also influencing gain initialization through the masked raw
+amplitude A_raw.

@@ -1,0 +1,376 @@
+[AGU] AFM04 formal KAN initial grid range / adaptive grid update design note
+
+背景
+----
+当前讨论对象是 AFM04 formal 过程中的 KAN 输入坐标与 AGU 逻辑，范围包括：
+stage1pluslight / prestage2-prest2 / stage2light。
+
+这里的 AGU 指 adaptive grid update。必须严格区分两个概念：
+
+1. initial grid
+   KAN constructor 中传入 pykan 的初始 grid range。它会影响 KAN seed 初始化时的
+   B-spline basis、spline coefficient c_i、base/spline branch 的初始函数形状。
+
+2. AGU 后的 grid
+   调用 pykan update_grid_from_samples() 后，根据输入 samples 重新移动 grid support
+   和 grid density，并通过 refit coefficient 尽量继承旧函数值。
+
+核心判断
+--------
+pykan 的 grid range 是 spline activation 的工作区间。它应该覆盖该 activation 实际会遇到的输入范围。
+如果 grid range 小于输入样本范围，输入会进入边界外 / extrapolation 区域，spline branch 的局部表达能力会退化。
+
+因此，不能把 default [-1, 1] 当作无害默认值。
+
+AGU 后 grid 会被 samples 更新，这不能替代正确的 initial grid。原因是：
+pykan 在初始化时已经基于 initial grid 生成随机 spline function；后续 AGU 只是把旧 grid 上的函数值 refit 到新 grid。
+如果 initial grid 与实际输入坐标系不匹配，seed bank 的随机函数分布已经受到污染。
+
+当前问题
+--------
+当前 formal AFM04 代码仍通过 cfg.grid_range_lo / cfg.grid_range_hi 给 pykan 传入统一 grid range：
+
+    x1 initial grid = [-1, 1]
+    x2 initial grid = [-1, 1]
+    x3 initial grid = [-1, 1]
+
+这是全维统一设置，不区分 x1 / x2 / x3。
+
+这在当前问题中不合格，因为 x1, x2, x3 的 normalized input domain 并不必然相同：
+
+    x1_norm = (x1 - x1_mean) / x1_scale
+    x2_norm = (x2 - x2_mean) / x2_scale
+    x3_norm = (x3 - x3_mean) / x3_scale
+
+其中 x3 的 mean/scale 在不同阶段有不同来源。
+
+必须修改的设计
+--------------
+1. KANForceModule 需要支持 per-input initial grid support
+
+不应只传：
+
+    grid_range = [lo, hi]
+
+而应支持：
+
+    initial_grid_support = [
+        [x1_norm_min, x1_norm_max],
+        [x2_norm_min, x2_norm_max],
+        [x3_norm_min, x3_norm_max],
+    ]
+
+pykan 原生 KAN(grid_range=...) 是全维统一范围，因此需要在 wrapper 层处理 per-input grid 初始化。
+
+2. stage1pluslight / RS 阶段
+
+RS 中每个 trial 基本只进行一次 AGU。因此 initial grid 尤其重要。
+
+每个 trial 的 KAN 初始化应使用：
+
+    x1 initial support:
+        当前训练窗口 observed x1_norm 的 min/max
+
+    x2 initial support:
+        当前训练窗口 observed x2_norm 的 min/max
+
+    x3 initial support:
+        x1-prior neutral x3_norm support
+
+x3 在 RS 中不能使用 true x3，也不能使用 pred x3。它仍然是 neutral axis。
+但 neutral 不等于固定 [-1, 1]，而是应由当前 x3 prior/normalizer 定义出合理的 normalized support。
+
+3. stage2light / prestage2-prest2 阶段
+
+st2l 和 prest2 也不能用默认 [-1, 1] 初始化。
+
+它们应跟随 st2l 的主干逻辑：
+
+    先根据 RS/preopt rollout 得到 x3_pred trajectory
+    再由 x3_pred 计算 x3_mean / x3_scale / x3_norm_support
+    再用这个 per-input support 初始化 KAN grid
+    然后才进入第一个 epoch
+
+prest2 是 st2l 的试运行分支，因此每个 candidate/trial 在 epoch 开始前也必须执行同样逻辑。
+某个 trial 的 x3_pred normalizer/support 异常时，应终止该 trial，而不是 fallback 到人工值。
+
+4. 需要保存到 payload/log 的字段
+
+为了后续可复现和可视化重建，至少应保存：
+
+    initial_grid_support_source
+    initial_grid_support_x1_min / max
+    initial_grid_support_x2_min / max
+    initial_grid_support_x3_min / max
+
+    x3_normalizer_source
+    x3_mean
+    x3_scale
+    x3_norm_min
+    x3_norm_max
+
+对于 st1pl，x3 source 应标注为 x1-prior-neutral。
+对于 st2l/prest2，x3 source 应标注为 RS/preopt-x3-pred-refit。
+
+5. 可视化/重建脚本也必须同步
+
+凡是通过 seed 重新构建 preopt KAN 的脚本，都必须使用同一套 initial grid support。
+否则可视化中的 preopt model 与真实训练入口不一致。
+
+至少包括：
+
+    AFM04/stage1pluslight/visualization_runner/plot_afm_stage1pluslight_preopt_rank_04.py
+    AFM04/stage2light/runner/visualization/plot_afm_stage2light_preopt_rank_04.py
+
+原则性结论
+----------
+AGU 后 grid 会更新，但这不能作为 initial grid 随便设为 [-1, 1] 的理由。
+
+正确逻辑应是：
+
+    initial grid range 覆盖当前 trial/window 的预计 normalized input domain
+    AGU 再根据 samples 做后续 grid support / density 更新
+
+也就是说：
+
+    initial grid 是 seed bank 的坐标环境
+    AGU 是训练/评估前后的 grid 自适应过程
+
+两者都重要，不能互相替代。
+
+
+
+Implementation update - initial grid only
+-----------------------------------------
+Current status: this round only fixes/tunes the initial grid support. It does
+not claim that the whole AGU / later grid-update / extrapolation problem is
+fully solved.
+
+Implemented code changes:
+
+1. AFM04/stage2light/kan_backend.py
+
+   KANForceModule now accepts:
+
+       initial_grid_support = [
+           [x1_norm_min, x1_norm_max],
+           [x2_norm_min, x2_norm_max],
+           [x3_norm_min, x3_norm_max],
+       ]
+
+   The first KAN layer is reinitialized on this per-input support before
+   training/evaluation. This avoids creating the initial B-spline basis and
+   random spline coefficients on the blind default [-1, 1] range.
+
+   The support is stored as a non-persistent buffer for diagnostics, so it does
+   not enter state_dict and should not break old checkpoint loading.
+
+2. AFM04/stage1pluslight/kan_rs_trial.py
+
+   In st1pl / RS, each trial now computes initial grid support before KAN is
+   constructed:
+
+       x1 support: current training-window observed x1_norm min/max
+       x2 support: current training-window observed x2_norm min/max
+       x3 support: x1-prior neutral x3 axis under the current x3 prior
+                   mean/scale
+
+   This support is passed into KANForceModule at construction time.
+
+   The trial record now stores:
+
+       initial_grid_support_source
+       initial_grid_support
+       initial_grid_support_x1_min/max
+       initial_grid_support_x2_min/max
+       initial_grid_support_x3_min/max
+
+   After the RS rollout, the trial also records x3_pred-based diagnostics:
+
+       rs_x3_normalizer_valid
+       rs_x3_normalizer_source
+       rs_x3_pred_mean
+       rs_x3_pred_scale
+       rs_x3_pred_min/max
+       rs_x3_norm_support_min/max
+
+3. AFM04/stage2light/train.py
+
+   st2l/prest2 now reads warmstart metadata before constructing KAN.
+
+   If warmstart contains valid RS/preopt x3 statistics, stage2light first
+   replaces the x3 normalizer with that x3_pred-derived mean/scale, builds the
+   x3 neutral support from the stored x3_norm min/max, and then constructs KAN
+   with the corresponding initial_grid_support.
+
+   If no valid warmstart x3 metadata exists, the code falls back to the current
+   x1-prior neutral x3 logic.
+
+   Checkpoints/results/viz payloads now write:
+
+       initial_grid_support
+       initial_grid_support_meta
+       x3_refit_meta
+
+4. AFM04/prestage2/runner.py
+
+   prest2 candidate records now preserve and forward:
+
+       initial_grid_support / initial_grid_support_meta
+       RS x3_pred mean/scale/support metadata
+       child stage2light x3_refit_meta
+
+   Therefore formal st2l can start from a prest2 candidate without losing the
+   initial-grid/x3-normalizer identity.
+
+5. Preopt visualization rebuild scripts
+
+   Updated:
+
+       AFM04/stage1pluslight/visualization_runner/plot_afm_stage1pluslight_preopt_rank_04.py
+       AFM04/stage2light/runner/visualization/plot_afm_stage2light_preopt_rank_04.py
+
+   These scripts now rebuild the preopt KAN with the same initial grid support
+   logic as the corresponding training entry.
+
+Important limitation
+--------------------
+This implementation only corrects the initial grid support. Later AGU behavior
+still needs separate analysis:
+
+   - whether x1/x2/x3 normalized trajectories leave their current grid support;
+   - whether later AGU should update support, density, or both;
+   - how to keep x3 neutral while avoiding an initial/support mismatch;
+   - whether the x3_pred-derived support from RS/preopt is reliable enough for
+     each candidate.
+
+In short:
+
+   This round fixed where the KAN seed is born.
+   It did not prove that every later grid update is optimal.
+
+Follow-up design - epoch-adaptive x3 AGU support
+------------------------------------------------
+
+The next design decision is about later AGU updates in st2l/prest2, after the
+initial grid support has already been fixed.
+
+The agreed principle is:
+
+   x3_mean / x3_scale stay fixed during optimization.
+   x3 AGU support may be updated epoch by epoch.
+
+Reason:
+
+   x3_mean and x3_scale define the KAN input coordinate transform:
+
+       x3_norm_real(t) = (x3_pred_raw(t) - x3_mean_fixed) / x3_scale_fixed
+
+   If these values are changed every epoch, the forward coordinate system and
+   the loss surface change abruptly. This can invalidate Adam momentum and
+   LBFGS curvature memory.
+
+   Therefore the input normalizer is fixed after the RS/preopt refit step.
+
+However, AGU support is a separate concept. After each epoch, the current
+rollout can be used only to estimate where the current normalized x3 trajectory
+actually lives:
+
+       x3_norm_min_epoch = min_t x3_norm_pred_epoch(t)
+       x3_norm_max_epoch = max_t x3_norm_pred_epoch(t)
+
+Then the next AGU call can construct a neutral-uniform x3 axis over this
+predicted normalized support:
+
+       x3_norm_neutral_axis =
+           linspace(x3_norm_min_epoch, x3_norm_max_epoch)
+
+If the AGU helper expects raw inputs, this axis is converted back to raw units:
+
+       x3_raw_neutral_axis =
+           x3_mean_fixed + x3_scale_fixed * x3_norm_neutral_axis
+
+and the existing normalization inside KAN/AGU maps it back to the same
+x3_norm_neutral_axis.
+
+Interpretation:
+
+   The x3 support/range is pred-informed.
+   The x3 density inside that support is still neutral-uniform.
+
+This is not strict neutral AGU. It is better described as:
+
+   pred-informed x3 range + neutral x3 density
+
+Compared with the current RS/preopt-informed support, this is more adaptive:
+
+   - good trials/ranks whose x3_pred drifts less should keep a stable and useful
+     x3 support;
+   - bad trials/ranks whose x3_pred drifts heavily will expose that drift through
+     their own unstable or poor support;
+   - the KAN first-layer x3 grid can keep covering the actual normalized x3
+     region reached by the current model without changing the model input
+     normalizer.
+
+Implemented status - st2l/prest2
+--------------------------------
+
+This follow-up is now implemented in AFM04 formal st2l, and prest2 inherits it
+because prest2 runs stage2light for each candidate.
+
+Current behavior:
+
+1. At st2l/prest2 preopt entry:
+
+   - run the selected candidate over the current training window;
+   - compute x3_mean / x3_scale from that preopt x3_pred trajectory;
+   - fix these values as the forward/input normalizer;
+   - compute the initial x3 AGU support from that same normalized x3_pred
+     range, without adding manual margin.
+
+2. During Adam epochs:
+
+   - after each accepted epoch, compute:
+
+         x3_norm_min_epoch
+         x3_norm_max_epoch
+
+     from the accepted rollout trajectory under the fixed x3 normalizer;
+   - set the next epoch's x3 AGU support to exactly:
+
+         [x3_norm_min_epoch, x3_norm_max_epoch]
+
+   - rebuild the AGU helper input so the next grid update uses:
+
+         x1/x2: observed normalized coordinates
+         x3: neutral-uniform samples over the updated x3 support
+
+3. During LBFGS:
+
+   - AGU stays frozen;
+   - x3 support is monitored and logged, but not updated.
+
+4. Checkpoint / resume / prest2 propagation:
+
+   - payloads record x3_refit_meta and x3_agu_support_current;
+   - resume restores the current support if available;
+   - prest2 candidate records preserve this support so Layer B / downstream
+     stage2light does not silently fall back to the older x3 support.
+
+5. Logs/history now record:
+
+       x3_norm_min_epoch
+       x3_norm_max_epoch
+       x3_neutral_support_min
+       x3_neutral_support_max
+       whether x3_norm exceeded the previous support
+       x3_agu_support_used_min / max
+       x3_agu_next_support_min / max
+       x3_agu_support_updated
+
+Important wording:
+
+   This changes grid support/range only.
+   It does not change x3_mean / x3_scale after preopt refit.
+   It does not make x3 AGU density follow x3_pred density.
+   x3 density remains neutral-uniform inside the current support.

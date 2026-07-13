@@ -41,6 +41,12 @@ def _logit(p: float) -> float:
     return math.log(p / (1.0 - p))
 
 
+def _positive_geometric_midpoint(lo: float, hi: float) -> float:
+    if lo <= 0.0 or hi <= 0.0:
+        raise ValueError("log-relative mech parameterization requires positive reference bounds")
+    return math.sqrt(float(lo) * float(hi))
+
+
 class LearnableMechModule(nn.Module):
     def __init__(
         self,
@@ -51,31 +57,82 @@ class LearnableMechModule(nn.Module):
         cs_bounds: tuple[float, float],
         dtype: torch.dtype,
         device: str,
+        parameterization: str = "direct_unbounded",
     ) -> None:
         super().__init__()
         ks_lo, ks_hi = float(ks_bounds[0]), float(ks_bounds[1])
         cs_lo, cs_hi = float(cs_bounds[0]), float(cs_bounds[1])
         if not (ks_hi > ks_lo and cs_hi > cs_lo):
             raise ValueError("mech bounds must satisfy hi > lo")
+        mode = str(parameterization).strip().lower().replace("-", "_")
+        aliases = {
+            "direct": "direct_unbounded",
+            "physical": "direct_unbounded",
+            "unbounded": "direct_unbounded",
+            "direct_unbounded": "direct_unbounded",
+            "exp": "log_relative",
+            "log": "log_relative",
+            "relative": "log_relative",
+            "log_relative": "log_relative",
+            "log_relative_bounded": "log_relative",
+            "sigmoid": "sigmoid_bounded",
+            "bounded": "sigmoid_bounded",
+            "sigmoid_bound": "sigmoid_bounded",
+            "sigmoid_bounds": "sigmoid_bounded",
+            "sigmoid_bounded": "sigmoid_bounded",
+            "legacy": "sigmoid_bounded",
+            "legacy_sigmoid": "sigmoid_bounded",
+        }
+        if mode not in aliases:
+            raise ValueError(f"unsupported mech parameterization: {parameterization!r}")
+        self.parameterization = aliases[mode]
 
         self.register_buffer("ks_lo", torch.as_tensor(ks_lo, dtype=dtype, device=device))
         self.register_buffer("ks_hi", torch.as_tensor(ks_hi, dtype=dtype, device=device))
         self.register_buffer("cs_lo", torch.as_tensor(cs_lo, dtype=dtype, device=device))
         self.register_buffer("cs_hi", torch.as_tensor(cs_hi, dtype=dtype, device=device))
+        ks_ref = _positive_geometric_midpoint(ks_lo, ks_hi)
+        cs_ref = _positive_geometric_midpoint(cs_lo, cs_hi)
+        self.register_buffer("ks_ref", torch.as_tensor(ks_ref, dtype=dtype, device=device))
+        self.register_buffer("cs_ref", torch.as_tensor(cs_ref, dtype=dtype, device=device))
 
-        ks_frac = (float(ks_init) - ks_lo) / (ks_hi - ks_lo)
-        cs_frac = (float(cs_init) - cs_lo) / (cs_hi - cs_lo)
-        self.raw_ks = nn.Parameter(torch.as_tensor(_logit(ks_frac), dtype=dtype, device=device))
-        self.raw_cs = nn.Parameter(torch.as_tensor(_logit(cs_frac), dtype=dtype, device=device))
+        if self.parameterization == "sigmoid_bounded":
+            ks_frac = (float(ks_init) - ks_lo) / (ks_hi - ks_lo)
+            cs_frac = (float(cs_init) - cs_lo) / (cs_hi - cs_lo)
+            raw_ks_init = _logit(ks_frac)
+            raw_cs_init = _logit(cs_frac)
+        elif self.parameterization == "log_relative":
+            if float(ks_init) <= 0.0 or float(cs_init) <= 0.0:
+                raise ValueError("log-relative mech parameterization requires positive initial ks/cs")
+            raw_ks_init = math.log(float(ks_init) / ks_ref)
+            raw_cs_init = math.log(float(cs_init) / cs_ref)
+        else:
+            raw_ks_init = float(ks_init)
+            raw_cs_init = float(cs_init)
+        self.raw_ks = nn.Parameter(torch.as_tensor(raw_ks_init, dtype=dtype, device=device))
+        self.raw_cs = nn.Parameter(torch.as_tensor(raw_cs_init, dtype=dtype, device=device))
 
     @staticmethod
     def _bounded(raw: torch.Tensor, lo: torch.Tensor, hi: torch.Tensor) -> torch.Tensor:
         return lo + (hi - lo) * sigmoid_torch(raw)
 
+    @staticmethod
+    @staticmethod
+    def _log_relative(raw: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        return ref * torch.exp(raw)
+
     def ks(self) -> torch.Tensor:
+        if self.parameterization == "direct_unbounded":
+            return self.raw_ks.reshape(())
+        if self.parameterization == "log_relative":
+            return self._log_relative(self.raw_ks, self.ks_ref)
         return self._bounded(self.raw_ks, self.ks_lo, self.ks_hi)
 
     def cs(self) -> torch.Tensor:
+        if self.parameterization == "direct_unbounded":
+            return self.raw_cs.reshape(())
+        if self.parameterization == "log_relative":
+            return self._log_relative(self.raw_cs, self.cs_ref)
         return self._bounded(self.raw_cs, self.cs_lo, self.cs_hi)
 
     def forward(self) -> torch.Tensor:

@@ -1,0 +1,264 @@
+AFM05 st1pl -> prest2 loss mismatch: risk summary and AFM05-only diagnosis
+Date: 2026-07-08
+
+Scope
+-----
+This note only checks AFM05 files and AFM05 run artifacts. AFM04 is not used as
+evidence here except for the conceptual motivation that AFM05 should not blindly
+inherit AFM04-specific settings.
+
+
+0. Observed symptom in the current AFM05 prest2 run
+---------------------------------------------------
+Current file checked:
+  AFM05/prestage2/results/afm_prest2_05_candidates_b.pkl
+
+For the 20 current Layer-B candidates:
+  train_loss_start / source_stage1_loss:
+    n      = 20
+    min    = 107.633x
+    median = 120.192x
+    max    = 129.636x
+
+  history[0].loss_before / source_stage1_loss:
+    n      = 20
+    min    = 109.280x
+    median = 121.944x
+    max    = 131.890x
+
+This confirms that the loss jump is systematic in AFM05, not a one-candidate
+outlier.
+
+The same records show that within the current AFM05 stage1-entry branch:
+  gain_after_refit / gain_before_refit:
+    n      = 20
+    min    = 0.999306
+    median = 0.999437
+    max    = 1.000402
+
+So the gain is not changing much inside the current prest2 entry branch itself.
+However, the prest2 entry gain is much smaller than the st1pl saved gain:
+  prest2 history[0].g_nn / st1pl nn_gain:
+    n      = 20
+    min    = 0.060196
+    median = 0.065540
+    max    = 0.081354
+
+That is, prest2 starts with only about 6-8% of the st1pl saved gain. This is a
+major functional change.
+
+
+1. Risk class A: AFM04-specific assumptions not fully adapted to AFM05
+----------------------------------------------------------------------
+Concern:
+  Some settings originally suitable for AFM04 W0/W1 may remain in AFM05 even
+  though AFM05 uses a different dataset/window/available observables.
+
+AFM05 checks:
+
+1.1 Loss scale is probably not the current primary culprit.
+  AFM05 stage1pluslight/losses.py:
+    - Lines around 255-256 compute:
+        x3_range_amp_full  = mean_abs(x1 over the current full window)
+        fts_range_amp_full = mean_abs(F_actuation over the current full window)
+    - Lines around 322-338 pass these dynamic values into the range penalties.
+
+  AFM05 stage2light/losses.py:
+    - Lines around 69-80 compute the same kind of dynamic range amps:
+        x3_range_amp = mean_abs(x1 over current window)
+        fts_range_amp = mean_abs(F_actuation over current window)
+    - Lines around 94-141 use them in the loss.
+
+  Note:
+    stage1pluslight/losses.py still exports legacy constants
+      X3_RANGE_AMP = 100e-9
+      FTS_RANGE_AMP = 1e-8
+    but the active loss path currently uses the dynamic window amplitudes above.
+
+  Current conclusion:
+    The large AFM05 prest2/st1pl jump is unlikely to be mainly caused by a
+    stage1-vs-prest2 loss-scale definition mismatch.
+
+1.2 x3 mean prior issue has been patched away in the current prest2 path.
+  AFM05 stage2light/train.py:
+    - Lines around 993-1059 read rs_x3_pred_mean, rs_x3_pred_scale, and
+      rs_x3_norm_support_* from warmstart metadata when available.
+    - Lines around 1761-1771 apply these values before constructing the KAN.
+    - Lines around 1893-1922 log:
+        preopt_reproduce_rollout=skipped
+      when saved stage1 x3 entry information exists.
+
+  Current conclusion:
+    The old mistake "use x1 prior/mean as x3 entry" is not the current direct
+    culprit for this run, because prest2 is now using st1pl-saved x3 statistics.
+
+
+2. Risk class B: problems introduced while deleting/adding AFM05 functionality
+------------------------------------------------------------------------------
+Concern:
+  AFM05 removed true-side quantities and added new stage1-entry inheritance
+  logic. The modified pathway may no longer be equivalent to AFM04-style or
+  st1pl-style model construction.
+
+AFM05 checks:
+
+2.1 Warmstart records do not contain a full KAN function state.
+  Current files checked:
+    AFM05/prestage2/results/warmstart_records/*.pkl
+
+  There are 100 warmstart records. Completeness summary:
+    p_net_nonempty   = 0 / 100
+    state_dict       = 0 / 100
+    kan_state_dict   = 0 / 100
+    nn_gain          = 100 / 100
+    rs_x3 stats      = 100 / 100
+    initial_support  = 100 / 100
+
+  Example record fields:
+    record.p_net_vec = empty array
+    record.nn_gain   = about 5.346e-09
+    record.params.rs_x3_pred_mean / rs_x3_pred_scale are present
+    record.params.rs_x3_norm_support_min / max are present
+    record.params.initial_grid_support is present
+
+  Current conclusion:
+    AFM05 prest2 does not inherit the complete st1pl KAN function. It reconstructs
+    a KAN from seed/config plus saved x3 statistics/support. For KAN this is not
+    the same as inheriting the original function.
+
+2.2 st1pl and prest2/st2l KAN construction parameters are not identical.
+  AFM05 stage1pluslight/kan_rs_trial.py:
+    - default KAN noise_scale = 0.1  (line around 153)
+    - gnn_learnable default = False  (line around 159)
+    - soft_mask_trainable = False is hard-coded in model construction
+      (lines around 746-747)
+
+  AFM05 stage2light/config.py:
+    - default KAN noise_scale = 0.2  (line around 298)
+    - soft_mask_trainable default = True (line around 308)
+    - gnn_learnable default = True (line around 329)
+
+  AFM05/prestage2/runner/run_prestage2_05_local.ps1:
+    - Does not explicitly override HNODECB_AFM05_STAGE2LIGHT_NOISE_SCALE.
+    - Therefore prest2 uses stage2light/config.py default noise_scale = 0.2.
+
+  Current conclusion:
+    This is the strongest concrete discrepancy found so far. Same seed + different noise_scale means different KAN initial coefficients because noise_scale is used during KANForceModule construction. Therefore prest2 cannot reproduce the st1pl KAN function even before any optimizer step. AFM04 does not share this exact mismatch: AFM04 st1pl and AFM04 stage2light both use noise_scale = 0.2 by default.
+
+2.3 Soft-mask trainability differs.
+  st1pl:
+    soft_mask_trainable = False
+  prest2/st2l:
+    soft_mask_trainable = True by default
+
+  Current conclusion:
+    This probably does not explain the epoch-0 loss jump by itself because the
+    initial soft-mask numerical values are the same. However, it is a real
+    training-boundary mismatch and should be aligned if we want a clean
+    st1pl->prest2 inheritance story.
+
+
+3. Risk class C: gain/support/AGU sensitivity in AFM05
+------------------------------------------------------
+Concern:
+  Even if x3 mean/scale/support are saved, KAN spline bases and gain are sensitive
+  to grid/support/normalizer changes. A rebuilt model can produce a very different
+  force even with the same seed.
+
+AFM05 checks:
+
+3.1 prest2 starts with much smaller gain than st1pl saved gain.
+  Current 20 B candidates:
+    prest2 history[0].g_nn / st1pl nn_gain:
+      min    = 0.060196
+      median = 0.065540
+      max    = 0.081354
+
+  Current conclusion:
+    The KAN raw output amplitude in prest2 is not consistent with the st1pl raw output amplitude. Because gain is initialized by q95(reference)/q95(raw), the smaller prest2 gain is a diagnostic consequence: it indicates that the reconstructed KAN raw function differs from the st1pl raw function. It is not by itself the root cause.
+
+3.2 Current prest2 stage1-entry path skips preopt reproduction, but still updates
+    grid from saved x3 support.
+  AFM05 stage2light/train.py:
+    - Lines around 1897-1902:
+        initialize gain from reference
+        update_grid_from_normalized_inputs(...)
+        initialize gain from reference again
+    - Lines around 1904-1922:
+        x3_refit_meta is synthesized from stage1 entry metadata and
+        preopt_reproduce_rollout=skipped is logged.
+
+  Current conclusion:
+    The old extra preopt reproduction rollout is skipped, which is desirable.
+    But the KAN is still reconstructed and its grid is updated. Without a full
+    st1pl KAN state, this still changes the function.
+
+3.3 Candidate x3 supports used in current prest2 are plausible but not enough.
+  Current B candidates show supports such as:
+    B01: [-0.892579, 2.952865]
+    B03: [-1.047130, 2.716560]
+    B08: [-0.794303, 3.217580]
+
+  Current conclusion:
+    The support values are being carried in, but support alone cannot define a
+    KAN function. The spline coefficients/grid/gain pathway must be consistent
+    too.
+
+
+4. Current ranked suspects
+--------------------------
+Primary suspect:
+  KAN construction mismatch between AFM05 st1pl and AFM05 prest2:
+    - st1pl noise_scale = 0.1
+    - prest2/st2l noise_scale was 0.2 before the fix below
+    - AFM04 does not have this particular mismatch: AFM04 st1pl uses AFM04/KAN_full_test noise_scale = 0.2 and AFM04 stage2light also defaults to 0.2
+    - warmstart does not store full KAN state_dict
+    - p_net_vec is empty
+    - prest2 g_nn is only about 6-8% of st1pl nn_gain; this is a symptom/consequence of a changed reconstructed raw KAN function, not an independent root cause
+
+Secondary suspect:
+  Function change caused by AGU/grid update from saved x3 support without loading
+  the exact st1pl KAN state.
+
+Lower-priority suspect for the current run:
+  Loss-scale mismatch. The active AFM05 loss paths appear aligned and dynamic.
+
+
+5. Recommended next checks before another formal run
+----------------------------------------------------
+1. Align KAN construction between st1pl and prest2/st2l:
+   - Set HNODECB_AFM05_STAGE2LIGHT_NOISE_SCALE = 0.1, or change the default in
+     AFM05/stage2light/config.py to 0.1.
+   - Consider aligning gnn_learnable and soft_mask_trainable at the entry point.
+
+2. Add a diagnostic that rebuilds one st1pl trial twice:
+   A. with st1pl KAN construction settings;
+   B. with current prest2 KAN construction settings;
+   keeping ks/cs, seed, x3 mean/scale/support fixed.
+   If loss jumps in B, the construction mismatch is confirmed.
+
+3. Decide whether AFM05 st1pl should save full enough KAN state for selected
+   top candidates:
+   - Full torch state_dict for KAN/gain/mask/grid, or
+   - a compact but exact representation sufficient to reconstruct the same
+     function.
+
+4. Only after the above, rerun a smoke prest2 on one candidate and compare:
+   - source_stage1_loss
+   - entry loss after loading/rebuilding
+   - train_loss_start
+   - g_nn
+   - grid hash / spline hash / model hash if available.
+
+
+6. Fix applied on 2026-07-08
+----------------------------
+AFM05 prest2/st2l KAN noise scale was aligned with AFM05 st1pl:
+  - AFM05/stage2light/config.py default HNODECB_AFM05_STAGE2LIGHT_NOISE_SCALE: 0.2 -> 0.1
+  - AFM05/prestage2/runner/run_prestage2_05_local.ps1 explicitly sets HNODECB_AFM05_STAGE2LIGHT_NOISE_SCALE = 0.1
+  - AFM05/stage2light/runner/run_stage2light_05_local.ps1 explicitly sets HNODECB_AFM05_STAGE2LIGHT_NOISE_SCALE = 0.1
+
+This fix removes a concrete AFM05-only reconstruction mismatch. It does not by
+itself guarantee exact st1pl/prest2 functional equivalence, because exact KAN
+function equivalence also depends on architecture, grid/support, normalizer,
+AGU update, mask/gain initialization, dtype/device, and backend details.

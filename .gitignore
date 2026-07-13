@@ -1,0 +1,58 @@
+# Local Python and Julia environments
+.venv/
+.julia_depot/
+.tmp_hpcenv_*/
+
+# Interpreter, test, and editor caches
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+
+# Codex and document-extraction scratch files
+.codex_tmp_*/
+.tmp_*
+*.extracted.txt
+
+# AFM experiment archives and runtime products
+AFM04/archive/
+AFM05/Archive/
+**/candidate_runs/
+**/checkpoints/
+**/logs/
+**/results/
+**/results_afm/
+**/conditional dependency/
+
+# Generated visualizations (source scripts remain tracked)
+AFM04/**/visualization/*.html
+AFM04/**/visualization/*.png
+AFM04/**/visualization/*.pdf
+AFM05/**/visualization/*.html
+AFM05/**/visualization/*.png
+AFM05/**/visualization/*.pdf
+AFM05/**/runner/visualization/*.html
+AFM05/**/runner/visualization/*.png
+AFM05/**/runner/visualization/*.pdf
+
+# Generated figures and serialized model/result artifacts
+*.gif
+*.html
+*.jld
+*.pkl
+*.pt
+*.pdf
+*.png
+
+# Redundant tabular exports and serialized runtime state
+AFM05/datasets/**/*.csv
+AFM05/prestage2/diagnostics/adjoint_smoke_*/
+AFM05/prestage2/diagnostics/_smoke_*/
+AFM05/prestage2/diagnostics/probe_a_st1pl_entry_replay/
+AFM05/prestage2/diagnostics/*_diagnostics.csv
+AFM05/prestage2/diagnostics/*_diagnostics_summary.*
+AFM05/diagnostics/*.txt
+*.bak
+*.jsonl

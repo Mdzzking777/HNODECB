@@ -1,0 +1,222 @@
+AFM04 OED-based window and excitation selection plan
+====================================================
+
+Purpose
+-------
+Current AFM04 results suggest that W1 is more useful and more accurate than W0, but this is mostly an empirical conclusion from downstream fitting behavior. We still lack a scientific diagnostic that explains why one window should contain more information about the target mechanistic parameters, and we also lack a principled way to choose the training window, drive amplitude Fd, or drive frequency omega_d.
+
+The literature under:
+  C:\Users\Public\Documents\GitHub\HNODECB\user requirements\literature\optimal experiment
+and the package:
+  C:\Users\Public\Documents\GitHub\DynamicOED.jl
+suggest an optimal experimental design (OED) perspective. The core idea is to evaluate how much information an experiment provides for estimating selected parameters, usually through a Fisher information matrix (FIM) or FIM-derived criteria.
+
+Main idea for AFM04
+-------------------
+For a candidate time window W, define the observed quantity vector using the same observables as the AFM04 training loss, e.g.
+
+  h(t) = [x1(t), x2(t), x2dot(t)]
+
+and define target parameters first as
+
+  theta_m = [k_s, c_s].
+
+For each candidate window W, compute the local sensitivity matrix:
+
+  J_W(t_i) = d h(t_i) / d theta_m
+
+and form a window-specific Fisher information matrix:
+
+  F_W = sum_{t_i in W} J_W(t_i)^T R^{-1} J_W(t_i).
+
+Here R is the observation noise / weighting matrix. In the first engineering version, R can be chosen consistently with the existing AFM04 loss normalization or simply set to identity after each observable is normalized.
+
+Then compare W0, W1, full span, and sliding candidate windows by:
+
+  1. D-criterion: det(F_W), larger is better.
+  2. A-criterion: trace(inv(F_W)), smaller is better.
+  3. E-criterion: smallest eigenvalue of F_W, larger is better.
+  4. Condition number of F_W, smaller is better.
+  5. Correlation / angle between sensitivity directions of k_s and c_s, less collinear is better.
+
+Interpretation
+--------------
+If W1 has larger det(F), larger lambda_min(F), smaller condition number, and less collinear k_s/c_s sensitivities than W0, then we can say:
+
+  Under the assumed model, observation choice, and local parameter point,
+  W1 has higher local information content for estimating k_s and c_s.
+
+This is stronger and cleaner than only saying W1 produced better downstream fits.
+
+Important limitation
+--------------------
+This does not prove that W1 is universally better. OED/FIM analysis is local and depends on:
+
+  - the nominal parameter point,
+  - the assumed mechanistic model,
+  - the observation functions,
+  - the loss weighting / noise model,
+  - whether KAN/NN compensation is included as nuisance directions.
+
+Therefore the correct thesis-level claim should be conditional:
+
+  W1 is more informative under the chosen local model and observable design,
+  not absolutely or universally better.
+
+How this helps choose windows
+-----------------------------
+Instead of only comparing W0 and W1, we can run a sliding-window diagnostic over the full simulated time span:
+
+  W_j = [t_j, t_j + T_window]
+
+For each W_j, compute F_W and the OED criteria. This produces a time-resolved information score:
+
+  window start time -> D/A/E/condition-number score.
+
+This gives a principled way to identify transient/stable windows that are informative for k_s and c_s.
+
+How this helps choose Fd and omega_d
+-----------------------------------
+The DynamicOED literature treats experimental controls as design variables. For AFM04, the external forcing is:
+
+  F_drive(t) = Fd cos(omega_d t).
+
+A practical first version does not need full optimal-control machinery. We can scan a finite grid:
+
+  for Fd in candidate_Fd:
+      for omega_d in candidate_omega_d:
+          simulate trajectory
+          compute FIM/OED scores for candidate windows
+
+Then choose excitation settings that improve k_s/c_s identifiability, not merely visual trajectory richness.
+
+Connection to KAN-mechanistic compensation
+------------------------------------------
+The UDE-OED paper is especially relevant because it emphasizes that embedded neural-network weights can make the FIM singular or ill-conditioned. This is close to our AFM04 problem: KAN parameters and mechanistic parameters can compensate each other.
+
+The first-pass OED diagnostic can use only:
+
+  theta_m = [k_s, c_s].
+
+But a more honest second-pass diagnostic should include nuisance directions for KAN, for example:
+
+  theta = [k_s, c_s, alpha_KAN]
+
+or layerwise / componentwise KAN lumping:
+
+  theta = [k_s, c_s, alpha_layer1, alpha_layer2, alpha_layer3].
+
+Then use an effective mechanistic FIM after eliminating nuisance directions:
+
+  F_eff = F_mm - F_mn (F_nn + lambda I)^(-1) F_nm.
+
+If F_eff becomes small or ill-conditioned, that means the window may fit observables well but still cannot reliably separate k_s/c_s from KAN compensation.
+
+Recommended implementation stages
+---------------------------------
+Stage 1: AFM04 W0/W1 direct comparison
+
+  Goal:
+    Compute FIM criteria for W0 and W1 using theta = [k_s, c_s].
+
+  Inputs:
+    Existing AFM04 generated data, window definitions, mechanistic ODE, nominal k_s/c_s, observable definitions.
+
+  Output:
+    A txt/csv table comparing D/A/E criteria, condition number, and sensitivity correlation.
+
+  Engineering difficulty:
+    Low to medium.
+
+  Runtime difficulty:
+    Low.
+    If finite differences are used for k_s and c_s, each window needs only a few ODE rollouts. Expected runtime: seconds to minutes.
+
+Stage 2: Sliding-window score over full AFM04 trajectory
+
+  Goal:
+    Find where the full trajectory is most informative for k_s/c_s.
+
+  Inputs:
+    Full AFM04 simulated trajectory and a fixed window length.
+
+  Output:
+    Window-start-time vs OED-score curves, plus ranked windows.
+
+  Engineering difficulty:
+    Medium.
+
+  Runtime difficulty:
+    Low to medium.
+    If sensitivities are computed once over the full time span and then accumulated over windows, this is fast. If finite differences are recomputed for every window, it is slower but still likely manageable.
+
+Stage 3: Excitation scan over Fd and omega_d
+
+  Goal:
+    Evaluate which drive amplitude/frequency produces trajectories that are informative for k_s/c_s.
+
+  Inputs:
+    Candidate Fd list, candidate omega_d list, AFM04 generation model.
+
+  Output:
+    2D heatmaps of OED criteria over (Fd, omega_d).
+
+  Engineering difficulty:
+    Medium to high.
+
+  Runtime difficulty:
+    Medium to high.
+    Cost scales with number of excitation grid points times number of sensitivity rollouts. A small grid such as 10 x 10 should be feasible. A dense grid may become expensive.
+
+Stage 4: KAN-nuisance-aware effective FIM
+
+  Goal:
+    Check whether k_s/c_s remain identifiable after allowing KAN-like compensation.
+
+  Inputs:
+    A reduced KAN nuisance parameterization, such as output gain, layerwise gain, or selected SVD/lumped directions.
+
+  Output:
+    Effective FIM for k_s/c_s, showing whether apparent mechanistic identifiability survives nuisance compensation.
+
+  Engineering difficulty:
+    High.
+
+  Runtime difficulty:
+    Medium to high.
+    The difficulty is not only compute time but defining meaningful nuisance directions that represent KAN compensation without making the FIM unusably singular.
+
+Preferred near-term path
+------------------------
+Do not start by porting DynamicOED.jl directly into the AFM04 workflow. That would add Julia/SciML/ModelingToolkit complexity before we know what diagnostic is useful.
+
+Instead, implement a Python-side lightweight OED diagnostic:
+
+  1. Reuse the AFM04 ODE and window definitions.
+  2. Compute local finite-difference sensitivities for k_s and c_s.
+  3. Build FIM-like matrices using the same observable scaling as the existing loss.
+  4. Compare W0 and W1.
+  5. Extend to sliding windows.
+  6. Only then decide whether DynamicOED.jl-style full optimal-control design is worth integrating.
+
+Expected value for the thesis
+-----------------------------
+This can support a careful thesis statement such as:
+
+  The stable window W1 was not selected solely because it produced lower downstream loss.
+  A local OED/FIM analysis indicates that W1 provides stronger and better-conditioned information
+  about k_s and c_s than W0 under the chosen AFM04 observation model.
+
+If the result goes the other way, it is still useful: it would show that W1's empirical superiority may come from optimization/KAN compensation effects rather than clean mechanistic identifiability.
+
+Open risks
+----------
+1. FIM is local, so results can change with the nominal parameter point.
+2. If only k_s/c_s are included, the analysis may be too optimistic because it ignores KAN compensation.
+3. If KAN nuisance directions are included too aggressively, the effective FIM may become singular everywhere.
+4. The observation scaling R matters. We should report the scaling explicitly.
+5. OED score does not directly predict final hybrid training success; it predicts local information content for selected parameters.
+
+Bottom line
+-----------
+This direction is worth pursuing. It will not produce an absolute proof that W1 is always better, but it can give a principled, quantitative, thesis-friendly explanation of why one window or excitation setting is more informative for estimating k_s and c_s.

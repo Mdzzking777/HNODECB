@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import pickle
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -27,10 +28,18 @@ from AFM04.stage2light.data import (
     select_stage1_candidate,
     select_stage1_candidate_by_trial_id,
 )
-from AFM04.stage2light.kan_backend import KANForceModule
+from AFM04.stage2light.kan_backend import (
+    KANForceModule,
+    initial_grid_support_from_raw_inputs,
+    initial_grid_support_to_meta,
+)
 from AFM04.stage2light.losses import TorchLossParts, evaluate_split
 from AFM04.stage2light.optim.stage2_lbfgs import LBFGS as Stage2LBFGS
-from AFM04.stage2light.rollout import LearnableMechModule, fts_truth_from_states_torch, x2dot_rhs_torch
+from AFM04.stage2light.rollout import (
+    LearnableMechModule,
+    fts_truth_from_states_torch,
+    x2dot_rhs_torch,
+)
 
 
 def _torch_dtype(name: str) -> torch.dtype:
@@ -278,6 +287,29 @@ def _reset_optimizer_state(optimizer: torch.optim.Optimizer) -> None:
     optimizer.state.clear()
 
 
+def _canonical_mech_parameterization(value: Any, *, default: str = "direct_unbounded") -> str:
+    mode = str(value if value is not None else default).strip().lower().replace("-", "_")
+    aliases = {
+        "direct": "direct_unbounded",
+        "physical": "direct_unbounded",
+        "unbounded": "direct_unbounded",
+        "direct_unbounded": "direct_unbounded",
+        "exp": "log_relative",
+        "log": "log_relative",
+        "relative": "log_relative",
+        "log_relative": "log_relative",
+        "log_relative_bounded": "log_relative",
+        "sigmoid": "sigmoid_bounded",
+        "bounded": "sigmoid_bounded",
+        "sigmoid_bound": "sigmoid_bounded",
+        "sigmoid_bounds": "sigmoid_bounded",
+        "sigmoid_bounded": "sigmoid_bounded",
+        "legacy": "sigmoid_bounded",
+        "legacy_sigmoid": "sigmoid_bounded",
+    }
+    return aliases.get(mode, default)
+
+
 def _make_optimizer(cfg, model: torch.nn.Module, mech_module: LearnableMechModule) -> tuple[torch.optim.Optimizer, str]:
     optimizer_name = str(cfg.optimizer_name).strip().lower()
     amsgrad = optimizer_name == "amsgrad"
@@ -328,6 +360,117 @@ def _write_event(event_log, event: dict[str, Any]) -> None:
     event_log.flush()
 
 
+def _fingerprint_update(hasher: "hashlib._Hash", obj: Any) -> None:
+    if isinstance(obj, torch.Tensor):
+        t = obj.detach().cpu().contiguous()
+        hasher.update(b"tensor")
+        hasher.update(str(t.dtype).encode("utf-8"))
+        hasher.update(str(tuple(t.shape)).encode("utf-8"))
+        if t.numel() > 0:
+            hasher.update(t.numpy().tobytes())
+        return
+    if isinstance(obj, np.ndarray):
+        arr = np.ascontiguousarray(obj)
+        hasher.update(b"ndarray")
+        hasher.update(str(arr.dtype).encode("utf-8"))
+        hasher.update(str(tuple(arr.shape)).encode("utf-8"))
+        hasher.update(arr.tobytes())
+        return
+    if isinstance(obj, dict):
+        hasher.update(b"dict")
+        for key in sorted(obj.keys(), key=lambda item: repr(item)):
+            hasher.update(repr(key).encode("utf-8"))
+            _fingerprint_update(hasher, obj[key])
+        return
+    if isinstance(obj, (list, tuple)):
+        hasher.update(type(obj).__name__.encode("utf-8"))
+        hasher.update(str(len(obj)).encode("utf-8"))
+        for item in obj:
+            _fingerprint_update(hasher, item)
+        return
+    hasher.update(repr(obj).encode("utf-8"))
+
+
+def _fingerprint_hash(obj: Any) -> str:
+    hasher = hashlib.sha256()
+    _fingerprint_update(hasher, obj)
+    return hasher.hexdigest()
+
+
+def _filtered_state_dict(module: torch.nn.Module, needles: tuple[str, ...]) -> dict[str, torch.Tensor]:
+    lowered = tuple(needle.lower() for needle in needles)
+    return {
+        key: value
+        for key, value in module.state_dict().items()
+        if any(needle in key.lower() for needle in lowered)
+    }
+
+
+def _fingerprint_payload(
+    *,
+    model: torch.nn.Module,
+    mech_module: torch.nn.Module,
+    optimizer: torch.optim.Optimizer | None,
+    grid_inputs: torch.Tensor | None = None,
+) -> dict[str, str]:
+    payload = {
+        "model_state_hash": _fingerprint_hash(model.state_dict()),
+        "mech_state_hash": _fingerprint_hash(mech_module.state_dict()),
+        "kan_grid_hash": _fingerprint_hash(_filtered_state_dict(model, ("grid",))),
+        "kan_spline_hash": _fingerprint_hash(_filtered_state_dict(model, ("coef", "spline", "scale"))),
+        "rng_state_hash": _fingerprint_hash(capture_rng_state()),
+    }
+    if optimizer is not None:
+        payload["optimizer_state_hash"] = _fingerprint_hash(optimizer.state_dict())
+    else:
+        payload["optimizer_state_hash"] = "none"
+    if grid_inputs is not None:
+        payload["grid_inputs_hash"] = _fingerprint_hash(grid_inputs)
+    else:
+        payload["grid_inputs_hash"] = "none"
+    return payload
+
+
+def _log_fingerprint(
+    log,
+    event_log,
+    *,
+    epoch: int,
+    stage: str,
+    phase: str,
+    model: torch.nn.Module,
+    mech_module: torch.nn.Module,
+    optimizer: torch.optim.Optimizer | None,
+    grid_inputs: torch.Tensor | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    payload = _fingerprint_payload(
+        model=model,
+        mech_module=mech_module,
+        optimizer=optimizer,
+        grid_inputs=grid_inputs,
+    )
+    event = {
+        "event": "fingerprint",
+        "epoch": int(epoch),
+        "phase": str(phase),
+        "stage": str(stage),
+        **payload,
+    }
+    if extra:
+        event.update(extra)
+    _write_event(event_log, event)
+    _log_line(
+        log,
+        "fingerprint | "
+        f"epoch={int(epoch)} | phase={phase} | stage={stage} | "
+        f"model={payload['model_state_hash']} | mech={payload['mech_state_hash']} | "
+        f"grid={payload['kan_grid_hash']} | spline={payload['kan_spline_hash']} | "
+        f"optimizer={payload['optimizer_state_hash']} | rng={payload['rng_state_hash']} | "
+        f"grid_inputs={payload['grid_inputs_hash']}",
+    )
+
+
 def _role_short(role: str, window_mode: str | None = None) -> str:
     role_norm = role.strip().lower()
     if role_norm == "first_contact":
@@ -374,24 +517,172 @@ def _mech_err_pct(est: float, truth: float) -> float:
 def _observable_grid_inputs_from_ode(
     *,
     ode_train: torch.Tensor,
-    cfg,
+    state_mean: np.ndarray,
+    state_scale: np.ndarray,
+    x3_norm_support: tuple[float, float] | None = None,
 ) -> torch.Tensor:
-    """Build AGU inputs in raw physical coordinates.
+    """Build AGU inputs in raw physical coordinates before normalization.
 
     x1/x2 come from observed data.  x3 is a neutral raw-domain axis only; it
-    does not encode true/predicted x3 and therefore does not guide AGU.
+    does not encode true/predicted x3 density and therefore does not guide AGU.
     """
 
     n = int(ode_train.shape[1])
     inputs = torch.empty((n, 3), dtype=ode_train.dtype, device=ode_train.device)
     inputs[:, 0:2] = ode_train[0:2, :].transpose(0, 1)
     if n <= 1:
-        inputs[:, 2] = 0.0
+        inputs[:, 2] = float(np.asarray(state_mean, dtype=float)[2])
     else:
-        x1_abs = float(torch.max(torch.abs(ode_train[0, :])).detach().cpu()) if n > 0 else 0.0
-        x3_amp = max(0.1 * x1_abs, 1.0e-12)
-        inputs[:, 2] = torch.linspace(-x3_amp, x3_amp, n, dtype=ode_train.dtype, device=ode_train.device)
+        mean = np.asarray(state_mean, dtype=float).reshape(-1)
+        scale = np.asarray(state_scale, dtype=float).reshape(-1)
+        x3_center = float(mean[2])
+        x3_scale = max(float(abs(scale[2])), 1.0e-30)
+        if x3_norm_support is None:
+            norm_lo, norm_hi = -1.0, 1.0
+        else:
+            norm_lo = float(x3_norm_support[0])
+            norm_hi = float(x3_norm_support[1])
+            if not (np.isfinite(norm_lo) and np.isfinite(norm_hi) and norm_hi > norm_lo):
+                raise ValueError(f"invalid x3_norm_support: {x3_norm_support}")
+        x3_norm_axis = torch.linspace(
+            norm_lo,
+            norm_hi,
+            n,
+            dtype=ode_train.dtype,
+            device=ode_train.device,
+        )
+        inputs[:, 2] = torch.as_tensor(x3_center, dtype=ode_train.dtype, device=ode_train.device) + (
+            torch.as_tensor(x3_scale, dtype=ode_train.dtype, device=ode_train.device) * x3_norm_axis
+        )
     return inputs
+
+
+def _x3_norm_monitor_from_traj(
+    traj: torch.Tensor | None,
+    force_module: KANForceModule,
+    x3_refit_meta: dict[str, Any] | None,
+    x3_current_support: tuple[float, float] | None = None,
+) -> dict[str, float | bool]:
+    if traj is None:
+        return {
+            "x3_norm_min_epoch": float("nan"),
+            "x3_norm_max_epoch": float("nan"),
+            "x3_neutral_support_min": float("nan"),
+            "x3_neutral_support_max": float("nan"),
+            "x3_neutral_support_exceeded": False,
+            "x3_neutral_support_lower_exceed": float("nan"),
+            "x3_neutral_support_upper_exceed": float("nan"),
+        }
+    support_min = -1.0
+    support_max = 1.0
+    if _valid_x3_norm_support(x3_current_support):
+        support_min = float(x3_current_support[0])
+        support_max = float(x3_current_support[1])
+    elif isinstance(x3_refit_meta, dict):
+        support_min = float(x3_refit_meta.get("x3_norm_support_min", support_min))
+        support_max = float(x3_refit_meta.get("x3_norm_support_max", support_max))
+    mean = force_module.state_mean.detach()[2]
+    scale = torch.clamp(torch.abs(force_module.state_scale.detach()[2]), min=1.0e-30)
+    x3_norm = (traj.detach()[2, :] - mean) / scale
+    x3_min = float(torch.min(x3_norm).detach().cpu())
+    x3_max = float(torch.max(x3_norm).detach().cpu())
+    lower_exceed = max(0.0, float(support_min) - x3_min)
+    upper_exceed = max(0.0, x3_max - float(support_max))
+    return {
+        "x3_norm_min_epoch": x3_min,
+        "x3_norm_max_epoch": x3_max,
+        "x3_neutral_support_min": float(support_min),
+        "x3_neutral_support_max": float(support_max),
+        "x3_neutral_support_exceeded": bool(lower_exceed > 0.0 or upper_exceed > 0.0),
+        "x3_neutral_support_lower_exceed": float(lower_exceed),
+        "x3_neutral_support_upper_exceed": float(upper_exceed),
+    }
+
+
+def _valid_x3_norm_support(support: tuple[float, float] | list[float] | None) -> bool:
+    if support is None:
+        return False
+    try:
+        lo = float(support[0])
+        hi = float(support[1])
+    except Exception:
+        return False
+    return bool(np.isfinite(lo) and np.isfinite(hi) and hi > lo)
+
+
+def _x3_norm_support_from_monitor(stats: dict[str, float | bool]) -> tuple[float, float] | None:
+    try:
+        support = (float(stats["x3_norm_min_epoch"]), float(stats["x3_norm_max_epoch"]))
+    except Exception:
+        return None
+    return support if _valid_x3_norm_support(support) else None
+
+
+def _x3_norm_support_to_payload(support: tuple[float, float] | list[float] | None) -> list[float] | None:
+    if not _valid_x3_norm_support(support):
+        return None
+    return [float(support[0]), float(support[1])]
+
+
+def _x3_drift_from_epoch0(
+    traj: torch.Tensor | None,
+    x3_epoch0: torch.Tensor | None,
+) -> dict[str, float]:
+    if traj is None or x3_epoch0 is None:
+        return {
+            "x3_drift_from_epoch0_pct": float("nan"),
+            "x3_drift_from_epoch0_abs": float("nan"),
+            "x3_drift_from_epoch0_max_abs": float("nan"),
+        }
+    try:
+        x3_now = traj.detach()[2, :].reshape(-1)
+        x3_ref = x3_epoch0.detach().to(device=x3_now.device, dtype=x3_now.dtype).reshape(-1)
+    except Exception:
+        return {
+            "x3_drift_from_epoch0_pct": float("nan"),
+            "x3_drift_from_epoch0_abs": float("nan"),
+            "x3_drift_from_epoch0_max_abs": float("nan"),
+        }
+    if x3_now.numel() != x3_ref.numel() or x3_now.numel() == 0:
+        return {
+            "x3_drift_from_epoch0_pct": float("nan"),
+            "x3_drift_from_epoch0_abs": float("nan"),
+            "x3_drift_from_epoch0_max_abs": float("nan"),
+        }
+    finite = torch.isfinite(x3_now) & torch.isfinite(x3_ref)
+    if not bool(torch.any(finite).detach().cpu()):
+        return {
+            "x3_drift_from_epoch0_pct": float("nan"),
+            "x3_drift_from_epoch0_abs": float("nan"),
+            "x3_drift_from_epoch0_max_abs": float("nan"),
+        }
+    x3_now = x3_now[finite]
+    x3_ref = x3_ref[finite]
+    diff = x3_now - x3_ref
+    drift_abs = torch.sqrt(torch.mean(torch.square(diff)))
+    ref_rms = torch.sqrt(torch.mean(torch.square(x3_ref)))
+    drift_pct = torch.where(
+        ref_rms > torch.as_tensor(1.0e-30, dtype=x3_now.dtype, device=x3_now.device),
+        100.0 * drift_abs / ref_rms,
+        torch.as_tensor(float("nan"), dtype=x3_now.dtype, device=x3_now.device),
+    )
+    return {
+        "x3_drift_from_epoch0_pct": float(drift_pct.detach().cpu()),
+        "x3_drift_from_epoch0_abs": float(drift_abs.detach().cpu()),
+        "x3_drift_from_epoch0_max_abs": float(torch.max(torch.abs(diff)).detach().cpu()),
+    }
+
+
+def _format_x3_norm_monitor(stats: dict[str, float | bool]) -> str:
+    exceeded = "YES" if bool(stats.get("x3_neutral_support_exceeded", False)) else "NO"
+    return (
+        "x3_norm: "
+        f"epoch=[{float(stats['x3_norm_min_epoch']):.3f}, {float(stats['x3_norm_max_epoch']):.3f}] "
+        f"support=[{float(stats['x3_neutral_support_min']):.3f}, {float(stats['x3_neutral_support_max']):.3f}] "
+        f"exceeded={exceeded} "
+        f"lower={float(stats['x3_neutral_support_lower_exceed']):.3e} "
+        f"upper={float(stats['x3_neutral_support_upper_exceed']):.3e}"
+    )
 
 
 def _make_grid_update_inputs(
@@ -406,6 +697,157 @@ def _make_grid_update_inputs(
         "total_samples": n,
     }
     return grid_inputs, meta
+
+
+def _strict_mean_scale_from_x3_pred(x3_pred: torch.Tensor) -> tuple[float, float]:
+    values = x3_pred.detach().reshape(-1).cpu().numpy().astype(float)
+    if values.size == 0:
+        raise ValueError("x3_pred has no samples")
+    if not np.all(np.isfinite(values)):
+        bad_count = int(np.size(values) - np.count_nonzero(np.isfinite(values)))
+        raise ValueError(f"x3_pred contains nonfinite value(s): count={bad_count}")
+    mean = float(np.mean(values))
+    scale = float(np.std(values))
+    if not np.isfinite(mean):
+        raise ValueError(f"x3_pred mean is nonfinite: {mean}")
+    if not np.isfinite(scale) or scale <= 1.0e-30:
+        raise ValueError(f"x3_pred scale is invalid: {scale:.6e}")
+    return mean, scale
+
+
+def _refit_x3_normalizer_from_preopt_rollout(
+    *,
+    log,
+    cfg,
+    prepared: PreparedData,
+    split: WindowSplit,
+    tensors: dict[str, torch.Tensor],
+    train_states: torch.Tensor,
+    train_fts: torch.Tensor,
+    model: KANForceModule,
+    mech_module: LearnableMechModule,
+    mech_true_t: torch.Tensor,
+) -> tuple[PreparedData, torch.Tensor, dict[str, Any], float]:
+    prior_mean = np.asarray(prepared.state_mean, dtype=float).copy()
+    prior_scale = np.asarray(prepared.state_scale, dtype=float).copy()
+
+    pre_grid_meta = {"total_samples": 0.0}
+    with torch.no_grad():
+        gain_before = float(model.initialize_gain_from_truth(train_states, train_fts))
+        pre_total, _pre_parts, pre_traj = evaluate_split(
+            force_module=model,
+            known_pars=prepared.known_pars,
+            mech_module=mech_module,
+            ode_true=tensors["ode_full"],
+            x2dot_true=tensors["x2dot_full"],
+            contact_mask=tensors["contact_full"],
+            times=tensors["times_full"],
+            ode_method=cfg.ode_method,
+            ode_rtol=cfg.ode_rtol,
+            ode_atol=cfg.ode_atol,
+            mech_true=mech_true_t,
+            eta_star_true=prepared.eta_star_true,
+            loss_indices=tensors["train_idx"],
+        )
+        x3_mean, x3_scale = _strict_mean_scale_from_x3_pred(pre_traj[2, :])
+        x3_pred_norm = (pre_traj[2, :].detach() - float(x3_mean)) / float(x3_scale)
+        x3_norm_support_min = float(torch.min(x3_pred_norm).detach().cpu())
+        x3_norm_support_max = float(torch.max(x3_pred_norm).detach().cpu())
+        if not (
+            np.isfinite(x3_norm_support_min)
+            and np.isfinite(x3_norm_support_max)
+            and x3_norm_support_max > x3_norm_support_min
+        ):
+            raise ValueError(
+                "x3_pred normalized support is invalid: "
+                f"min={x3_norm_support_min:.6e} max={x3_norm_support_max:.6e}"
+            )
+
+        refit_mean = prior_mean.copy()
+        refit_scale = prior_scale.copy()
+        refit_mean[2] = float(x3_mean)
+        refit_scale[2] = float(x3_scale)
+
+        model.set_state_normalizer(refit_mean, refit_scale)
+        refit_prepared = replace(prepared, state_mean=refit_mean, state_scale=refit_scale)
+        refit_observable_grid_inputs = _observable_grid_inputs_from_ode(
+            ode_train=tensors["ode_train"],
+            state_mean=refit_prepared.state_mean,
+            state_scale=refit_prepared.state_scale,
+            x3_norm_support=(x3_norm_support_min, x3_norm_support_max),
+        )
+        refit_grid_meta = {"total_samples": float("nan")}
+        if cfg.adaptive_grid_enabled:
+            grid_inputs, refit_grid_meta = _make_grid_update_inputs(base_inputs=refit_observable_grid_inputs)
+            model.update_grid_from_normalized_inputs(grid_inputs)
+        gain_after = float(model.initialize_gain_from_truth(train_states, train_fts))
+        post_total, _post_parts, post_traj = evaluate_split(
+            force_module=model,
+            known_pars=refit_prepared.known_pars,
+            mech_module=mech_module,
+            ode_true=tensors["ode_full"],
+            x2dot_true=tensors["x2dot_full"],
+            contact_mask=tensors["contact_full"],
+            times=tensors["times_full"],
+            ode_method=cfg.ode_method,
+            ode_rtol=cfg.ode_rtol,
+            ode_atol=cfg.ode_atol,
+            mech_true=mech_true_t,
+            eta_star_true=refit_prepared.eta_star_true,
+            loss_indices=tensors["train_idx"],
+        )
+
+    x3_pred_values = pre_traj[2, :].detach()
+    meta = {
+        "enabled": True,
+        "source": "preopt_rollout_x3_pred_full_window",
+        "window_role": str(split.role),
+        "window_label": str(split.label),
+        "prior_x3_mean": float(prior_mean[2]),
+        "prior_x3_scale": float(prior_scale[2]),
+        "refit_x3_mean": float(x3_mean),
+        "refit_x3_scale": float(x3_scale),
+        "x3_pred_min": float(torch.min(x3_pred_values).detach()),
+        "x3_pred_max": float(torch.max(x3_pred_values).detach()),
+        "x3_norm_support_source": "preopt_x3_pred_norm_minmax",
+        "x3_norm_support_min": float(x3_norm_support_min),
+        "x3_norm_support_max": float(x3_norm_support_max),
+        "x3_norm_support_manual_margin": 0.0,
+        "loss_before_x3_refit": float(pre_total.detach()),
+        "loss_after_x3_refit": float(post_total.detach()),
+        "x3_rec_before_refit": float(_pre_parts.x3_rec),
+        "x3_rec_after_refit": float(_post_parts.x3_rec),
+        "gain_before_refit": float(gain_before),
+        "gain_after_refit": float(gain_after),
+        "pre_refit_agu_samples": float(pre_grid_meta["total_samples"]),
+        "post_refit_agu_samples": float(refit_grid_meta["total_samples"]),
+    }
+    _log_line(
+        log,
+        "x3 normalizer refit: "
+        "source=preopt_rollout_x3_pred_full_window "
+        f"prior_mean={meta['prior_x3_mean']:.6e} prior_scale={meta['prior_x3_scale']:.6e} "
+        f"refit_mean={meta['refit_x3_mean']:.6e} refit_scale={meta['refit_x3_scale']:.6e} "
+        f"x3_norm_support=[{meta['x3_norm_support_min']:.6e}, {meta['x3_norm_support_max']:.6e}] "
+        "manual_margin=0",
+    )
+    _log_line(
+        log,
+        "x3 normalizer refit loss: "
+        f"train={meta['loss_before_x3_refit']:.6e}->{meta['loss_after_x3_refit']:.6e} "
+        f"x3_rec={meta['x3_rec_before_refit']:.2f}%->{meta['x3_rec_after_refit']:.2f}% "
+        f"gain={meta['gain_before_refit']:.6e}->{meta['gain_after_refit']:.6e}",
+    )
+    _log_line(
+        log,
+        "x3 normalizer refit AGU: "
+        f"pre_samples={int(meta['pre_refit_agu_samples']) if np.isfinite(meta['pre_refit_agu_samples']) else 'NA'} "
+        f"post_samples={int(meta['post_refit_agu_samples']) if np.isfinite(meta['post_refit_agu_samples']) else 'NA'} "
+        f"x3_norm_neutral_range=[{meta['x3_norm_support_min']:.6e}, {meta['x3_norm_support_max']:.6e}] "
+        "distribution=uniform",
+    )
+    _ = post_traj
+    return refit_prepared, refit_observable_grid_inputs, meta, float(gain_after)
 
 
 class _OracleForceModule(torch.nn.Module):
@@ -495,6 +937,7 @@ def _run_oracle_sanity(
         cs_bounds=(float(mech_true[1].detach().cpu().item()), float(mech_true[1].detach().cpu().item()) + 1.0e-18),
         dtype=dtype,
         device=device,
+        parameterization="direct_unbounded",
     )
     for param in mech_oracle.parameters():
         param.requires_grad_(False)
@@ -650,11 +1093,126 @@ def _save_pickle(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+_AGU_WARMSTART_KEYS = (
+    "initial_grid_support_source",
+    "initial_grid_support",
+    "initial_grid_support_meta",
+    "initial_grid_support_x1_min",
+    "initial_grid_support_x1_max",
+    "initial_grid_support_x2_min",
+    "initial_grid_support_x2_max",
+    "initial_grid_support_x3_min",
+    "initial_grid_support_x3_max",
+    "rs_x3_normalizer_valid",
+    "rs_x3_normalizer_source",
+    "rs_x3_pred_mean",
+    "rs_x3_pred_scale",
+    "rs_x3_pred_min",
+    "rs_x3_pred_max",
+    "rs_x3_norm_support_min",
+    "rs_x3_norm_support_max",
+    "x3_refit_meta",
+    "x3_agu_support_current",
+)
+
+
+def _copy_agu_warmstart_fields(record: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    params = record.get("params", {}) if isinstance(record.get("params"), dict) else {}
+    for key in _AGU_WARMSTART_KEYS:
+        if key in record:
+            out[key] = record[key]
+        elif key in params:
+            out[key] = params[key]
+    return out
+
+
+def _x3_init_from_warmstart_meta(
+    warmstart_meta: dict[str, Any] | None,
+) -> tuple[float, float, tuple[float, float], str] | None:
+    if not isinstance(warmstart_meta, dict):
+        return None
+
+    current_support_raw = warmstart_meta.get("x3_agu_support_current")
+    current_support = (
+        (float(current_support_raw[0]), float(current_support_raw[1]))
+        if _valid_x3_norm_support(current_support_raw)
+        else None
+    )
+
+    refit = warmstart_meta.get("x3_refit_meta")
+    if isinstance(refit, dict):
+        try:
+            mean = float(refit["refit_x3_mean"])
+            scale = float(refit["refit_x3_scale"])
+            support = (float(refit["x3_norm_support_min"]), float(refit["x3_norm_support_max"]))
+        except Exception:
+            mean = scale = float("nan")
+            support = (float("nan"), float("nan"))
+        source = str(refit.get("source", "prestage2_stage2light_x3_refit_meta"))
+        if current_support is not None:
+            support = current_support
+            source = f"{source}__latest_x3_agu_support"
+        if np.isfinite(mean) and np.isfinite(scale) and scale > 1.0e-30 and all(np.isfinite(support)) and support[1] > support[0]:
+            return mean, scale, support, source
+
+    valid = warmstart_meta.get("rs_x3_normalizer_valid", True)
+    if isinstance(valid, str):
+        valid = valid.strip().lower() not in ("0", "false", "no")
+    if not bool(valid):
+        return None
+    try:
+        mean = float(warmstart_meta["rs_x3_pred_mean"])
+        scale = float(warmstart_meta["rs_x3_pred_scale"])
+        support = (
+            float(warmstart_meta["rs_x3_norm_support_min"]),
+            float(warmstart_meta["rs_x3_norm_support_max"]),
+        )
+    except Exception:
+        return None
+    if not (np.isfinite(mean) and np.isfinite(scale) and scale > 1.0e-30):
+        return None
+    if not (np.isfinite(support[0]) and np.isfinite(support[1]) and support[1] > support[0]):
+        return None
+    source = str(warmstart_meta.get("rs_x3_normalizer_source", "stage1pluslight_rs_rollout_x3_pred_full_window"))
+    if current_support is not None:
+        support = current_support
+        source = f"{source}__latest_x3_agu_support"
+    return mean, scale, support, source
+
+
+def _prepared_with_initial_x3_from_warmstart(
+    prepared: PreparedData,
+    warmstart_meta: dict[str, Any] | None,
+) -> tuple[PreparedData, tuple[float, float] | None, str]:
+    init = _x3_init_from_warmstart_meta(warmstart_meta)
+    if init is None:
+        return prepared, None, "x1_prior_neutral_x3"
+    x3_mean, x3_scale, x3_support, source = init
+    mean = np.asarray(prepared.state_mean, dtype=float).copy()
+    scale = np.asarray(prepared.state_scale, dtype=float).copy()
+    mean[2] = float(x3_mean)
+    scale[2] = float(x3_scale)
+    return replace(prepared, state_mean=mean, state_scale=scale), x3_support, source
+
+
+def _x3_norm_support_from_refit_meta(meta: dict[str, Any] | None) -> tuple[float, float] | None:
+    if not isinstance(meta, dict):
+        return None
+    try:
+        support = (float(meta["x3_norm_support_min"]), float(meta["x3_norm_support_max"]))
+    except Exception:
+        return None
+    if np.isfinite(support[0]) and np.isfinite(support[1]) and support[1] > support[0]:
+        return support
+    return None
+
+
 def _warmstart_payload(candidate: Stage1WarmstartCandidate | Prestage2WarmstartCandidate | None) -> dict[str, Any] | None:
     if candidate is None:
         return None
     if isinstance(candidate, Prestage2WarmstartCandidate):
-        return {
+        payload = {
             "source": "prest2",
             "path": str(candidate.path),
             "candidate": int(candidate.candidate),
@@ -675,7 +1233,9 @@ def _warmstart_payload(candidate: Stage1WarmstartCandidate | Prestage2WarmstartC
             "st2l_start_policy": "restart_from_stage1_initial_state",
             "prest2_final_state_used": False,
         }
-    return {
+        payload.update(_copy_agu_warmstart_fields(candidate.record))
+        return payload
+    payload = {
         "source": "stage1",
         "path": str(candidate.path),
         "rank": int(candidate.rank),
@@ -687,6 +1247,8 @@ def _warmstart_payload(candidate: Stage1WarmstartCandidate | Prestage2WarmstartC
         "ks0": float(candidate.ks0),
         "cs0": float(candidate.cs0),
     }
+    payload.update(_copy_agu_warmstart_fields(candidate.record))
+    return payload
 
 
 def _best_from_history(history: list[dict[str, Any]]) -> tuple[int, float]:
@@ -722,6 +1284,7 @@ def _resume_identity(
         "window_stop_idx": int(split.stop_idx),
         "window_t_start": float(split.t_start),
         "window_t_stop": float(split.t_stop),
+        "x3_normalizer_source": "preopt_rollout_x3_pred_full_window",
     }
     if isinstance(warmstart_meta, dict):
         source = str(warmstart_meta.get("source", "")).strip().lower()
@@ -853,9 +1416,45 @@ def _maybe_resume_from_running_checkpoint(
     if not getattr(cfg, "resume_from_checkpoint", False):
         return None
     if result_path.is_file():
+        if not running_checkpoint_path.is_file():
+            if log is not None:
+                _log_line(
+                    log,
+                    "resume skipped: completed result already exists and no running checkpoint is available "
+                    f"| result={result_path}",
+                )
+            return None
+        try:
+            existing_checkpoint = torch.load(running_checkpoint_path, map_location="cpu", weights_only=False)
+            if not isinstance(existing_checkpoint, dict):
+                raise TypeError(f"unexpected checkpoint payload type: {type(existing_checkpoint)!r}")
+            existing_history = existing_checkpoint.get("history", [])
+            existing_epoch = max(
+                int(existing_checkpoint.get("epoch", 0) or 0),
+                len(existing_history) if isinstance(existing_history, list) else 0,
+            )
+        except Exception as err:
+            if log is not None:
+                _log_line(
+                    log,
+                    "resume skipped: completed result already exists and running checkpoint could not be read "
+                    f"| result={result_path} checkpoint={running_checkpoint_path} error={err}",
+                )
+            return None
+        if existing_epoch >= int(cfg.epochs):
+            if log is not None:
+                _log_line(
+                    log,
+                    "resume skipped: completed result already covers requested epoch budget "
+                    f"| checkpoint_epoch={existing_epoch} target_epochs={cfg.epochs} result={result_path}",
+                )
+            return None
         if log is not None:
-            _log_line(log, f"resume skipped: completed result already exists | path={result_path}")
-        return None
+            _log_line(
+                log,
+                "resume allowed: completed result exists but checkpoint is shorter than requested epoch budget "
+                f"| checkpoint_epoch={existing_epoch} target_epochs={cfg.epochs} checkpoint={running_checkpoint_path}",
+            )
     if not running_checkpoint_path.is_file():
         return None
 
@@ -875,6 +1474,24 @@ def _maybe_resume_from_running_checkpoint(
     if not matches:
         if log is not None:
             _log_line(log, f"resume skipped: {reason} | checkpoint={running_checkpoint_path}")
+        return None
+    checkpoint_cfg = payload.get("config", {})
+    checkpoint_mech_parameterization = _canonical_mech_parameterization(
+        checkpoint_cfg.get("mech_parameterization") if isinstance(checkpoint_cfg, dict) else None,
+        default="sigmoid_bounded",
+    )
+    current_mech_parameterization = _canonical_mech_parameterization(
+        getattr(cfg, "mech_parameterization", "direct_unbounded"),
+        default="direct_unbounded",
+    )
+    if checkpoint_mech_parameterization != current_mech_parameterization:
+        if log is not None:
+            _log_line(
+                log,
+                "resume skipped: mech parameterization mismatch "
+                f"| checkpoint={checkpoint_mech_parameterization} current={current_mech_parameterization} "
+                f"| checkpoint={running_checkpoint_path}",
+            )
         return None
 
     state_dict = payload.get("state_dict")
@@ -971,6 +1588,13 @@ def _maybe_resume_from_running_checkpoint(
         "sanity": payload.get("sanity"),
         "optimizer_phase": optimizer_phase,
         "deferred_optimizer_state_dict": deferred_optimizer_state,
+        "state_mean": payload.get("state_mean"),
+        "state_scale": payload.get("state_scale"),
+        "initial_grid_support": payload.get("initial_grid_support"),
+        "initial_grid_support_meta": payload.get("initial_grid_support_meta"),
+        "x3_refit_meta": payload.get("x3_refit_meta"),
+        "x3_agu_support_current": payload.get("x3_agu_support_current"),
+        "x3_drift_epoch0_x3": payload.get("x3_drift_epoch0_x3"),
     }
 
 
@@ -1094,6 +1718,10 @@ def _make_viz_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "history": payload.get("history", []),
         "state_mean": payload.get("state_mean"),
         "state_scale": payload.get("state_scale"),
+        "initial_grid_support": payload.get("initial_grid_support"),
+        "initial_grid_support_meta": payload.get("initial_grid_support_meta"),
+        "x3_refit_meta": payload.get("x3_refit_meta"),
+        "x3_agu_support_current": payload.get("x3_agu_support_current"),
         "known_pars": payload.get("known_pars"),
         "eta_star_true": payload.get("eta_star_true"),
         "mech_true": payload.get("mech_true"),
@@ -1140,10 +1768,9 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
     split = prepared.splits[window_index - 1]
     mech_true_t = torch.as_tensor(prepared.mech_true, dtype=dtype, device=cfg.device)
     tensors = _window_to_torch(split, dtype=dtype, device=cfg.device)
-    observable_grid_inputs = _observable_grid_inputs_from_ode(
-        ode_train=tensors["ode_train"],
-        cfg=cfg,
-    )
+    observable_grid_inputs: torch.Tensor | None = None
+    initial_grid_support: np.ndarray | None = None
+    initial_grid_support_meta: dict[str, Any] | None = None
 
     train_states = torch.as_tensor(split.ode_train.T, dtype=dtype, device=cfg.device)
     train_fts = torch.as_tensor(split.fts_train_true, dtype=dtype, device=cfg.device)
@@ -1180,6 +1807,9 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
     good_enough_reached = False
     resume_optimizer_phase = ""
     deferred_optimizer_state_dict = None
+    x3_refit_meta: dict[str, Any] | None = None
+    x3_agu_support_current: tuple[float, float] | None = None
+    x3_drift_epoch0_x3: torch.Tensor | None = None
 
     step_controller = str(getattr(cfg, "step_controller", "armijo_backtracking")).strip().lower().replace("-", "_")
     if step_controller not in ("armijo_backtracking", "legacy_guard", "off"):
@@ -1198,6 +1828,30 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
         warmstart_meta = _warmstart_payload(warmstart)
         stage1_warmstart_meta = warmstart_meta if isinstance(warmstart, Stage1WarmstartCandidate) else None
         prestage2_warmstart_meta = warmstart_meta if isinstance(warmstart, Prestage2WarmstartCandidate) else None
+        # Warmstart candidates only identify the starting stage1 trial/mech/seed.
+        # The formal stage2light process owns the single x3 normalizer refit.
+        # Do not preload x3 refit/support fields from prest2 or analysis payloads here;
+        # those side-track fields would otherwise turn the entry refit into a second refit.
+        prepared, x3_norm_support_for_init, x3_init_source = _prepared_with_initial_x3_from_warmstart(
+            prepared,
+            None,
+        )
+        x3_agu_support_current = x3_norm_support_for_init if _valid_x3_norm_support(x3_norm_support_for_init) else None
+        observable_grid_inputs = _observable_grid_inputs_from_ode(
+            ode_train=tensors["ode_train"],
+            state_mean=prepared.state_mean,
+            state_scale=prepared.state_scale,
+            x3_norm_support=x3_agu_support_current,
+        )
+        initial_grid_support = initial_grid_support_from_raw_inputs(
+            observable_grid_inputs,
+            prepared.state_mean,
+            prepared.state_scale,
+        )
+        initial_grid_support_meta = initial_grid_support_to_meta(
+            initial_grid_support,
+            source=f"stage2light_initial_observed_x1x2_neutral_x3__{x3_init_source}",
+        )
         model_seed = int(warmstart.init_seed) if warmstart is not None else int(cfg.seed)
         ks_init = float(warmstart.ks0) if warmstart is not None else _geometric_midpoint(cfg.ks_lo, cfg.ks_hi)
         cs_init = float(warmstart.cs0) if warmstart is not None else _geometric_midpoint(cfg.cs_lo, cfg.cs_hi)
@@ -1216,6 +1870,7 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             affine_trainable=cfg.affine_trainable,
             grid_eps=cfg.grid_eps,
             grid_range=(cfg.grid_range_lo, cfg.grid_range_hi),
+            initial_grid_support=initial_grid_support,
             dist=float(prepared.known_pars[6]),
             a0=float(prepared.known_pars[9]),
             gnn_learnable=cfg.gnn_learnable,
@@ -1237,6 +1892,7 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             cs_bounds=(cfg.cs_lo, cfg.cs_hi),
             dtype=dtype,
             device=cfg.device,
+            parameterization=cfg.mech_parameterization,
         ).to(cfg.device)
         prest2_candidate_selected = _log_prestage2_selection_policy(
             candidate=warmstart,
@@ -1278,8 +1934,99 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             deferred_optimizer_state_dict = resume_state.get("deferred_optimizer_state_dict")
             _set_optimizer_lr(optimizer, lr)
             init_gain = float(model.gain().detach().cpu()) if hasattr(model, "gain") else float("nan")
+            x3_refit_meta = resume_state.get("x3_refit_meta")
+            x3_drift_epoch0_raw = resume_state.get("x3_drift_epoch0_x3")
+            if x3_drift_epoch0_raw is not None:
+                try:
+                    x3_drift_epoch0_x3 = torch.as_tensor(
+                        x3_drift_epoch0_raw,
+                        dtype=dtype,
+                        device=cfg.device,
+                    ).detach().clone()
+                except Exception:
+                    x3_drift_epoch0_x3 = None
+            initial_grid_support_meta = resume_state.get("initial_grid_support_meta") or initial_grid_support_meta
+            resume_x3_support = resume_state.get("x3_agu_support_current")
+            if _valid_x3_norm_support(resume_x3_support):
+                x3_agu_support_current = (float(resume_x3_support[0]), float(resume_x3_support[1]))
+            resume_mean = resume_state.get("state_mean")
+            resume_scale = resume_state.get("state_scale")
+            if resume_mean is not None and resume_scale is not None:
+                resume_mean_arr = np.asarray(resume_mean, dtype=float).reshape(-1)
+                resume_scale_arr = np.asarray(resume_scale, dtype=float).reshape(-1)
+                if resume_mean_arr.size == prepared.state_mean.size and resume_scale_arr.size == prepared.state_scale.size:
+                    prepared = replace(prepared, state_mean=resume_mean_arr, state_scale=resume_scale_arr)
+                    if not _valid_x3_norm_support(x3_agu_support_current):
+                        x3_agu_support_current = _x3_norm_support_from_refit_meta(x3_refit_meta)
+                    observable_grid_inputs = _observable_grid_inputs_from_ode(
+                        ode_train=tensors["ode_train"],
+                        state_mean=prepared.state_mean,
+                        state_scale=prepared.state_scale,
+                        x3_norm_support=x3_agu_support_current,
+                    )
         else:
-            init_gain = model.initialize_gain_from_truth(train_states, train_fts)
+            try:
+                prepared, observable_grid_inputs, x3_refit_meta, init_gain = _refit_x3_normalizer_from_preopt_rollout(
+                    log=log,
+                    cfg=cfg,
+                    prepared=prepared,
+                    split=split,
+                    tensors=tensors,
+                    train_states=train_states,
+                    train_fts=train_fts,
+                    model=model,
+                    mech_module=mech_module,
+                    mech_true_t=mech_true_t,
+                )
+                x3_agu_support_current = _x3_norm_support_from_refit_meta(x3_refit_meta)
+                _log_fingerprint(
+                    log,
+                    event_log,
+                    epoch=0,
+                    phase="preopt",
+                    stage="after_x3_refit",
+                    model=model,
+                    mech_module=mech_module,
+                    optimizer=optimizer,
+                    grid_inputs=observable_grid_inputs,
+                    extra={
+                        "refit_x3_mean": float(x3_refit_meta.get("refit_x3_mean", float("nan"))),
+                        "refit_x3_scale": float(x3_refit_meta.get("refit_x3_scale", float("nan"))),
+                        "x3_norm_support_min": float(x3_refit_meta.get("x3_norm_support_min", float("nan"))),
+                        "x3_norm_support_max": float(x3_refit_meta.get("x3_norm_support_max", float("nan"))),
+                    },
+                )
+            except Exception as err:
+                _log_line(log, f"x3 normalizer refit failed: {type(err).__name__}: {err}")
+                raise RuntimeError(f"x3_normalizer_refit_failed:{err}") from err
+
+        if x3_drift_epoch0_x3 is None:
+            if start_epoch > 0:
+                _log_line(
+                    log,
+                    "x3 drift baseline missing in resume checkpoint; initializing from current resumed state",
+                )
+            with torch.no_grad():
+                _baseline_total, _baseline_parts, baseline_traj = evaluate_split(
+                    force_module=model,
+                    known_pars=prepared.known_pars,
+                    mech_module=mech_module,
+                    ode_true=tensors["ode_full"],
+                    x2dot_true=tensors["x2dot_full"],
+                    contact_mask=tensors["contact_full"],
+                    times=tensors["times_full"],
+                    ode_method=cfg.ode_method,
+                    ode_rtol=cfg.ode_rtol,
+                    ode_atol=cfg.ode_atol,
+                    mech_true=mech_true_t,
+                    eta_star_true=prepared.eta_star_true,
+                    loss_indices=tensors["train_idx"],
+                )
+                x3_drift_epoch0_x3 = baseline_traj[2, :].detach().clone()
+            _log_line(
+                log,
+                f"x3 drift baseline initialized | source=post_x3_refit_pre_epoch1 | samples={int(x3_drift_epoch0_x3.numel())}",
+            )
 
         _log_line(
             log,
@@ -1316,6 +2063,22 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             f"width={list(cfg.width)} grid={cfg.grid} k={cfg.spline_k} base={cfg.base_fun} "
             f"noise_scale={cfg.noise_scale}",
         )
+        if isinstance(initial_grid_support_meta, dict):
+            _log_line(
+                log,
+                "KAN initial grid support: "
+                f"source={initial_grid_support_meta.get('source', '')} "
+                f"x1=[{float(initial_grid_support_meta['x1_min']):.6e}, {float(initial_grid_support_meta['x1_max']):.6e}] "
+                f"x2=[{float(initial_grid_support_meta['x2_min']):.6e}, {float(initial_grid_support_meta['x2_max']):.6e}] "
+                f"x3=[{float(initial_grid_support_meta['x3_min']):.6e}, {float(initial_grid_support_meta['x3_max']):.6e}]",
+            )
+        if _valid_x3_norm_support(x3_agu_support_current):
+            _log_line(
+                log,
+                "x3 AGU adaptive support init: "
+                f"current=[{float(x3_agu_support_current[0]):.6e}, {float(x3_agu_support_current[1]):.6e}] "
+                "density=uniform | normalizer=fixed_after_refit",
+            )
         _log_line(
             log,
             "force chain: target=(soft_mask * g_nn * nn_raw) | legacy contact multiplier removed",
@@ -1324,7 +2087,8 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             log,
             "mech init: "
             f"ks0={ks_init:.6e} cs0={cs_init:.6e} "
-            f"| truth_ks={prepared.mech_true[0]:.6e} truth_cs={prepared.mech_true[1]:.6e}",
+            f"| truth_ks={prepared.mech_true[0]:.6e} truth_cs={prepared.mech_true[1]:.6e} "
+            f"| parameterization={cfg.mech_parameterization}",
         )
         _log_line(
             log,
@@ -1473,25 +2237,81 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 optimizer.load_state_dict(copy.deepcopy(epoch_start_opt_state))
                 _set_optimizer_lr(optimizer, lr)
                 model.train()
+                _log_fingerprint(
+                    log,
+                    event_log,
+                    epoch=epoch + 1,
+                    phase="adam",
+                    stage="epoch_start",
+                    model=model,
+                    mech_module=mech_module,
+                    optimizer=optimizer,
+                    grid_inputs=observable_grid_inputs,
+                    extra={"attempt": int(epoch_attempt), "lr": float(lr)},
+                )
 
                 if cfg.adaptive_grid_enabled and _grid_update_due(epoch, cfg.grid_update_num, cfg.start_grid_update_step, cfg.stop_grid_update_step):
                     try:
                         grid_update_t0 = perf_counter()
                         with torch.no_grad():
-                            grid_source = "raw_observed_x1x2_neutral_x3_axis"
+                            grid_source = "normalized_observed_x1x2_pred_informed_uniform_x3_axis"
                             grid_inputs, grid_meta = _make_grid_update_inputs(
                                 base_inputs=observable_grid_inputs,
                             )
+                            _log_fingerprint(
+                                log,
+                                event_log,
+                                epoch=epoch + 1,
+                                phase="adam",
+                                stage="before_grid_update",
+                                model=model,
+                                mech_module=mech_module,
+                                optimizer=optimizer,
+                                grid_inputs=grid_inputs,
+                                extra={
+                                    "attempt": int(epoch_attempt),
+                                    "grid_source": grid_source,
+                                    "grid_base_samples": float(grid_meta.get("base_samples", float("nan"))),
+                                    "grid_extra_samples": float(grid_meta.get("extra_samples", float("nan"))),
+                                    "grid_total_samples": float(grid_meta.get("total_samples", float("nan"))),
+                                },
+                            )
                             model.update_grid_from_normalized_inputs(grid_inputs)
+                            _log_fingerprint(
+                                log,
+                                event_log,
+                                epoch=epoch + 1,
+                                phase="adam",
+                                stage="after_grid_update",
+                                model=model,
+                                mech_module=mech_module,
+                                optimizer=optimizer,
+                                grid_inputs=grid_inputs,
+                                extra={
+                                    "attempt": int(epoch_attempt),
+                                    "grid_source": grid_source,
+                                    "grid_base_samples": float(grid_meta.get("base_samples", float("nan"))),
+                                    "grid_extra_samples": float(grid_meta.get("extra_samples", float("nan"))),
+                                    "grid_total_samples": float(grid_meta.get("total_samples", float("nan"))),
+                                },
+                            )
                         grid_update_dt = perf_counter() - grid_update_t0
                         grid_update_sec_epoch += float(grid_update_dt)
                         grid_update_runs_epoch += 1
                         grid_update_meta_epoch = dict(grid_meta)
+                        if _valid_x3_norm_support(x3_agu_support_current):
+                            x3_support_label = (
+                                f"[{float(x3_agu_support_current[0]):.6e}, "
+                                f"{float(x3_agu_support_current[1]):.6e}]"
+                            )
+                        else:
+                            x3_support_label = "default"
                         _log_line(
                             log,
                             "grid update | "
                             f"epoch={epoch + 1} | source={grid_source} | "
-                            f"samples={int(grid_meta['total_samples'])}",
+                            f"samples={int(grid_meta['total_samples'])} | "
+                            f"x3_support={x3_support_label}",
                         )
                     except Exception as err:
                         epoch_fail_reason = f"grid_update_exception:{err}"
@@ -1870,8 +2690,32 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     native_base_mech_state = copy.deepcopy(mech_module.state_dict())
                     native_base_opt_state = copy.deepcopy(optimizer.state_dict())
                     _set_optimizer_lr(optimizer, lr)
+                    _log_fingerprint(
+                        log,
+                        event_log,
+                        epoch=epoch + 1,
+                        phase="adam",
+                        stage="before_optimizer_step",
+                        model=model,
+                        mech_module=mech_module,
+                        optimizer=optimizer,
+                        grid_inputs=observable_grid_inputs,
+                        extra={"attempt": int(epoch_attempt), "lr": float(lr)},
+                    )
                     optimizer.step()
                     model.train()
+                    _log_fingerprint(
+                        log,
+                        event_log,
+                        epoch=epoch + 1,
+                        phase="adam",
+                        stage="after_optimizer_step",
+                        model=model,
+                        mech_module=mech_module,
+                        optimizer=optimizer,
+                        grid_inputs=observable_grid_inputs,
+                        extra={"attempt": int(epoch_attempt), "lr": float(lr)},
+                    )
                     try:
                         trial_total, trial_parts, trial_traj = evaluate_split(
                             force_module=model,
@@ -2186,6 +3030,39 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 break
 
             soft_mask_meta = model.soft_mask_summary()
+            x3_support_used_epoch = x3_agu_support_current
+            x3_norm_monitor = _x3_norm_monitor_from_traj(
+                accepted_train_traj,
+                model,
+                x3_refit_meta,
+                x3_current_support=x3_support_used_epoch,
+            )
+            x3_support_next = _x3_norm_support_from_monitor(x3_norm_monitor)
+            x3_support_updated = False
+            if _valid_x3_norm_support(x3_support_next):
+                x3_agu_support_current = (float(x3_support_next[0]), float(x3_support_next[1]))
+                observable_grid_inputs = _observable_grid_inputs_from_ode(
+                    ode_train=tensors["ode_train"],
+                    state_mean=prepared.state_mean,
+                    state_scale=prepared.state_scale,
+                    x3_norm_support=x3_agu_support_current,
+                )
+                x3_support_updated = True
+                _log_fingerprint(
+                    log,
+                    event_log,
+                    epoch=epoch + 1,
+                    phase="adam",
+                    stage="after_x3_support_update",
+                    model=model,
+                    mech_module=mech_module,
+                    optimizer=optimizer,
+                    grid_inputs=observable_grid_inputs,
+                    extra={
+                        "x3_agu_support_min": float(x3_agu_support_current[0]),
+                        "x3_agu_support_max": float(x3_agu_support_current[1]),
+                    },
+                )
             row = {
                 "epoch": float(epoch + 1),
                 "train_loss": float(train_total.detach()),
@@ -2262,7 +3139,22 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 "grid_base_samples": float(grid_update_meta_epoch["base_samples"]),
                 "grid_extra_samples": float(grid_update_meta_epoch["extra_samples"]),
                 "grid_total_samples": float(grid_update_meta_epoch["total_samples"]),
+                "x3_agu_support_used_min": (
+                    float(x3_support_used_epoch[0]) if _valid_x3_norm_support(x3_support_used_epoch) else float("nan")
+                ),
+                "x3_agu_support_used_max": (
+                    float(x3_support_used_epoch[1]) if _valid_x3_norm_support(x3_support_used_epoch) else float("nan")
+                ),
+                "x3_agu_next_support_min": (
+                    float(x3_support_next[0]) if _valid_x3_norm_support(x3_support_next) else float("nan")
+                ),
+                "x3_agu_next_support_max": (
+                    float(x3_support_next[1]) if _valid_x3_norm_support(x3_support_next) else float("nan")
+                ),
+                "x3_agu_support_updated": bool(x3_support_updated),
             }
+            row.update(x3_norm_monitor)
+            row.update(_x3_drift_from_epoch0(accepted_train_traj, x3_drift_epoch0_x3))
             ks_hat, cs_hat = _current_mech_numpy(mech_module)
             row["ks_hat"] = ks_hat
             row["cs_hat"] = cs_hat
@@ -2299,6 +3191,13 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     "rng_state": capture_rng_state(),
                     "state_mean": prepared.state_mean,
                     "state_scale": prepared.state_scale,
+                    "initial_grid_support": None if initial_grid_support is None else initial_grid_support.tolist(),
+                    "initial_grid_support_meta": initial_grid_support_meta,
+                    "x3_refit_meta": x3_refit_meta,
+                    "x3_agu_support_current": _x3_norm_support_to_payload(x3_agu_support_current),
+                    "x3_drift_epoch0_x3": None
+                    if x3_drift_epoch0_x3 is None
+                    else x3_drift_epoch0_x3.detach().cpu(),
                     "known_pars": prepared.known_pars,
                     "eta_star_true": prepared.eta_star_true,
                     "mech_true": prepared.mech_true,
@@ -2348,6 +3247,13 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     "rng_state": capture_rng_state(),
                     "state_mean": prepared.state_mean,
                     "state_scale": prepared.state_scale,
+                    "initial_grid_support": None if initial_grid_support is None else initial_grid_support.tolist(),
+                    "initial_grid_support_meta": initial_grid_support_meta,
+                    "x3_refit_meta": x3_refit_meta,
+                    "x3_agu_support_current": _x3_norm_support_to_payload(x3_agu_support_current),
+                    "x3_drift_epoch0_x3": None
+                    if x3_drift_epoch0_x3 is None
+                    else x3_drift_epoch0_x3.detach().cpu(),
                     "known_pars": prepared.known_pars,
                     "eta_star_true": prepared.eta_star_true,
                     "mech_true": prepared.mech_true,
@@ -2389,6 +3295,12 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 _log_line(log, f"  grad_norm_nn={grad_norm_nn:.3e} grad_norm_mech={grad_norm_mech:.3e}")
                 _log_line(
                     log,
+                    "  x3 drift from epoch0: "
+                    f"{float(row['x3_drift_from_epoch0_pct']):.3e}% "
+                    f"rmse_abs={float(row['x3_drift_from_epoch0_abs']):.3e}",
+                )
+                _log_line(
+                    log,
                     "  soft_mask: "
                     f"enabled={'ON' if row['soft_mask_enabled'] else 'OFF'} "
                     f"trainable={'ON' if row['soft_mask_trainable'] else 'OFF'} "
@@ -2419,7 +3331,12 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     f"({grid_pct:.1f}%) runs={grid_update_runs_epoch}",
                 )
                 if grid_update_runs_epoch > 0:
-                    _log_line(log, f"  AGU: samples={int(row['grid_total_samples'])} source=observed_x1x2_neutral_x3")
+                    _log_line(
+                        log,
+                        "  AGU: "
+                        f"samples={int(row['grid_total_samples'])} "
+                        "source=normalized_observed_x1x2_pred_informed_range_uniform_x3",
+                    )
                 _log_line(
                     log,
                     "  parts: "
@@ -2432,6 +3349,14 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 )
                 _log_line(log, f"  rec: x1={float(train_parts.x1_rec):.2f}% x3={float(train_parts.x3_rec):.2f}%")
                 _log_line(log, f"  nn: F_contact err={float(train_parts.fts_rollout_rec):.2f}%")
+                _log_line(log, f"  {_format_x3_norm_monitor(x3_norm_monitor)}")
+                _log_line(
+                    log,
+                    "  x3 AGU next support: "
+                    f"[{row['x3_agu_next_support_min']:.6e}, {row['x3_agu_next_support_max']:.6e}] "
+                    f"updated={'YES' if row['x3_agu_support_updated'] else 'NO'} "
+                    "source=accepted_epoch_x3_norm_range density=uniform",
+                )
                 _log_line(
                     log,
                     "  mech: "
@@ -2485,6 +3410,13 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     "rng_state": capture_rng_state(),
                     "state_mean": prepared.state_mean,
                     "state_scale": prepared.state_scale,
+                    "initial_grid_support": None if initial_grid_support is None else initial_grid_support.tolist(),
+                    "initial_grid_support_meta": initial_grid_support_meta,
+                    "x3_refit_meta": x3_refit_meta,
+                    "x3_agu_support_current": _x3_norm_support_to_payload(x3_agu_support_current),
+                    "x3_drift_epoch0_x3": None
+                    if x3_drift_epoch0_x3 is None
+                    else x3_drift_epoch0_x3.detach().cpu(),
                     "known_pars": prepared.known_pars,
                     "eta_star_true": prepared.eta_star_true,
                     "mech_true": prepared.mech_true,
@@ -2722,9 +3654,43 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 model.train()
                 lbfgs_returned_loss = float("nan")
                 try:
+                    _log_fingerprint(
+                        log,
+                        event_log,
+                        epoch=outer_epoch,
+                        phase="lbfgs",
+                        stage="before_lbfgs_step",
+                        model=model,
+                        mech_module=mech_module,
+                        optimizer=lbfgs_optimizer,
+                        grid_inputs=observable_grid_inputs,
+                        extra={
+                            "lbfgs_outer_step": int(lbfgs_outer_step),
+                            "attempt": int(lbfgs_attempt_index),
+                            "line_search": lbfgs_line_search,
+                        },
+                    )
                     returned_loss = lbfgs_optimizer.step(closure)
                     lbfgs_returned_loss = float(returned_loss.detach()) if isinstance(returned_loss, torch.Tensor) else float(returned_loss)
                     closure_calls_total = int(closure_calls)
+                    _log_fingerprint(
+                        log,
+                        event_log,
+                        epoch=outer_epoch,
+                        phase="lbfgs",
+                        stage="after_lbfgs_step",
+                        model=model,
+                        mech_module=mech_module,
+                        optimizer=lbfgs_optimizer,
+                        grid_inputs=observable_grid_inputs,
+                        extra={
+                            "lbfgs_outer_step": int(lbfgs_outer_step),
+                            "attempt": int(lbfgs_attempt_index),
+                            "line_search": lbfgs_line_search,
+                            "closure_calls": int(closure_calls_total),
+                            "returned_loss": float(lbfgs_returned_loss),
+                        },
+                    )
                 except Exception as err:
                     lbfgs_stop_reason = closure_error or f"lbfgs_step_exception:{err}"
                     model.load_state_dict(copy.deepcopy(lbfgs_start_model_state))
@@ -2921,6 +3887,13 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
 
                 epoch_sec = float(perf_counter() - lbfgs_wall_start)
                 soft_mask_meta = model.soft_mask_summary()
+                x3_norm_monitor = _x3_norm_monitor_from_traj(
+                    accepted_train_traj,
+                    model,
+                    x3_refit_meta,
+                    x3_current_support=x3_agu_support_current,
+                )
+                x3_support_next = _x3_norm_support_from_monitor(x3_norm_monitor)
                 row = {
                     "epoch": float(outer_epoch),
                     "train_loss": float(train_total.detach()),
@@ -2994,7 +3967,26 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     "grid_base_samples": float("nan"),
                     "grid_extra_samples": 0.0,
                     "grid_total_samples": float("nan"),
+                    "x3_agu_support_used_min": (
+                        float(x3_agu_support_current[0])
+                        if _valid_x3_norm_support(x3_agu_support_current)
+                        else float("nan")
+                    ),
+                    "x3_agu_support_used_max": (
+                        float(x3_agu_support_current[1])
+                        if _valid_x3_norm_support(x3_agu_support_current)
+                        else float("nan")
+                    ),
+                    "x3_agu_next_support_min": (
+                        float(x3_support_next[0]) if _valid_x3_norm_support(x3_support_next) else float("nan")
+                    ),
+                    "x3_agu_next_support_max": (
+                        float(x3_support_next[1]) if _valid_x3_norm_support(x3_support_next) else float("nan")
+                    ),
+                    "x3_agu_support_updated": False,
                 }
+                row.update(x3_norm_monitor)
+                row.update(_x3_drift_from_epoch0(accepted_train_traj, x3_drift_epoch0_x3))
                 ks_hat, cs_hat = _current_mech_numpy(mech_module)
                 row["ks_hat"] = ks_hat
                 row["cs_hat"] = cs_hat
@@ -3049,6 +4041,13 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                         "rng_state": capture_rng_state(),
                         "state_mean": prepared.state_mean,
                         "state_scale": prepared.state_scale,
+                        "initial_grid_support": None if initial_grid_support is None else initial_grid_support.tolist(),
+                        "initial_grid_support_meta": initial_grid_support_meta,
+                        "x3_refit_meta": x3_refit_meta,
+                        "x3_agu_support_current": _x3_norm_support_to_payload(x3_agu_support_current),
+                        "x3_drift_epoch0_x3": None
+                        if x3_drift_epoch0_x3 is None
+                        else x3_drift_epoch0_x3.detach().cpu(),
                         "known_pars": prepared.known_pars,
                         "eta_star_true": prepared.eta_star_true,
                         "mech_true": prepared.mech_true,
@@ -3098,6 +4097,13 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                         "rng_state": capture_rng_state(),
                         "state_mean": prepared.state_mean,
                         "state_scale": prepared.state_scale,
+                        "initial_grid_support": None if initial_grid_support is None else initial_grid_support.tolist(),
+                        "initial_grid_support_meta": initial_grid_support_meta,
+                        "x3_refit_meta": x3_refit_meta,
+                        "x3_agu_support_current": _x3_norm_support_to_payload(x3_agu_support_current),
+                        "x3_drift_epoch0_x3": None
+                        if x3_drift_epoch0_x3 is None
+                        else x3_drift_epoch0_x3.detach().cpu(),
                         "known_pars": prepared.known_pars,
                         "eta_star_true": prepared.eta_star_true,
                         "mech_true": prepared.mech_true,
@@ -3131,6 +4137,14 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                     f"reason={lbfgs_reject_reason or 'accepted'}",
                 )
                 _log_line(log, f"  grad_norm={grad_norm:.3e} lbfgs_lr={cfg.lbfgs_lr:.6g}")
+                _log_line(log, f"  grad_norm_raw={grad_norm_raw:.3e} grad_norm_scaled={grad_norm:.3e}")
+                _log_line(log, f"  grad_norm_nn={grad_norm_nn:.3e} grad_norm_mech={grad_norm_mech:.3e}")
+                _log_line(
+                    log,
+                    "  x3 drift from epoch0: "
+                    f"{float(row['x3_drift_from_epoch0_pct']):.3e}% "
+                    f"rmse_abs={float(row['x3_drift_from_epoch0_abs']):.3e}",
+                )
                 _log_line(
                     log,
                     "  lbfgs progress: "
@@ -3162,6 +4176,7 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 )
                 _log_line(log, f"  rec: x1={float(train_parts.x1_rec):.2f}% x3={float(train_parts.x3_rec):.2f}%")
                 _log_line(log, f"  nn: F_contact err={float(train_parts.fts_rollout_rec):.2f}%")
+                _log_line(log, f"  {_format_x3_norm_monitor(x3_norm_monitor)}")
                 _log_line(
                     log,
                     "  mech: "
@@ -3195,6 +4210,13 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                         "rng_state": capture_rng_state(),
                         "state_mean": prepared.state_mean,
                         "state_scale": prepared.state_scale,
+                        "initial_grid_support": None if initial_grid_support is None else initial_grid_support.tolist(),
+                        "initial_grid_support_meta": initial_grid_support_meta,
+                        "x3_refit_meta": x3_refit_meta,
+                        "x3_agu_support_current": _x3_norm_support_to_payload(x3_agu_support_current),
+                        "x3_drift_epoch0_x3": None
+                        if x3_drift_epoch0_x3 is None
+                        else x3_drift_epoch0_x3.detach().cpu(),
                         "known_pars": prepared.known_pars,
                         "eta_star_true": prepared.eta_star_true,
                         "mech_true": prepared.mech_true,
@@ -3274,6 +4296,13 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                 "rng_state": capture_rng_state(),
                 "state_mean": prepared.state_mean,
                 "state_scale": prepared.state_scale,
+                "initial_grid_support": None if initial_grid_support is None else initial_grid_support.tolist(),
+                "initial_grid_support_meta": initial_grid_support_meta,
+                "x3_refit_meta": x3_refit_meta,
+                "x3_agu_support_current": _x3_norm_support_to_payload(x3_agu_support_current),
+                "x3_drift_epoch0_x3": None
+                if x3_drift_epoch0_x3 is None
+                else x3_drift_epoch0_x3.detach().cpu(),
                 "known_pars": prepared.known_pars,
                 "eta_star_true": prepared.eta_star_true,
                 "mech_true": prepared.mech_true,
@@ -3301,6 +4330,13 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
             "history": history,
             "state_mean": prepared.state_mean,
             "state_scale": prepared.state_scale,
+            "initial_grid_support": None if initial_grid_support is None else initial_grid_support.tolist(),
+            "initial_grid_support_meta": initial_grid_support_meta,
+            "x3_refit_meta": x3_refit_meta,
+            "x3_agu_support_current": _x3_norm_support_to_payload(x3_agu_support_current),
+            "x3_drift_epoch0_x3": None
+            if x3_drift_epoch0_x3 is None
+            else x3_drift_epoch0_x3.detach().cpu(),
             "known_pars": prepared.known_pars,
             "eta_star_true": prepared.eta_star_true,
             "mech_true": prepared.mech_true,

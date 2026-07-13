@@ -29,6 +29,7 @@ WINDOW_OVERRIDES_US = {
     "max_x1_pp_change": ("stop", 1057.0),
     "tail_stable": ("stop", 1998.0),
 }
+MODIFIED_W0_START_US = 236.0
 
 
 def load_trajectory(csv_path: Path):
@@ -245,7 +246,37 @@ def build_training_style_windows(t_s: np.ndarray, contact_mask: np.ndarray, x1_s
         win["full_stop_idx"] = first_contact_idx + new_stop
         adjusted.append(win)
 
-    return adjusted
+    w1_ref = next((win for win in adjusted if win["rank"] == "W1"), None)
+    if w1_ref is None:
+        raise RuntimeError("Could not find W1 after building training windows")
+
+    w0_len = int(w1_ref["len"])
+    w0_start = int(np.searchsorted(t_post_us, MODIFIED_W0_START_US, side="left"))
+    w0_start = min(max(w0_start, 0), max(len(t_post_us) - w0_len, 0))
+    w0_stop = min(w0_start + w0_len - 1, len(t_post_us) - 1)
+    w0 = {
+        "candidate_index": 0,
+        "start_idx": w0_start,
+        "stop_idx": w0_stop,
+        "len": w0_stop - w0_start + 1,
+        "t_start_us": float(t_post_us[w0_start]),
+        "t_stop_us": float(t_post_us[w0_stop]),
+        "cycle1_index": 0,
+        "cycle2_index": 0,
+        "x1_pp_cycle1": float("nan"),
+        "x1_pp_cycle2": float("nan"),
+        "x1_pp_delta": float("nan"),
+        "role": "modified_w0",
+        "label": "modified_w0_window",
+        "override_anchor": "start",
+        "override_target_us": float(MODIFIED_W0_START_US),
+        "override_applied": True,
+        "rank": "modified_w0",
+        "full_start_idx": first_contact_idx + w0_start,
+        "full_stop_idx": first_contact_idx + w0_stop,
+    }
+
+    return [w0, *adjusted]
 
 
 def save_plot(x, y, contact_mask, out_png: Path, out_pdf: Path, title: str, *, figsize=(12, 5.5)):
@@ -272,7 +303,7 @@ def save_training_window_plot(
     out_png: Path,
     out_pdf: Path,
 ):
-    fig, axes = plt.subplots(3, 1, figsize=(12, 9.5), sharey=True)
+    fig, axes = plt.subplots(len(windows), 1, figsize=(12, 2.8 * len(windows) + 1.1), sharey=True)
     axes = np.atleast_1d(axes)
 
     y_vals = []
@@ -285,6 +316,7 @@ def save_training_window_plot(
     y_hi = float(y_all.max() + y_pad)
 
     role_titles = {
+        "modified_w0": "modified_w0",
         "first_contact": "first_contact",
         "max_x1_pp_change": "max_x1_pp_change",
         "tail_stable": "tail_stable",
@@ -329,7 +361,7 @@ def save_training_window_plot(
         ax.set_ylim(y_lo, y_hi)
 
     axes[-1].set_xlabel("Time [μs]")
-    fig.suptitle("AFM DMT-KV F_ts Time-Domain Signal (training-style W1 / W2 / W3 windows)")
+    fig.suptitle("AFM DMT-KV F_ts Time-Domain Signal (modified_w0 / W1 / W2 / W3 windows)")
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
     fig.savefig(out_png, dpi=150)
     fig.savefig(out_pdf)
@@ -550,7 +582,7 @@ def save_long_window_gif(
         ax.set_ylim(y_lo, y_hi)
         ax.set_xlabel("Time [μs]")
         ax.set_ylabel("F_ts [nN]")
-        ax.set_title("AFM DMT-KV F_ts Long Window (animated draw over time)")
+        ax.set_title("tip sample interaction response of polymer")
         ax.grid(True, alpha=0.3)
         ax.legend(loc="upper right")
         ax.text(

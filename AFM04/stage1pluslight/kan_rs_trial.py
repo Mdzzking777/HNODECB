@@ -14,7 +14,11 @@ from AFM04.KAN_full_test.config import default_config as default_kan_config
 from AFM04.KAN_full_test.data import PreparedData, WindowSplit, prepare_data
 from AFM04.KAN_full_test.losses import TorchLossParts, evaluate_split
 from AFM04.KAN_full_test.rollout import StateGuardTriggered, fts_truth_from_states_torch
-from AFM04.stage2light.kan_backend import KANForceModule
+from AFM04.stage2light.kan_backend import (
+    KANForceModule,
+    initial_grid_support_from_raw_inputs,
+    initial_grid_support_to_meta,
+)
 from AFM04.test_case_settings.afm_dmt_kv_settings.afm_dmt_kv_model_settings import CS, KS
 
 
@@ -94,11 +98,74 @@ def _trial_seed(base_seed: int, seed_bank_index: int) -> int:
     return int(base_seed + seed_bank_index)
 
 
+def _safe_scale(values: np.ndarray) -> float:
+    scale = float(np.std(np.asarray(values, dtype=float)))
+    if not np.isfinite(scale) or scale <= 1.0e-30:
+        scale = float(np.max(np.abs(np.asarray(values, dtype=float))))
+    if not np.isfinite(scale) or scale <= 1.0e-30:
+        scale = 1.0
+    return scale
+
+
+def _formal_state_normalizer(train_states_all: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    states = np.asarray(train_states_all, dtype=float)
+    if states.ndim != 2 or states.shape[1] < 3:
+        raise ValueError(f"train_states_all must have shape (n, >=3), got {states.shape}")
+    x1_mean = float(np.mean(states[:, 0]))
+    x2_mean = float(np.mean(states[:, 1]))
+    x1_scale = _safe_scale(states[:, 0])
+    x2_scale = _safe_scale(states[:, 1])
+    mean = np.asarray([x1_mean, x2_mean, x1_mean], dtype=float)
+    scale = np.asarray([x1_scale, x2_scale, max(0.1 * x1_scale, 1.0e-30)], dtype=float)
+    return mean, scale
+
+
+def _x3_pred_normalizer_meta(traj: torch.Tensor) -> dict[str, float | str | bool]:
+    values = traj[2, :].detach().cpu().numpy().astype(float)
+    if values.size == 0 or not np.all(np.isfinite(values)):
+        return {
+            "rs_x3_normalizer_valid": False,
+            "rs_x3_normalizer_source": "stage1pluslight_rs_rollout_x3_pred_full_window",
+            "rs_x3_pred_mean": float("nan"),
+            "rs_x3_pred_scale": float("nan"),
+            "rs_x3_pred_min": float("nan"),
+            "rs_x3_pred_max": float("nan"),
+            "rs_x3_norm_support_min": float("nan"),
+            "rs_x3_norm_support_max": float("nan"),
+        }
+    mean = float(np.mean(values))
+    scale = float(np.std(values))
+    if not np.isfinite(scale) or scale <= 1.0e-30:
+        return {
+            "rs_x3_normalizer_valid": False,
+            "rs_x3_normalizer_source": "stage1pluslight_rs_rollout_x3_pred_full_window",
+            "rs_x3_pred_mean": mean,
+            "rs_x3_pred_scale": float(scale),
+            "rs_x3_pred_min": float(np.min(values)),
+            "rs_x3_pred_max": float(np.max(values)),
+            "rs_x3_norm_support_min": float("nan"),
+            "rs_x3_norm_support_max": float("nan"),
+        }
+    norm = (values - mean) / scale
+    return {
+        "rs_x3_normalizer_valid": True,
+        "rs_x3_normalizer_source": "stage1pluslight_rs_rollout_x3_pred_full_window",
+        "rs_x3_pred_mean": mean,
+        "rs_x3_pred_scale": scale,
+        "rs_x3_pred_min": float(np.min(values)),
+        "rs_x3_pred_max": float(np.max(values)),
+        "rs_x3_norm_support_min": float(np.min(norm)),
+        "rs_x3_norm_support_max": float(np.max(norm)),
+    }
+
+
 def _observable_grid_inputs_from_ode(
     *,
     ode_train: torch.Tensor,
+    state_mean: np.ndarray,
+    state_scale: np.ndarray,
 ) -> torch.Tensor:
-    """Build AGU samples in raw physical coordinates.
+    """Build AGU samples in raw physical coordinates before normalization.
 
     x1/x2 come from observed data.  x3 is a neutral raw-domain axis only; it
     does not encode true/predicted x3 and therefore does not guide AGU.
@@ -108,11 +175,19 @@ def _observable_grid_inputs_from_ode(
     inputs = torch.empty((n, 3), dtype=ode_train.dtype, device=ode_train.device)
     inputs[:, 0:2] = ode_train[0:2, :].transpose(0, 1)
     if n <= 1:
-        inputs[:, 2] = 0.0
+        inputs[:, 2] = float(np.asarray(state_mean, dtype=float)[2])
     else:
-        x1_abs = float(torch.max(torch.abs(ode_train[0, :])).detach().cpu()) if n > 0 else 0.0
-        x3_amp = max(0.1 * x1_abs, 1.0e-12)
-        inputs[:, 2] = torch.linspace(-x3_amp, x3_amp, n, dtype=ode_train.dtype, device=ode_train.device)
+        mean = np.asarray(state_mean, dtype=float).reshape(-1)
+        scale = np.asarray(state_scale, dtype=float).reshape(-1)
+        x3_center = float(mean[2])
+        x3_amp = max(float(abs(scale[2])), 1.0e-30)
+        inputs[:, 2] = torch.linspace(
+            x3_center - x3_amp,
+            x3_center + x3_amp,
+            n,
+            dtype=ode_train.dtype,
+            device=ode_train.device,
+        )
     return inputs
 
 
@@ -138,6 +213,8 @@ def prepare_kan_stage1_runtime(
     )
     prepared = prepare_data(kcfg)
     split = prepared.splits[0]
+    state_mean, state_scale = _formal_state_normalizer(np.asarray(split.ode_train.T, dtype=float))
+    prepared = replace(prepared, state_mean=state_mean, state_scale=state_scale)
     dtype = _torch_dtype(kcfg.dtype)
     tensors = _window_to_torch(split, dtype=dtype, device=kcfg.device)
     train_states = torch.as_tensor(split.ode_train.T, dtype=dtype, device=kcfg.device)
@@ -191,6 +268,31 @@ def stage1pluslight_kan_random_trial(
     seed = _trial_seed(int(cfg.seed), int(nn_seed_bank_idx))
     mech = torch.as_tensor([float(ks_fixed), float(cs_fixed)], dtype=dtype, device=cfg.device)
 
+    grid_inputs = _observable_grid_inputs_from_ode(
+        ode_train=tensors["ode_train"],
+        state_mean=prepared.state_mean,
+        state_scale=prepared.state_scale,
+    )
+    initial_grid_support = initial_grid_support_from_raw_inputs(
+        grid_inputs,
+        prepared.state_mean,
+        prepared.state_scale,
+    )
+    initial_grid_support_meta = initial_grid_support_to_meta(
+        initial_grid_support,
+        source="stage1pluslight_rs_observed_x1x2_x1_prior_neutral_x3",
+    )
+    initial_grid_fields = {
+        "initial_grid_support_source": str(initial_grid_support_meta["source"]),
+        "initial_grid_support": initial_grid_support_meta["support"],
+        "initial_grid_support_x1_min": float(initial_grid_support_meta["x1_min"]),
+        "initial_grid_support_x1_max": float(initial_grid_support_meta["x1_max"]),
+        "initial_grid_support_x2_min": float(initial_grid_support_meta["x2_min"]),
+        "initial_grid_support_x2_max": float(initial_grid_support_meta["x2_max"]),
+        "initial_grid_support_x3_min": float(initial_grid_support_meta["x3_min"]),
+        "initial_grid_support_x3_max": float(initial_grid_support_meta["x3_max"]),
+    }
+
     t0 = perf_counter()
     model = KANForceModule(
         pykan_root=cfg.pykan_root,
@@ -207,6 +309,7 @@ def stage1pluslight_kan_random_trial(
         affine_trainable=cfg.affine_trainable,
         grid_eps=cfg.grid_eps,
         grid_range=(cfg.grid_range_lo, cfg.grid_range_hi),
+        initial_grid_support=initial_grid_support,
         dist=float(prepared.known_pars[6]),
         a0=float(prepared.known_pars[9]),
         gnn_learnable=cfg.gnn_learnable,
@@ -223,9 +326,6 @@ def stage1pluslight_kan_random_trial(
     ).to(cfg.device)
     with torch.no_grad():
         if cfg.adaptive_grid_enabled:
-            grid_inputs = _observable_grid_inputs_from_ode(
-                ode_train=tensors["ode_train"],
-            )
             model.update_grid_from_normalized_inputs(grid_inputs)
         init_gnn = float(model.initialize_gain_from_truth(train_states, train_fts))
 
@@ -277,6 +377,7 @@ def stage1pluslight_kan_random_trial(
         failure_reason = f"{type(exc).__name__}: {exc}"
 
     dt_total = float(perf_counter() - t0)
+    x3_pred_fields: dict[str, float | str | bool] = {}
 
     if failure_reason != "" or train_total is None or train_parts is None:
         metric_parts = {
@@ -316,6 +417,7 @@ def stage1pluslight_kan_random_trial(
                 "kan_grid": int(cfg.grid),
                 "kan_spline_k": int(cfg.spline_k),
                 "kan_base_fun": str(cfg.base_fun),
+                **initial_grid_fields,
             },
             "val_parts": metric_parts,
             "ks_hat": float(ks_fixed),
@@ -358,6 +460,7 @@ def stage1pluslight_kan_random_trial(
         eta_star_true=prepared.eta_star_true,
     )
     metric_parts["fts_teacher_rec"] = float(metric_nn_err)
+    x3_pred_fields = _x3_pred_normalizer_meta(train_traj)
 
     return {
         "loss": float(ranking_loss),
@@ -384,6 +487,8 @@ def stage1pluslight_kan_random_trial(
             "kan_grid": int(cfg.grid),
             "kan_spline_k": int(cfg.spline_k),
             "kan_base_fun": str(cfg.base_fun),
+            **initial_grid_fields,
+            **x3_pred_fields,
         },
         "val_parts": metric_parts,
         "ks_hat": float(ks_fixed),

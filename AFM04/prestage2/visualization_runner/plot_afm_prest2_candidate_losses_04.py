@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import pickle
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,9 @@ def find_repo_root(start_dir: str | Path) -> Path:
 REPO_ROOT = find_repo_root(__file__)
 DEFAULT_RESULT_PATH = REPO_ROOT / "AFM04" / "prestage2" / "results" / "afm_prest2_04_candidates_b.pkl"
 DEFAULT_OUT_DIR = REPO_ROOT / "AFM04" / "prestage2" / "visualization"
-DEFAULT_CANDIDATE = 5
+BATCH_CANDIDATE_START = 1
+BATCH_CANDIDATE_END = 20
+BATCH_DIR_STEM = "candidate_b_001_020_loss_curves"
 
 
 def _load_pickle(path: Path) -> dict[str, Any]:
@@ -54,6 +58,35 @@ def _find_candidate_record(records: list[dict[str, Any]], candidate: int) -> dic
         if rank_id == int(candidate):
             return rec
     raise ValueError(f"Candidate B {candidate} not found. Available candidates: 1..{len(records)}")
+
+
+def _candidate_id(record: dict[str, Any]) -> int:
+    for key in ("candidate_b", "candidate", "top_mech_winner_a", "newrank_a"):
+        try:
+            value = int(record.get(key, 0))
+        except Exception:
+            value = 0
+        if value > 0:
+            return value
+    return 0
+
+
+def _batch_candidate_ids(records: list[dict[str, Any]]) -> list[int]:
+    available = sorted({_candidate_id(rec) for rec in records if _candidate_id(rec) > 0})
+    wanted = list(range(BATCH_CANDIDATE_START, BATCH_CANDIDATE_END + 1))
+    return [candidate for candidate in wanted if candidate in available]
+
+
+def _timestamped_subdir(parent: Path, stem: str) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    base = parent / f"{stem}_{stamp}"
+    if not base.exists():
+        return base
+    for idx in range(1, 100):
+        candidate = parent / f"{stem}_{stamp}_{idx:02d}"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Could not allocate a unique output directory under {parent}")
 
 
 def _load_history(candidate_record: dict[str, Any]) -> list[dict[str, Any]]:
@@ -209,11 +242,50 @@ def run_one(result_path: Path, out_dir: Path, candidate: int) -> Path:
     return out_path
 
 
+def run_all(result_path: Path, out_parent: Path) -> list[Path]:
+    payload = _load_pickle(result_path)
+    records = _candidate_records(payload)
+    if not records:
+        raise FileNotFoundError(f"No prest2 candidate records found in: {result_path}")
+
+    candidate_ids = _batch_candidate_ids(records)
+    if not candidate_ids:
+        raise FileNotFoundError(
+            f"No prest2 candidate B records found in the requested range "
+            f"{BATCH_CANDIDATE_START}..{BATCH_CANDIDATE_END}: {result_path}"
+        )
+
+    out_dir = _timestamped_subdir(out_parent, BATCH_DIR_STEM)
+    out_paths: list[Path] = []
+    for candidate in candidate_ids:
+        candidate_record = _find_candidate_record(records, candidate)
+        history = _load_history(candidate_record)
+        out_paths.append(plot_candidate_losses(candidate_record, history, out_dir))
+
+    print(f"Saved {len(out_paths)} plots to: {out_dir}")
+    return out_paths
+
+
 def main() -> None:
-    result_path = Path(sys.argv[1]).resolve() if len(sys.argv) >= 2 else DEFAULT_RESULT_PATH
-    out_dir = Path(sys.argv[2]).resolve() if len(sys.argv) >= 3 else DEFAULT_OUT_DIR
-    candidate = int(sys.argv[3]) if len(sys.argv) >= 4 else DEFAULT_CANDIDATE
-    run_one(result_path, out_dir, candidate)
+    parser = argparse.ArgumentParser(
+        description=(
+            "Plot prest2 candidate loss curves. By default, generate candidate B 1..20 "
+            "into one timestamped visualization subfolder."
+        )
+    )
+    parser.add_argument("result_path", nargs="?", type=Path, default=DEFAULT_RESULT_PATH)
+    parser.add_argument("out_dir", nargs="?", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("candidate_positional", nargs="?", type=int, help="legacy positional candidate id")
+    parser.add_argument("--candidate", "-c", type=int, help="generate only one candidate B id")
+    args = parser.parse_args()
+
+    result_path = args.result_path.resolve()
+    out_dir = args.out_dir.resolve()
+    candidate = args.candidate if args.candidate is not None else args.candidate_positional
+    if candidate is not None:
+        run_one(result_path, out_dir, int(candidate))
+    else:
+        run_all(result_path, out_dir)
 
 
 if __name__ == "__main__":

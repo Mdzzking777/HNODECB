@@ -1,0 +1,27 @@
+AFM05 actuation force from in-air trajectory
+============================================
+
+source: AFM05/DATAgeneration/PS_cantilever_disp_in_air_file_scan04143.imp_.npz
+
+Definition:
+  x(t) = eta1_in_air(t), from the in-air file, in SI meters.
+  F_actuation(t) = m_eff*xddot(t) + c_eff*xdot(t) + k_eff*x(t)
+
+No scalar Fd is estimated here.
+No pointwise division by cos(omega1*t)+cos(omega2*t) is used.
+
+Known values:
+  k_eff [N/m]       = 2.407942342462947e+01
+  omega0 [rad/s]    = 1.035177889359067e+06
+  Q_factor          = 4.864358392333193e+02
+  m_eff [kg]        = 2.247067452234971e-11
+  c_eff [N*s/m]     = 4.781955511580490e-08
+
+Result:
+  F_actuation(t) min [N]  = -6.207767613780244e-09
+  F_actuation(t) max [N]  = 7.338647557971625e-09
+  F_actuation(t) mean [N] = 3.903748225521995e-18
+  F_actuation(t) rms [N]  = 3.282480804437983e-09
+
+Stored array in source NPZ:
+  eta1_in_air_F_actuation_t

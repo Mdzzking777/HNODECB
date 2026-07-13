@@ -1,0 +1,101 @@
+AFM04 / AFM05 general KAN input normalizer definition
+====================================================
+
+Purpose
+-------
+This note records the general definition of the normalizer used before state
+inputs enter the KAN/NN component in AFM04 and AFM05. It intentionally avoids
+case-specific details such as which stage/run uses which x3 reference source.
+
+
+Core definition
+---------------
+For each state input x entering KAN, the normalized input is:
+
+  x_norm = (x - mu) / s
+
+where:
+
+  mu = reference center of that input dimension
+  s  = reference scale of that input dimension
+
+For the three KAN state inputs:
+
+  [x1, x2, x3]
+
+the normalized vector is:
+
+  x1_norm = (x1 - mu_x1) / s_x1
+  x2_norm = (x2 - mu_x2) / s_x2
+  x3_norm = (x3 - mu_x3) / s_x3
+
+
+Mean and scale formulas
+-----------------------
+If a reference trajectory x(t_i), i = 1,...,N is available, then:
+
+  mu_x = mean(x)
+       = (1 / N) * sum_i x(t_i)
+
+  s_x  = std(x)
+       = sqrt((1 / N) * sum_i (x(t_i) - mu_x)^2)
+
+In implementation, a safety fallback may be used if std(x) is numerically zero
+or non-finite:
+
+  if std(x) is invalid or too small:
+      s_x = max(abs(x))
+  if this is still invalid or too small:
+      s_x = 1
+
+
+x1 and x2
+---------
+For x1 and x2, the reference trajectory is normally the observed / training
+window trajectory used by the current stage:
+
+  mu_x1 = mean(x1_train)
+  s_x1  = std(x1_train)
+
+  mu_x2 = mean(x2_train)
+  s_x2  = std(x2_train)
+
+
+x3
+--
+The general formula is the same:
+
+  x3_norm = (x3 - mu_x3) / s_x3
+
+The only difference is that x3 may not be directly observed in AFM05. Therefore
+the reference used to define mu_x3 and s_x3 may come from one of several legal
+sources, depending on the stage:
+
+  1. a prior/reference center and scale,
+  2. an initial-condition based reference,
+  3. a predicted rollout trajectory x3_pred(t) from an earlier stage.
+
+If the reference is a predicted rollout trajectory, then:
+
+  mu_x3 = mean(x3_pred)
+  s_x3  = std(x3_pred)
+
+
+Important interpretation
+------------------------
+The normalizer is only a preprocessing map for KAN inputs. It does not change
+the physical ODE/RHS variables or the SI-unit mechanistic equations.
+
+Physical quantities in the RHS, mechanistic equations, and loss remain in their
+physical units. Only the state values passed into KAN are transformed into the
+normalized coordinates.
+
+
+One-line summary
+----------------
+For AFM04 and AFM05 in general:
+
+  KAN receives x_norm = (x - mu) / s,
+
+where mu is a stage-defined reference center and s is a stage-defined reference
+scale for each state input dimension.

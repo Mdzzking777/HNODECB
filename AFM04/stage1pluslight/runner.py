@@ -598,7 +598,7 @@ def run_shard_mainloop(
             f"window_mode={config.window_mode} "
             f"backend=kan_rs_{config.window_mode} "
             f"soft_mask=fixed(s0=20*a0,alpha=0.25/a0,m_min=0) "
-            f"AGU=observed_x1_x2_neutral_axis "
+            f"AGU=normalized_observed_x1_x2_neutral_axis "
             f"contact_noncontact_weight=1:1 "
             f"resume_reason={context.resume_reason or 'fresh_start'} "
             f"completed={len(context.trial_parameters)} "

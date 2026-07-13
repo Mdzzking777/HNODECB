@@ -1,0 +1,338 @@
+AFM04/AFM05 loss formula: thesis-level description and appendix-level details
+================================================================================
+
+Purpose
+-------
+This note separates the loss description into two layers:
+
+1. A thesis-main-text version: what components are included and what each component
+   means physically.
+2. An appendix version: the explicit mathematical formulas and the meaning of each
+   symbol.
+
+The description below follows the current AFM04/AFM05 implementation. In both
+AFM04 and AFM05, the training loss is built from observable trajectory consistency
+and observable acceleration consistency, with soft range penalties for model-side
+x3 and Fts. AFM04 may have simulated true x3 and true Fts available for monitoring,
+but these are diagnostics unless explicitly stated otherwise; they are not the main
+supervised terms in the current stage1pluslight/stage2light loss.
+
+
+Part I. Thesis-main-text version
+================================
+
+The objective function used to train and rank the hybrid AFM model combines four
+terms:
+
+    L = L_state + L_x2dot + L_x3,range + L_Fts,range .
+
+When multiple shooting is enabled, an additional continuity term may be added:
+
+    L = L_state + L_x2dot + L_x3,range + L_Fts,range + L_cont .
+
+In the single-shooting setting used in most of the present runs, L_cont = 0.
+
+
+1. Observable state loss, L_state
+--------------------------------
+
+This term compares the predicted observable states with the measured or simulated
+observable trajectory. In the present AFM formulation, the directly supervised
+state components are tip displacement x1 and tip velocity x2.
+
+Physical meaning:
+
+    The hybrid model must reproduce the observed tip-side motion. This is the
+    dominant data-fitting term and is one of the main sources of information used
+    to rank mechanistic candidates.
+
+
+2. Observable acceleration loss, L_x2dot
+---------------------------------------
+
+This term compares the acceleration implied by the model RHS with the reference
+tip acceleration x2dot.
+
+Physical meaning:
+
+    Even if the predicted x1 and x2 trajectories are close to the observed
+    trajectory, the governing differential equation should also imply the correct
+    local acceleration. This term encourages consistency between the learned force
+    term, the mechanistic parameters, and the observed dynamics.
+
+
+3. Model-side x3 range penalty, L_x3,range
+-----------------------------------------
+
+This is a soft guardrail on the predicted sample-side/internal displacement x3.
+It does not compare x3 against a true x3 label in AFM05.
+
+Physical meaning:
+
+    The term prevents obviously nonphysical x3 amplitudes, but it is not a direct
+    identifiability signal for x3. When the predicted x3 stays inside the allowed
+    range, this term is nearly inactive and has little effect on the final ranking.
+
+
+4. Model-side Fts range penalty, L_Fts,range
+-------------------------------------------
+
+This is a soft guardrail on the predicted tip-sample interaction force Fts. It
+does not compare Fts against a true force label in AFM05.
+
+Physical meaning:
+
+    The term discourages force amplitudes that are clearly outside a plausible
+    physical scale. As with the x3 range penalty, it is a weak constraint rather
+    than a direct force-supervision term.
+
+
+5. Optional multiple-shooting continuity loss, L_cont
+----------------------------------------------------
+
+When multiple shooting is enabled, the trajectory is rolled out in segments. The
+continuity term penalizes mismatches between the end of one segment and the start
+of the next segment.
+
+Physical meaning:
+
+    This term keeps independently integrated trajectory segments mutually
+    consistent. It is zero in single-shooting runs.
+
+
+Important interpretation
+------------------------
+
+The actual ranking signal is dominated by observable errors:
+
+    L_state + L_x2dot .
+
+The range penalties are best described as soft physical guardrails. They help
+avoid pathological amplitudes, but they do not by themselves prove that x3, Fts,
+ks, or cs are physically correct. This distinction is important in the thesis
+because it avoids overstating the role of the x3 and Fts range terms.
+
+
+Part II. Appendix-level formula
+===============================
+
+Notation
+--------
+
+Let I be the set of time indices used for the current train or validation split.
+For each time point t_i, the model rollout gives
+
+    xhat(t_i) = [xhat_1,i, xhat_2,i, xhat_3,i]^T .
+
+The observed/reference quantities used by the loss are
+
+    x_1,i, x_2,i, and x2dot_i .
+
+The force predicted by the hybrid model is
+
+    Fhat_ts,i = F_KAN(xhat(t_i)) ,
+
+and the acceleration implied by the RHS is
+
+    xhat2dot_i = f_2(xhat(t_i), t_i) .
+
+The contact/noncontact weighting is written as
+
+    w_i = w_contact      if the point is in contact,
+    w_i = w_noncontact   otherwise.
+
+In the current runs,
+
+    w_contact = 1,
+    w_noncontact = 1,
+
+so this weighting usually reduces to uniform weighting. It is still useful to keep
+the general notation because the code supports contact-dependent weights.
+
+Define the weighted normalization denominator
+
+    W = sum_{i in I} w_i .
+
+
+1. Observable state loss
+------------------------
+
+The observable state loss is
+
+    L_state =
+        (1 / W) sum_{i in I} w_i [
+            ((xhat_1,i - x_1,i) / s_x1)^2
+          + ((xhat_2,i - x_2,i) / s_x2)^2
+        ] .
+
+The scales are RMS-type scales, floored by a small positive epsilon:
+
+    s_x1 = max(RMS({x_1,i}_{i in I}), eps),
+    s_x2 = max(RMS({x_2,i}_{i in I}), eps).
+
+Here
+
+    RMS(y) = sqrt(mean_i y_i^2).
+
+In the implementation, eps is represented by SCALE_EPS.
+
+
+2. Observable acceleration loss
+-------------------------------
+
+The acceleration loss is
+
+    L_x2dot =
+        (1 / W) sum_{i in I} w_i [
+            ((xhat2dot_i - x2dot_i) / s_x2dot)^2
+        ] ,
+
+with
+
+    s_x2dot = max(RMS({x2dot_i}_{i in I}), eps).
+
+The predicted acceleration xhat2dot_i is not obtained by finite-differencing the
+predicted x2 trajectory. It is evaluated from the model RHS:
+
+    xhat2dot_i = f_2(xhat(t_i), t_i).
+
+
+3. Smooth positive-part function
+--------------------------------
+
+Both range penalties use a smooth approximation of max(z, 0):
+
+    softplus_eps(z) = eps log(1 + exp(z / eps)).
+
+Thus, when z <= 0, the penalty is nearly zero; when z > 0, the penalty grows
+approximately like z.
+
+
+4. x3 range penalty
+-------------------
+
+Let A_x3 be the allowed x3 amplitude scale. The range penalty is
+
+    L_x3,range =
+        lambda_x3 (1 / W) sum_{i in I} w_i [
+            softplus_eps3(|xhat_3,i| - A_x3) / A_x3
+        ]^2 .
+
+In code,
+
+    lambda_x3 = X3_RANGE_WEIGHT.
+
+For AFM04, the historical fixed scale is
+
+    A_x3 = X3_RANGE_AMP = 100e-9 m.
+
+For current AFM05, the effective scale is computed from the current observed
+window:
+
+    A_x3 = max(mean(|x_1| over the window), X3_RANGE_EPS).
+
+This choice makes the x3 guardrail comparable to the observed tip-displacement
+scale rather than relying on an unavailable true x3 trajectory.
+
+
+5. Fts range penalty
+--------------------
+
+Let A_F be the allowed force amplitude scale. The range penalty is
+
+    L_Fts,range =
+        lambda_F (1 / W) sum_{i in I} w_i [
+            softplus_epsF(|Fhat_ts,i| - A_F) / A_F
+        ]^2 .
+
+In code,
+
+    lambda_F = FTS_RANGE_WEIGHT.
+
+For AFM04, the historical fixed scale is
+
+    A_F = FTS_RANGE_AMP = 1e-8 N.
+
+For current AFM05, the effective scale is computed from the current actuation
+force over the window:
+
+    A_F = max(mean(|F_actuation(t)| over the window), FTS_RANGE_EPS).
+
+
+6. Optional multiple-shooting continuity loss
+---------------------------------------------
+
+If the trajectory is integrated in multiple shooting groups, let xhat_g,end be
+the final predicted state of group g, and let xhat_{g+1,start} be the initial
+state of the next group. A generic continuity penalty is
+
+    L_cont =
+        lambda_cont sum_g || xhat_g,end - xhat_{g+1,start} ||^2 .
+
+For single shooting,
+
+    L_cont = 0.
+
+
+7. Total loss
+-------------
+
+The single-shooting total loss is
+
+    L =
+        L_state
+      + L_x2dot
+      + L_x3,range
+      + L_Fts,range .
+
+With multiple shooting,
+
+    L =
+        L_state
+      + L_x2dot
+      + L_x3,range
+      + L_Fts,range
+      + L_cont .
+
+Some stage1pluslight code paths also support an optional L2 penalty on model
+parameters:
+
+    L_total = L + lambda_L2 ||theta||_2^2 .
+
+This term is optional and should only be mentioned if it is enabled in the
+particular experiment being described.
+
+
+8. Diagnostics that should not be confused with the loss
+-------------------------------------------------------
+
+The code may report reconstruction percentages or true-side quantities such as
+
+    x1_rec, x2_rec, x3_rec, x2dot_rec, Fts_rec,
+    ks_err_pct, cs_err_pct.
+
+These are diagnostics or post-hoc monitoring quantities. Unless explicitly wired
+into the objective, they are not part of the training/ranking loss.
+
+For AFM05 in particular, true x3 and true Fts are not available and therefore do
+not enter the loss. This is why the AFM05 loss should be described as
+observable-driven rather than fully supervised in the hidden/internal variables.
+
+
+Recommended thesis wording
+==========================
+
+A concise thesis-safe description is:
+
+    The loss function combines normalized errors in the observable tip
+    displacement and velocity with a normalized error in the model-implied tip
+    acceleration. Soft range penalties are added to prevent nonphysical amplitudes
+    in the predicted sample motion and tip-sample force. These range penalties act
+    as guardrails rather than direct supervision of the hidden state or interaction
+    force.
+
+For AFM05, one can add:
+
+    Because the experimental setting does not provide labels for x3 or Fts, these
+    quantities are not directly supervised. The identifiability information enters
+    through the observable trajectory and acceleration consistency.

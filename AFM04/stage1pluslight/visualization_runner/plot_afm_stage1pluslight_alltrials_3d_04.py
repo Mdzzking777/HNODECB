@@ -79,41 +79,10 @@ def window_display(role: str, fallback_idx: int) -> str:
 
 
 def metric_specs(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    roles = window_roles(records)
-    if not roles:
-        return [{"slug": "val_loss", "label": "val_loss", "title": "val_loss", "idx": 0, "role": "single"}]
-    if len(roles) == 1:
-        display = window_display(roles[0], 1)
-        return [{"slug": f"{display.lower()}_val_loss", "label": f"{display} val_loss", "title": f"{display} val_loss ({roles[0]})", "idx": 1, "role": roles[0]}]
-    specs: list[dict[str, Any]] = [{"slug": "mean_val_loss", "label": "mean val_loss", "title": "mean val_loss", "idx": 0, "role": "mean"}]
-    for i, role in enumerate(roles, start=1):
-        display = window_display(role, i)
-        specs.append({"slug": f"{display.lower()}_val_loss", "label": f"{display} val_loss", "title": f"{display} val_loss ({role})", "idx": i, "role": role})
-    return specs
+    return [{"slug": "train_loss", "label": "train_loss", "title": "train_loss", "idx": 0, "role": "single"}]
 
 
 def metric_value(rec: dict[str, Any], spec: dict[str, Any]) -> float:
-    if int(spec["idx"]) > 0:
-        vals = param_or(field_or(rec, "params", {}), "window_val_losses", None)
-        if isinstance(vals, list) and len(vals) >= int(spec["idx"]):
-            try:
-                return finite_float_or(vals[int(spec["idx"]) - 1])
-            except Exception:
-                return math.nan
-    return finite_float_or(
-        field_or(rec, "val_loss", math.nan),
-        field_or(rec, "val_loss_start", math.nan),
-    )
-
-
-def metric_train_value(rec: dict[str, Any], spec: dict[str, Any]) -> float:
-    if int(spec["idx"]) > 0:
-        vals = param_or(field_or(rec, "params", {}), "window_train_losses", None)
-        if isinstance(vals, list) and len(vals) >= int(spec["idx"]):
-            try:
-                return finite_float_or(vals[int(spec["idx"]) - 1])
-            except Exception:
-                return math.nan
     return finite_float_or(field_or(rec, "train_loss", math.nan))
 
 
@@ -152,21 +121,7 @@ def color_metric_values(records: list[dict[str, Any]]) -> tuple[str, list[float]
 
 
 def all_window_lines(rec: dict[str, Any]) -> str:
-    params = field_or(rec, "params", {})
-    roles = param_or(params, "window_roles", [])
-    vals = param_or(params, "window_val_losses", [])
-    trains = param_or(params, "window_train_losses", [])
-    if not isinstance(roles, list) or not isinstance(vals, list):
-        return ""
-    n = min(len(roles), len(vals))
-    if n == 0:
-        return ""
-    chunks: list[str] = []
-    for i in range(n):
-        role = str(roles[i])
-        train_text = fmt_e_html(trains[i]) if isinstance(trains, list) and len(trains) > i else "None"
-        chunks.append(f"<br>W{i+1} ({role}) val_loss={fmt_e_html(vals[i])}<br>W{i+1} ({role}) train_loss={train_text}")
-    return "".join(chunks)
+    return ""
 
 
 def hover_text(rec: dict[str, Any], spec: dict[str, Any]) -> str:
@@ -175,19 +130,13 @@ def hover_text(rec: dict[str, Any], spec: dict[str, Any]) -> str:
     trial_id = param_or(params, "trial_id", -1)
     ks0 = param_or(params, "ks0", field_or(rec, "ks_hat", math.nan))
     cs0 = param_or(params, "cs0", field_or(rec, "cs_hat", math.nan))
-    z_val = metric_value(rec, spec)
-    z_train = metric_train_value(rec, spec)
-    mean_val_loss = field_or(rec, "val_loss", field_or(rec, "val_loss_start", math.nan))
-    mean_train_loss = field_or(rec, "train_loss", math.nan)
+    train_loss = metric_value(rec, spec)
     nn_err = nn_err_value(rec)
     x3_rec = parts.get("x3_rec", math.nan) if isinstance(parts, dict) else math.nan
 
     bits = [
         f"trial={trial_id}",
-        f"<br>{spec['label']}={fmt_e_html(z_val)}",
-        f"<br>{spec['label']} train={fmt_e_html(z_train)}",
-        f"<br>mean val_loss={fmt_e_html(mean_val_loss)}",
-        f"<br>mean train_loss={fmt_e_html(mean_train_loss)}",
+        f"<br>train_loss={fmt_e_html(train_loss)}",
         f"<br>ks0={fmt_e_html(ks0)}",
         f"<br>cs0={fmt_e_html(cs0)}",
         f"<br>ks_end={fmt_e_html(field_or(rec, 'ks_hat', math.nan))}",

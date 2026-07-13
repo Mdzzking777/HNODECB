@@ -130,16 +130,33 @@ def _compute_true_fts(
     return f_static + kv_coeff * delta_dot
 
 
-def _state_normalizer(train_states_all: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Identity placeholders for raw-input formal KAN.
+def _safe_scale(values: np.ndarray) -> float:
+    scale = float(np.std(np.asarray(values, dtype=float)))
+    if not np.isfinite(scale) or scale <= 1.0e-30:
+        scale = float(np.max(np.abs(np.asarray(values, dtype=float))))
+    if not np.isfinite(scale) or scale <= 1.0e-30:
+        scale = 1.0
+    return scale
 
-    The KAN input coordinates are physical [x1, x2, x3] values.  We keep
-    state_mean/state_scale only for payload compatibility and deliberately do
-    not compute hidden true-x3 statistics.
+
+def _state_normalizer(train_states_all: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Formal KAN input normalizer without hidden-true x3 statistics.
+
+    x1/x2 use observed train-window statistics.  x3 deliberately borrows the
+    x1 coordinate scale (mean=x1_mean, scale=0.1*x1_scale), so no true or
+    predicted hidden x3 trajectory can guide the input coordinate system.
     """
 
-    dim = int(np.asarray(train_states_all).shape[1])
-    return np.zeros(dim, dtype=float), np.ones(dim, dtype=float)
+    states = np.asarray(train_states_all, dtype=float)
+    if states.ndim != 2 or states.shape[1] < 3:
+        raise ValueError(f"train_states_all must have shape (n, >=3), got {states.shape}")
+    x1_mean = float(np.mean(states[:, 0]))
+    x2_mean = float(np.mean(states[:, 1]))
+    x1_scale = _safe_scale(states[:, 0])
+    x2_scale = _safe_scale(states[:, 1])
+    mean = np.asarray([x1_mean, x2_mean, x1_mean], dtype=float)
+    scale = np.asarray([x1_scale, x2_scale, max(0.1 * x1_scale, 1.0e-30)], dtype=float)
+    return mean, scale
 
 
 def load_stage1_payload(path: str | Path) -> dict[str, Any]:

@@ -31,6 +31,12 @@ $schedule = Get-Content -LiteralPath $schedulePath -Raw | ConvertFrom-Json
 $stage2Epochs = [int]$schedule.epochs
 $stage2AdamEpochs = [int]$schedule.adam_epochs
 $stage2LbfgsEpochs = [int]$schedule.lbfgs_epochs
+if ($stage2AdamEpochs -gt $stage2Epochs) {
+  $stage2AdamEpochs = $stage2Epochs
+}
+if (($stage2AdamEpochs + $stage2LbfgsEpochs) -ne $stage2Epochs) {
+  $stage2LbfgsEpochs = [Math]::Max(0, $stage2Epochs - $stage2AdamEpochs)
+}
 
 $staleStage2Env = @(Get-ChildItem Env:HNODECB_AFM04_STAGE2LIGHT_* -ErrorAction SilentlyContinue)
 foreach ($item in $staleStage2Env) {
@@ -45,9 +51,9 @@ Remove-Item Env:\HNODECB_AFM04_STAGE2LIGHT_INPUT_RANK -ErrorAction SilentlyConti
 Remove-Item Env:\HNODECB_AFM04_STAGE2LIGHT_INPUT_TRIAL_ID -ErrorAction SilentlyContinue
 Remove-Item Env:\HNODECB_AFM04_STAGE2LIGHT_INPUT_MECH_WINNER -ErrorAction SilentlyContinue
 $env:HNODECB_AFM04_STAGE2LIGHT_WARMSTART_SOURCE = "prest2"
-$env:HNODECB_AFM04_STAGE2LIGHT_INPUT_CANDIDATE = "19"
+$env:HNODECB_AFM04_STAGE2LIGHT_INPUT_CANDIDATE = "20"
 $env:HNODECB_AFM04_STAGE2LIGHT_PREST2_INPUT_PATH = Join-Path $repoRoot "AFM04\prestage2\results\afm_prest2_04_candidates_b.pkl"
-$env:HNODECB_AFM04_STAGE2LIGHT_RESUME = "0"
+$env:HNODECB_AFM04_STAGE2LIGHT_RESUME = "1"
 $env:HNODECB_AFM04_STAGE2LIGHT_EPOCHS = "$stage2Epochs"
 $env:HNODECB_AFM04_STAGE2LIGHT_ADAM_EPOCHS = "$stage2AdamEpochs"
 $env:HNODECB_AFM04_STAGE2LIGHT_LBFGS_EPOCHS = "$stage2LbfgsEpochs"
@@ -62,6 +68,7 @@ $env:HNODECB_AFM04_STAGE2LIGHT_SOFT_MASK_ALPHA_MAX_A0 = "5.0"
 $env:HNODECB_AFM04_STAGE2LIGHT_LR = "1e-3"
 $env:HNODECB_AFM04_STAGE2LIGHT_LR_ADAPT = "0"
 $env:HNODECB_AFM04_STAGE2LIGHT_LR_ADAPT_UP_ONLY = "0"
+$env:HNODECB_AFM04_STAGE2LIGHT_MECH_PARAMETERIZATION = "log_relative"
 $env:HNODECB_AFM04_STAGE2LIGHT_LR_MIN = "1e-6"
 $env:HNODECB_AFM04_STAGE2LIGHT_LR_MAX = "1e-2"
 $env:HNODECB_AFM04_STAGE2LIGHT_LR_ETA = "0.05"
@@ -80,7 +87,7 @@ $env:HNODECB_AFM04_STAGE2LIGHT_ARMIJO_C1 = "1e-4"
 $env:HNODECB_AFM04_STAGE2LIGHT_BACKTRACK_SHRINK = "0.5"
 $env:HNODECB_AFM04_STAGE2LIGHT_BACKTRACK_MAX = "10"
 $env:HNODECB_AFM04_STAGE2LIGHT_BACKTRACK_MIN_ALPHA = "1e-8"
-$env:HNODECB_AFM04_STAGE2LIGHT_LBFGS_ENABLED = "1"
+$env:HNODECB_AFM04_STAGE2LIGHT_LBFGS_ENABLED = if ($stage2LbfgsEpochs -gt 0) { "1" } else { "0" }
 $env:HNODECB_AFM04_STAGE2LIGHT_LBFGS_STRONG_WOLFE = "1"
 $env:HNODECB_AFM04_STAGE2LIGHT_LBFGS_LR = "1.0"
 $env:HNODECB_AFM04_STAGE2LIGHT_LBFGS_MAX_ITER = "1"
@@ -99,7 +106,7 @@ Write-Host "Repo root -> $repoRoot"
 Write-Host "Python    -> $pythonExe"
 Write-Host "Logs dir  -> $driverLogHint"
 Write-Host "Hermetic env -> cleared $($staleStage2Env.Count) stale STAGE2LIGHT env vars"
-Write-Host "Candidate -> prest2 candidate B 19 / source rank 1; start state is original st1pl initial point"
+Write-Host "Candidate -> prest2 candidate B 20 / source mech winner 74 / st1pl rank 704 / trial 21382; start state is original st1pl initial point"
 Write-Host "GBO mode  -> soft mask ON, native Adam/AMSGrad $stage2AdamEpochs + LBFGS $stage2LbfgsEpochs, early stop OFF"
 
 & $pythonExe -m AFM04.stage2light.main --driver

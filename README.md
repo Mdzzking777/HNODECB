@@ -49,3 +49,21 @@ If you use this code for academic research, you are encouraged to cite the follo
 ## Questions
 
 To get help on how to use the code, simply open an issue in the GitHub "Issues" section.
+
+## AFM04 and AFM05 Python workflows
+
+The AFM extensions use a separate Python environment alongside the original
+Julia project. From the repository root on Windows, create the environment and
+install the required packages with:
+
+```powershell
+python -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install --upgrade pip
+& .\.venv\Scripts\python.exe -m pip install -r requirements-afm.txt
+```
+
+The source-controlled AFM05 dataset under `AFM05/datasets/e0.0/data` contains
+the NPZ inputs required by the runners. Runtime logs, checkpoints, results,
+candidate workspaces, generated visualizations, and experiment archives are
+intentionally excluded from version control and are recreated locally by the
+pipeline.

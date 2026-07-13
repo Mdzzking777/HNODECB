@@ -1,0 +1,189 @@
+AFM04 / AFM05 general KAN output gain definition
+================================================
+
+Purpose
+-------
+This note records the general definition of the scalar output gain used by the
+KAN/NN force component in AFM04 and AFM05. It is written in the same spirit as
+the normalizer note: it describes the shared mechanism, not one specific run.
+
+
+Core force chain
+----------------
+For a state vector
+
+  x = [x1, x2, x3]
+
+the KAN/NN force-side output is constructed as:
+
+  x_norm   = normalizer(x)
+  y_raw    = KAN_raw(x_norm)
+  y_masked = soft_mask(x) * y_raw
+  g_nn     = exp(log_gnn)
+  F_NN     = g_nn * y_masked
+
+Equivalently:
+
+  F_NN = exp(log_gnn) * soft_mask(x) * KAN_raw((x - mu) / s)
+
+In the logs this is usually described as:
+
+  target = soft_mask * g_nn * nn_raw
+
+
+Parameterization
+----------------
+The stored model parameter is log_gnn, not g_nn directly:
+
+  g_nn = exp(log_gnn)
+
+This guarantees:
+
+  g_nn > 0
+
+Before amplitude initialization:
+
+  log_gnn = 0
+  g_nn    = 1
+
+If gnn_learnable is True, log_gnn is optimized during gradient-based training.
+If gnn_learnable is False, the gain remains fixed after initialization.
+
+
+Gain initialization
+-------------------
+Gain initialization is an amplitude-matching step. Given training states x_i
+and a legal reference force F_ref(t_i), the code first computes the masked raw
+KAN output:
+
+  y_masked_i = soft_mask(x_i) * KAN_raw(normalizer(x_i))
+
+Then it computes 95 percent absolute-amplitude references:
+
+  A_ref = q95(|F_ref|)
+  A_raw = q95(|y_masked|)
+
+where q95 means the empirical 95 percent quantile.
+
+The initialized gain is:
+
+  if A_ref is invalid or too small:
+      g_nn = 1
+  else:
+      g_nn = A_ref / max(A_raw, 1e-12)
+
+and the model stores:
+
+  log_gnn = log(max(g_nn, 1e-12))
+
+So the gain does not define the shape of the KAN function. It only rescales the
+amplitude of the already-created masked raw KAN output.
+
+
+Why amplitude calibration matters
+---------------------------------
+The gain can be viewed as an output-side amplitude calibrator, similar in spirit
+to a denormalizer. It does not prescribe the fine details of the KAN raw output,
+such as its local shape, phase, or state dependence. Instead, it places the raw
+KAN force contribution onto a physically reasonable amplitude scale before the
+rollout and optimization proceed.
+
+This amplitude calibration is not a cosmetic detail. Back-propagation can, in
+principle, learn the correct force amplitude later. However, if the initial
+masked KAN output is orders of magnitude larger than the legal reference force
+amplitude, the early rollout can immediately enter a poorly conditioned regime:
+
+  - force residuals become dominated by amplitude error,
+  - gradients can become very large or badly scaled,
+  - the ODE rollout can become numerically stiff,
+  - optimizer steps may be rejected or pushed toward poor local basins.
+
+Therefore, initializing g_nn by matching a robust amplitude statistic, here the
+95 percent absolute quantile, gives the later optimization a much cleaner and
+less stiff starting point. In this sense, getting the amplitude scale right is
+almost as important as preserving the detailed functional shape of the KAN.
+
+
+Reference force source
+----------------------
+AFM04:
+
+  F_ref is the synthetic / simulated true tip-sample force F_ts in the training
+  window. This is legal for AFM04 because the synthetic generation pipeline has
+  access to true F_ts.
+
+AFM05:
+
+  F_ref is the reconstructed pixel-specific tip-sample force used for gain
+  amplitude initialization. It is not synthetic oracle truth. AFM05 does not
+  have true x3, F_ts, k_s, or c_s.
+
+General rule:
+
+  F_ref is only an amplitude reference for initializing g_nn. It is not, by
+  itself, an additional loss term.
+
+
+Stage behavior
+--------------
+stage1pluslight / st1pl:
+
+  The KAN parameters are random-searched. The gain is initialized once from the
+  legal force reference. In AFM05 st1pl, gnn_learnable defaults to False, so the
+  initialized gain is fixed during the random-search rollout. The saved result
+  stores this value as nn_gain.
+
+prestage2 / prest2 and stage2light / st2l:
+
+  The model is optimized by gradient-based methods. In the AFM04/AFM05 stage2
+  configuration, gnn_learnable defaults to True, so log_gnn can be updated along
+  with the other trainable parameters. When the x3 normalizer/support is refit
+  before optimization, gain may be reinitialized because A_raw changes.
+
+step3 identifiability:
+
+  log_gnn is treated as the gain parameter group. In AFM04 step3 plots this is
+  reported as the Gain component.
+
+
+Important distinction from the normalizer
+-----------------------------------------
+The normalizer rescales KAN inputs:
+
+  x_norm = (x - mu) / s
+
+The gain rescales the KAN output:
+
+  F_NN = g_nn * soft_mask(x) * KAN_raw(x_norm)
+
+Therefore, gain does not change x1, x2, x3, k_s, c_s, or their physical units.
+It changes only the global amplitude of the neural force contribution.
+
+
+Reproducibility implication
+---------------------------
+For two runs to have the same effective gain initialization, it is not enough
+to use the same seed. They must also use the same:
+
+  - raw KAN function,
+  - state normalizer,
+  - soft mask,
+  - training states,
+  - reference force,
+  - dtype / device numerical behavior.
+
+Because:
+
+  g_nn = q95(|F_ref|) / q95(|soft_mask * KAN_raw|)
+
+even identical KAN raw parameters can receive different gains if the masked raw
+output or the reference amplitude changes.
+
+
+One-line summary
+----------------
+The KAN gain is a positive scalar amplitude calibrator:
+
+  F_NN = exp(log_gnn) * soft_mask(x) * KAN_raw((x - mu) / s)
+
+initialized by matching the 95 percent amplitude of a legal force reference.

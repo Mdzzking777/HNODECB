@@ -136,6 +136,7 @@ class Stage2LightConfig:
     stage1_input_mech_winner: int
     prestage2_input_candidate: int
     resume_from_checkpoint: bool
+    mech_parameterization: str
     ks_lo: float
     ks_hi: float
     cs_lo: float
@@ -221,6 +222,29 @@ def default_config(repo_root: str | Path | None = None) -> Stage2LightConfig:
     val_eval_mode = os.environ.get("HNODECB_AFM04_STAGE2LIGHT_VAL_EVAL_MODE", "per_epoch").strip().lower()
     if val_eval_mode not in ("per_epoch", "final_only"):
         val_eval_mode = "per_epoch"
+    mech_parameterization_raw = os.environ.get(
+        "HNODECB_AFM04_STAGE2LIGHT_MECH_PARAMETERIZATION",
+        "log_relative",
+    ).strip().lower().replace("-", "_")
+    mech_parameterization_aliases = {
+        "direct": "direct_unbounded",
+        "physical": "direct_unbounded",
+        "unbounded": "direct_unbounded",
+        "direct_unbounded": "direct_unbounded",
+        "exp": "log_relative",
+        "log": "log_relative",
+        "relative": "log_relative",
+        "log_relative": "log_relative",
+        "log_relative_bounded": "log_relative",
+        "sigmoid": "sigmoid_bounded",
+        "bounded": "sigmoid_bounded",
+        "sigmoid_bound": "sigmoid_bounded",
+        "sigmoid_bounds": "sigmoid_bounded",
+        "sigmoid_bounded": "sigmoid_bounded",
+        "legacy": "sigmoid_bounded",
+        "legacy_sigmoid": "sigmoid_bounded",
+    }
+    mech_parameterization = mech_parameterization_aliases.get(mech_parameterization_raw, "log_relative")
 
     return Stage2LightConfig(
         repo_root=repo_root,
@@ -333,6 +357,7 @@ def default_config(repo_root: str | Path | None = None) -> Stage2LightConfig:
         stage1_input_mech_winner=max(0, _env_int("HNODECB_AFM04_STAGE2LIGHT_INPUT_MECH_WINNER", 0)),
         prestage2_input_candidate=max(1, _env_int("HNODECB_AFM04_STAGE2LIGHT_INPUT_CANDIDATE", 1)),
         resume_from_checkpoint=_env_bool("HNODECB_AFM04_STAGE2LIGHT_RESUME", True),
+        mech_parameterization=mech_parameterization,
         ks_lo=_env_float("HNODECB_AFM04_STAGE2LIGHT_KS_LO", float(KS_BOUNDS[0])),
         ks_hi=_env_float("HNODECB_AFM04_STAGE2LIGHT_KS_HI", float(KS_BOUNDS[1])),
         cs_lo=_env_float("HNODECB_AFM04_STAGE2LIGHT_CS_LO", float(CS_BOUNDS[0])),

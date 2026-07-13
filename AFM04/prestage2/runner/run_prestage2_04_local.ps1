@@ -28,7 +28,15 @@ if (-not (Test-Path -Path $pythonExe)) {
 
 $schedulePath = Join-Path $repoRoot "AFM04\stage2light\stage2light_schedule.json"
 $schedule = Get-Content -LiteralPath $schedulePath -Raw | ConvertFrom-Json
+$stage2Epochs = [int]$schedule.epochs
 $stage2AdamEpochs = [int]$schedule.adam_epochs
+$stage2LbfgsEpochs = [int]$schedule.lbfgs_epochs
+if ($stage2AdamEpochs -gt $stage2Epochs) {
+  $stage2AdamEpochs = $stage2Epochs
+}
+if (($stage2AdamEpochs + $stage2LbfgsEpochs) -ne $stage2Epochs) {
+  $stage2LbfgsEpochs = [Math]::Max(0, $stage2Epochs - $stage2AdamEpochs)
+}
 
 $stage1InputPath = Join-Path $repoRoot "AFM04\stage1pluslight\results_afm\afm_param_stage1pluslight_04.pkl"
 
@@ -47,8 +55,9 @@ $driverLogHint = Join-Path $repoRoot "AFM04\prestage2\logs"
 
 Write-Host "Running AFM04 prestage2 with SHARDS=$Shards"
 Write-Host "Layer A -> 100 mech winners, each with its best NN seed, 10 epochs"
-Write-Host "Layer B -> top 20 top mech winners A, seamless resume for +20 epochs"
-Write-Host "Main schedule -> prest2 is the first N epochs of st2l; Adam prefix = $stage2AdamEpochs"
+Write-Host "Layer B -> top 20 top mech winners A, seamless resume to epoch 30"
+Write-Host "Main schedule -> st2l total=$stage2Epochs, Adam prefix=$stage2AdamEpochs, LBFGS suffix=$stage2LbfgsEpochs"
+Write-Host "Prest2 rule -> layers choose candidate set and prefix length only; optimizer phases are copied from st2l epoch numbers"
 Write-Host "Metric  -> final_train_loss"
 Write-Host "Stage1 input -> $stage1InputPath"
 Write-Host "Repo root -> $repoRoot"

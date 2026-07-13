@@ -15,13 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from AFM04.stage2light.config import default_config
 from AFM04.stage2light.data import PreparedData, WindowSplit, prepare_data
-from AFM04.stage2light.kan_backend import KANForceModule
+from AFM04.stage2light.kan_backend import KANForceModule, initial_grid_support_from_raw_inputs
 from AFM04.stage2light.rollout import (
     LearnableMechModule,
     fts_truth_from_states_torch,
     rollout_single_shooting_torch,
     x2dot_rhs_torch,
 )
+from AFM04.stage2light.train import _observable_grid_inputs_from_ode, _prepared_with_initial_x3_from_warmstart
 from AFM04.stage2light.runner.visualization._common import (
     REPO_ROOT,
     finalize_and_save,
@@ -187,6 +188,19 @@ def _build_preopt_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     split = _select_split(prepared, payload)
     dtype = _torch_dtype(cfg.dtype)
     device = str(cfg.device)
+    prepared, x3_norm_support, _x3_source = _prepared_with_initial_x3_from_warmstart(prepared, warmstart)
+    ode_train = torch.as_tensor(split.ode_train, dtype=dtype, device=device)
+    grid_inputs = _observable_grid_inputs_from_ode(
+        ode_train=ode_train,
+        state_mean=prepared.state_mean,
+        state_scale=prepared.state_scale,
+        x3_norm_support=x3_norm_support,
+    )
+    initial_grid_support = initial_grid_support_from_raw_inputs(
+        grid_inputs,
+        prepared.state_mean,
+        prepared.state_scale,
+    )
 
     model_seed = int(warmstart["seed"])
     ks_init = float(warmstart["ks0"])
@@ -207,6 +221,7 @@ def _build_preopt_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         affine_trainable=cfg.affine_trainable,
         grid_eps=cfg.grid_eps,
         grid_range=(cfg.grid_range_lo, cfg.grid_range_hi),
+        initial_grid_support=initial_grid_support,
         dist=float(prepared.known_pars[6]),
         a0=float(prepared.known_pars[9]),
         soft_mask_enabled=bool(cfg.soft_mask_enabled),
@@ -228,6 +243,7 @@ def _build_preopt_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         cs_bounds=(cfg.cs_lo, cfg.cs_hi),
         dtype=dtype,
         device=device,
+        parameterization=getattr(cfg, "mech_parameterization", "sigmoid_bounded"),
     ).to(device)
 
     train_states = torch.as_tensor(split.ode_train.T, dtype=dtype, device=device)

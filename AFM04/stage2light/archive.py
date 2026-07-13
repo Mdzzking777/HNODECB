@@ -16,6 +16,7 @@ _RESULT_PT_RE = re.compile(r"stage2light_result_p(\d+)\.pt$")
 
 _ARCHIVE_SUBDIRS = (
     "result",
+    "checkpoint",
     "logs",
     "data",
     "conditional dependency",
@@ -175,6 +176,13 @@ def archive_completed_stage2light_run(cfg, *, log=None) -> dict[str, Any]:
     result_count += _copy_glob(cfg.result_dir, "stage2light_result_p*.pt", layout["result"])
     result_count += _copy_glob(cfg.checkpoint_dir, "stage2light_best_p*.viz.pkl", layout["result"])
 
+    checkpoint_count = 0
+    checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_checkpoint_p*.pt", layout["checkpoint"])
+    checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_best_p*.pt", layout["checkpoint"])
+    checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_best_p*.viz.pkl", layout["checkpoint"])
+    checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_final_p*.pt", layout["checkpoint"])
+    checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_final_p*.viz.pkl", layout["checkpoint"])
+
     log_count = _copy_glob(cfg.shard_log_dir, "log2_04_step2a_stage2light_local_p*.txt", layout["logs"])
 
     data_dir = cfg.dataset_root / cfg.error_level / "data"
@@ -189,6 +197,7 @@ def archive_completed_stage2light_run(cfg, *, log=None) -> dict[str, Any]:
         "archive_dir": str(archive_dir),
         "stage1_rank": int(stage1_rank),
         "result_files": int(result_count),
+        "checkpoint_files": int(checkpoint_count),
         "log_files": int(log_count),
         "data_files": int(data_count),
         "conditional_dependency_files": int(cond_count),
@@ -199,7 +208,7 @@ def archive_completed_stage2light_run(cfg, *, log=None) -> dict[str, Any]:
         "archive complete | "
         f"dir={archive_dir} | "
         f"rank={stage1_rank} | "
-        f"result={result_count} logs={log_count} data={data_count} "
+        f"result={result_count} checkpoint={checkpoint_count} logs={log_count} data={data_count} "
         f"conditional={cond_count} viz={viz_count}",
     )
     return summary

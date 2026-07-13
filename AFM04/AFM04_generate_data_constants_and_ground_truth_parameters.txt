@@ -1,0 +1,172 @@
+AFM04 generate-data constants and ground-truth parameters
+=========================================================
+
+Primary sources checked
+-----------------------
+1. Datageneration/DMT_KV/generate_trajectory_DMT_KV.py
+   - This is the current AFM04 DMT-KV trajectory-generation script.
+2. AFM04/test_case_settings/afm_dmt_kv_settings/afm_dmt_kv_model_settings.py
+   - This mirrors the current AFM04 DMT-KV force-law settings.
+3. AFM04/datasets/e0.0/data/*.npz
+   - The generated dataset stores trajectories only; constants are not stored
+     as separate npz keys.
+
+Important note
+--------------
+The older Julia settings file contains an older Fad-style setting. The current
+AFM04 generation script uses the DMT-KV force law with Hamaker constant A,
+a0, beta, Estar, eta_star, ks, and cs. Therefore this note follows the current
+Python generation script.
+
+
+Constants requested
+-------------------
+
+k
+  Notion: cantilever stiffness
+  Value: 29.9
+  Unit: N/m
+
+omega_d / wd
+  Notion: drive angular frequency, omega_d = 2*pi*f0
+  Value: 1.9702184167723029e6
+  Unit: rad/s
+  Source values: f0 = 313.57e3 Hz
+
+m
+  Notion: effective cantilever mass, m = k / omega_d^2
+  Value: 7.7026903525684236e-12
+  Unit: kg
+
+c
+  Notion: effective cantilever damping, c = m * omega_d / Q
+  Value: 4.0905612914621701e-08
+  Unit: N*s/m
+  Source values: Q = 371.0
+
+a0
+  Notion: molecular/contact cutoff distance used in the DMT-KV force law
+  Value: 3.0e-10
+  Unit: m
+
+A
+  Notion: Hamaker constant in the adhesion term
+  Value: 6.0e-20
+  Unit: J
+
+R
+  Notion: tip radius
+  Value: 1.0e-08
+  Unit: m
+
+Fd
+  Notion: drive force amplitude
+  Value: 4.10e-09
+  Unit: N
+
+
+Ground-truth parameters requested
+---------------------------------
+
+Estar
+  Notion: reduced/effective elastic modulus in the Hertz term
+  Value: 1.5e7
+  Unit: Pa
+
+eta_star
+  Notion: effective Kelvin-Voigt viscous coefficient in the contact term
+  Value: 1.3
+  Unit: Pa*s
+
+ks
+  Notion: sample Kelvin-Voigt spring stiffness in the x3 equation
+  Value: 0.1
+  Unit: N/m
+
+cs
+  Notion: sample Kelvin-Voigt damping coefficient in the x3 equation
+  Value: 2.4e-07
+  Unit: N*s/m
+
+
+Additional generation constants
+-------------------------------
+
+dist
+  Notion: static tip-sample separation offset used in s = dist + x1 - x3
+  Value: 2.4e-08
+  Unit: m
+
+beta
+  Notion: sigmoid smoothing sharpness in g(s) = sigmoid(beta * (s - a0))
+  Value: 5.0e11
+  Unit: 1/m
+
+f0
+  Notion: drive/resonance frequency used to compute omega_d
+  Value: 313570
+  Unit: Hz
+
+Q
+  Notion: cantilever quality factor used to compute c
+  Value: 371.0
+  Unit: dimensionless
+
+
+Simulation metadata
+-------------------
+
+Initial condition
+  X0 = [x1, x2, x3] = [0.0, 0.0, 0.0]
+  Units: [m, m/s, m]
+
+Time span
+  t_start = 0.0 s
+  t_end   = 2.0e-3 s
+
+Sampling
+  nsteps     = 125000
+  num_points = 125001
+  dt         = 1.6e-08 s
+  sampling frequency = 62.5 MHz
+
+
+State-space equations used by the generation script
+---------------------------------------------------
+
+State:
+  X = [x, v, y] = [x1, x2, x3]
+
+Tip-sample gap:
+  s = dist + x - y
+
+Drive:
+  F_drive(t) = Fd * cos(omega_d * t)
+
+Tip equations:
+  xdot = v
+  vdot = (Fd * cos(omega_d * t) - k*x - c*v + F_ts) / m
+
+Sample equation:
+  ydot = x3dot
+
+Contact/force closure:
+  g(s) = sigmoid(beta * (s - a0))
+  delta = max(a0 - s, 0)
+  adhesion = -A*R / (6 * (g(s) * (s - a0) + a0)^2)
+  F_Hertz = (4/3) * Estar * sqrt(R) * delta^(3/2)
+  KV_coeff = eta_star * sqrt(R) * sqrt(delta)
+
+  x3dot is solved explicitly from:
+    x3dot = (-F_ts - ks*x3) / cs
+
+  with:
+    F_ts = adhesion + (1 - g(s))*F_Hertz + KV_coeff*(-v + x3dot)
+
+  The generation script rearranges this as:
+    x3dot = (-adhesion - (1 - g(s))*F_Hertz + KV_coeff*v - ks*x3)
+            / (cs + KV_coeff)
+
+  and then:
+    delta_dot = x3dot - v, if delta > 0; otherwise 0
+    F_ts = adhesion + (1 - g(s))*F_Hertz + KV_coeff*delta_dot

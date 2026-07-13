@@ -6,6 +6,14 @@ Now saves x1dot and x2dot directly from ODE (no numerical differentiation!)
 
 import numpy as np
 import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from AFM04.stage1pluslight.windows import window_manifests
 
 # ============================================================================
 # Fixed Parameters
@@ -39,6 +47,7 @@ cs = 0.24e-6
 t_end = 2e-3
 nsteps = 125000
 dt = t_end / nsteps
+WINDOW_US = 6.288e-6
 
 # ============================================================================
 # RK4 Solver (modified to also return derivatives)
@@ -179,6 +188,69 @@ print("  - No numerical differentiation used!")
 # ============================================================================
 
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
+
+
+def _font_size_points(size):
+    return FontProperties(size=size).get_size_in_points()
+
+
+def _scale_figure_text(axes, factor=2.0):
+    """Scale visible text in a figure without changing plotted data."""
+    tick_size = _font_size_points(plt.rcParams["xtick.labelsize"]) * factor
+    for ax in np.ravel(axes):
+        ax.title.set_fontsize(ax.title.get_fontsize() * factor)
+        ax.xaxis.label.set_fontsize(ax.xaxis.label.get_fontsize() * factor)
+        ax.yaxis.label.set_fontsize(ax.yaxis.label.get_fontsize() * factor)
+        ax.tick_params(axis="both", which="both", labelsize=tick_size)
+        ax.xaxis.offsetText.set_fontsize(ax.xaxis.offsetText.get_fontsize() * factor)
+        ax.yaxis.offsetText.set_fontsize(ax.yaxis.offsetText.get_fontsize() * factor)
+        legend = ax.get_legend()
+        if legend is not None:
+            for text in legend.get_texts():
+                text.set_fontsize(text.get_fontsize() * factor)
+            legend.get_title().set_fontsize(legend.get_title().get_fontsize() * factor)
+
+
+def _afm04_w0_w1_windows(times, contact_mask, x1_signal):
+    """Return the AFM04 W0/W1 windows used by the training pipeline."""
+    w0 = window_manifests(times, contact_mask, "stage2_w0", WINDOW_US, x1_signal=x1_signal)[0]
+    w1 = window_manifests(times, contact_mask, "stage2_w1", WINDOW_US, x1_signal=x1_signal)[0]
+    return [
+        ("W0", "first-contact window", w0, "tab:orange"),
+        ("W1", "middle window", w1, "tab:purple"),
+    ]
+
+
+def _annotate_training_windows(axes, windows):
+    """Mark W0/W1 as vertical spans on a shared time axis."""
+    for label, description, win, color in windows:
+        start_us = 1.0e6 * float(win.t_start)
+        stop_us = 1.0e6 * float(win.t_stop)
+        for ax in np.ravel(axes):
+            ax.axvspan(
+                start_us,
+                stop_us,
+                facecolor=color,
+                edgecolor=color,
+                linewidth=1.2,
+                alpha=0.16,
+                zorder=0,
+            )
+            ax.axvline(start_us, color=color, linewidth=1.0, alpha=0.9)
+            ax.axvline(stop_us, color=color, linewidth=1.0, alpha=0.9)
+        axes[0].text(
+            0.5 * (start_us + stop_us),
+            0.97,
+            f"{label}\n{description}",
+            color=color,
+            ha="center",
+            va="top",
+            fontsize=11,
+            fontweight="bold",
+            transform=axes[0].get_xaxis_transform(),
+            bbox={"facecolor": "white", "edgecolor": color, "alpha": 0.78, "pad": 2.5},
+        )
 
 # Create plots directory
 plots_dir = os.path.join(os.path.dirname(__file__), 'plots')
@@ -194,20 +266,21 @@ t_us = t * 1e6  # time in microseconds
 
 # --- Full trajectory plots ---
 
-fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+fig, axes = plt.subplots(3, 1, figsize=(18, 12), sharex=True)
+training_windows = _afm04_w0_w1_windows(t, contact, x)
 
 # Plot 1: Tip displacement
 ax1 = axes[0]
 ax1.plot(t_us, x_nm, 'b-', linewidth=0.5)
-ax1.set_ylabel('Tip displacement x [nm]')
-ax1.set_title('AFM DMT-KV Simulation: Full Trajectory')
+ax1.set_ylabel('Tip displacement [nm]')
+ax1.set_title('Full Time-span Trajectory')
 ax1.grid(True, alpha=0.3)
 ax1.axhline(y=0, color='k', linestyle='--', linewidth=0.5)
 
 # Plot 2: Sample motion
 ax2 = axes[1]
 ax2.plot(t_us, y_nm, 'r-', linewidth=0.5)
-ax2.set_ylabel('Sample motion y [nm]')
+ax2.set_ylabel('Sample motion [nm]')
 ax2.grid(True, alpha=0.3)
 ax2.axhline(y=0, color='k', linestyle='--', linewidth=0.5)
 
@@ -216,15 +289,19 @@ ax3 = axes[2]
 ax3.plot(t_us, s_nm, 'g-', linewidth=0.5)
 ax3.axhline(y=a0 * 1e9, color='r', linestyle='-', linewidth=1, label='Hertz threshold (s=a0)')
 ax3.fill_between(t_us, s_nm, a0 * 1e9, where=(s_nm <= a0 * 1e9), alpha=0.3, color='red', label='Hertz-active region')
-ax3.set_ylabel('Distance s [nm]')
+ax3.set_ylabel('Tip-sample distance [nm]')
 ax3.set_xlabel('Time [μs]')
 ax3.grid(True, alpha=0.3)
 ax3.legend(loc='upper right')
 
-plt.tight_layout()
+_annotate_training_windows(axes, training_windows)
+_scale_figure_text(axes, factor=2.0)
+plt.tight_layout(pad=2.0)
 plt.savefig(os.path.join(plots_dir, 'trajectory_full.png'), dpi=150)
 plt.savefig(os.path.join(plots_dir, 'trajectory_full.pdf'))
 print(f"  Saved: trajectory_full.png/pdf")
+for label, description, win, _ in training_windows:
+    print(f"    {label} ({description}): {1.0e6 * win.t_start:.3f}-{1.0e6 * win.t_stop:.3f} us")
 
 # --- Zoomed view (steady-state region, ~1600-1650 μs) ---
 
@@ -232,20 +309,20 @@ zoom_start_us = 1600  # microseconds (steady-state region)
 zoom_end_us = 1650    # ~15 oscillation cycles
 zoom_idx = (t_us >= zoom_start_us) & (t_us <= zoom_end_us)
 
-fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+fig, axes = plt.subplots(3, 1, figsize=(18, 12), sharex=True)
 
 # Plot 1: Tip displacement (zoomed)
 ax1 = axes[0]
 ax1.plot(t_us[zoom_idx], x_nm[zoom_idx], 'b-', linewidth=1)
-ax1.set_ylabel('Tip displacement x [nm]')
-ax1.set_title(f'AFM DMT-KV Simulation: Steady-State Zoomed View ({zoom_start_us}-{zoom_end_us} μs)')
+ax1.set_ylabel('Tip displacement [nm]')
+ax1.set_title('Trajectory of Steady-state in a time window')
 ax1.grid(True, alpha=0.3)
 ax1.axhline(y=0, color='k', linestyle='--', linewidth=0.5)
 
 # Plot 2: Sample motion (zoomed)
 ax2 = axes[1]
 ax2.plot(t_us[zoom_idx], y_nm[zoom_idx], 'r-', linewidth=1)
-ax2.set_ylabel('Sample motion y [nm]')
+ax2.set_ylabel('Sample motion [nm]')
 ax2.grid(True, alpha=0.3)
 ax2.axhline(y=0, color='k', linestyle='--', linewidth=0.5)
 
@@ -255,12 +332,13 @@ ax3.plot(t_us[zoom_idx], s_nm[zoom_idx], 'g-', linewidth=1)
 ax3.axhline(y=a0 * 1e9, color='r', linestyle='-', linewidth=1, label='Hertz threshold (s=a0)')
 ax3.fill_between(t_us[zoom_idx], s_nm[zoom_idx], a0 * 1e9,
                   where=(s_nm[zoom_idx] <= a0 * 1e9), alpha=0.3, color='red', label='Hertz-active region')
-ax3.set_ylabel('Distance s [nm]')
+ax3.set_ylabel('Tip-sample distance [nm]')
 ax3.set_xlabel('Time [μs]')
 ax3.grid(True, alpha=0.3)
 ax3.legend(loc='upper right')
 
-plt.tight_layout()
+_scale_figure_text(axes, factor=2.0)
+plt.tight_layout(pad=2.0)
 plt.savefig(os.path.join(plots_dir, 'trajectory_zoomed.png'), dpi=150)
 plt.savefig(os.path.join(plots_dir, 'trajectory_zoomed.pdf'))
 print(f"  Saved: trajectory_zoomed.png/pdf")

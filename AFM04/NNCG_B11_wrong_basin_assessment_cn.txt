@@ -1,0 +1,137 @@
+AFM04 B11 st2l 后是否应使用 NNCG 的判断
+========================================
+
+对象
+----
+
+st2l 归档对象：
+C:\Users\Public\Documents\GitHub\HNODECB\AFM04\archive\st2l\3_10x10x1000_W0 new\rank247_B11
+
+candidate:
+B11 / rank247
+
+核心判断
+--------
+
+目前更像是：
+
+ks/cs 在 Adam + L-BFGS 阶段已经沿着补偿方向进入了一个低 loss、但 mech 不物理正确的 local basin。
+
+因此，NNCG 可能继续降低 training loss，但它不太可能自动把 ks/cs 拉回物理正确区域。
+
+一句话总结：
+
+NNCG may rescue optimization stagnation,
+but it cannot rescue identifiability-induced compensation.
+
+主要证据
+--------
+
+1. B11 的 st2l 确实是 L-BFGS zero-step 停下的。
+
+日志显示：
+
+epoch 210 train = 3.783252e-10
+epoch 211 出现 LBFGS hard zero-step
+stop_kind = lbfgs_hard_zero_step_stop
+stop_reason = lbfgs_hard_zero_step_after_fresh_restart
+
+这符合 NNCG 文献中的使用场景：
+L-BFGS 因 line search / zero-step 停止，但不代表已经真正到达 critical point。
+
+2. 但是后期可继续降低的 loss 空间已经很小。
+
+B11 从 epoch 1 到 epoch 210：
+
+train loss: 4.30e-07 -> 3.78e-10
+best val loss: 1.744625e-08 at epoch 151
+final val loss: 1.923756e-08 at epoch 210
+
+后期 L-BFGS 每步 loss drop 已经到 1e-13 到 1e-14 量级。
+所以即使 NNCG 能继续降 train loss，也更可能是在当前 basin 中继续精修，而不是跳出 basin。
+
+3. ks 的演化方向不支持“仍在物理正确区域附近”的解释。
+
+B11 起点：
+
+ks0 = 0.1077217345
+cs0 = 2.3207944168e-07
+
+st2l final:
+
+ks = 0.1144715717
+cs = 2.3635419502e-07
+
+true mech:
+
+ks_true = 0.1
+cs_true = 2.4e-07
+
+ks 在优化过程中从 0.1077 漂到 0.1145，离 true ks=0.1 更远。
+这说明 loss 下降并没有把 ks 拉回物理正确方向。
+
+4. step3 identifiability 结果支持 compensation basin 的解释。
+
+rank247_B11 的 step3 post-analysis 中：
+
+tau = 1e-8 时：
+near-null space = 435 / 453 = 96.03%
+
+ks 的 null projection:
+
+projection_energy = 8.907970e-04
+其中 kan_numeric 占 within_projection 约 99.6%
+
+cs 的 null projection:
+
+projection_energy = 4.818083e-03
+其中 kan_numeric 占 within_projection 约 99.1%
+
+这说明 ks/cs 方向在 near-null space 中主要与 KAN parameters 发生补偿。
+也就是说，当前 local point 附近存在大量“改变 mech 同时由 KAN 补偿、输出变化很小”的方向。
+
+对 NNCG 的具体判断
+------------------
+
+NNCG 的作用是：
+
+在 Adam + L-BFGS 停滞后，利用 Hessian / curvature information 继续优化 loss。
+
+但是 NNCG 只知道 loss landscape，不知道 true ks/cs。
+如果当前低 loss basin 本身就是靠 KAN 与 mech 的补偿形成的，那么 NNCG 很可能继续沿着这个 basin 降 loss。
+
+因此：
+
+可以期待 NNCG 继续降低 training loss；
+不能期待 NNCG 自动修复 ks/cs 的物理偏移；
+更不能把 NNCG 当成解决 identifiability / compensation 的主要方法。
+
+建议实验
+--------
+
+如果要测试 NNCG，建议只做小规模 pilot，而不是直接作为主方案。
+
+推荐从两个点分别启动短 NNCG：
+
+1. best_epoch = 151
+2. final_epoch = 210
+
+监控：
+
+train loss
+validation loss
+ks / cs
+step3 projection energy 或补偿结构
+
+判断标准：
+
+如果 train loss 继续下降，但 validation loss 不改善，ks 继续远离 true 或继续保持错误方向，则说明 NNCG 只是更高效地优化了当前 compensation basin。
+
+如果 train loss 下降，同时 ks/cs 回到更物理合理的方向，才说明 NNCG 有可能帮助逃离或修正当前 basin。
+
+当前预期
+--------
+
+基于现有 B11 st2l + step3 证据，更可能出现前一种情况：
+
+NNCG 继续降低 loss，但不能解决 ks/cs 反方向漂移。

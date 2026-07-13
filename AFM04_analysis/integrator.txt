@@ -1,0 +1,93 @@
+AFM04 & AFM05 rollout integration methods
+=========================================
+
+Purpose
+-------
+This note summarizes how AFM04 and AFM05 advance the model state after the
+predicted tip-sample force F_ts is inserted into the RHS. The important point is
+that the code does not normally use a hand-written one-step Euler update. It
+uses adaptive ODE solvers.
+
+
+State and RHS
+-------------
+The rollout state is
+
+    x(t) = [x1(t), x2(t), x3(t)]^T
+
+where x1 is the tip displacement, x2 is the tip velocity, and x3 is the sample
+side deformation / internal state.
+
+For both AFM04 and AFM05, the model-predicted interaction force enters the RHS
+as
+
+    F_ts_hat(t) = g_NN * M(x(t)) * f_KAN((x(t) - mu) / s)
+
+with KAN raw output f_KAN, soft mask M, and gain g_NN.
+
+AFM04 uses harmonic external actuation:
+
+    dx1/dt = x2
+    dx2/dt = (Fd*cos(omega_d*t) - k*x1 - c*x2 + F_ts_hat) / m
+    dx3/dt = (-F_ts_hat - ks*x3) / cs
+
+AFM05 uses the reconstructed experimental actuation trajectory:
+
+    dx1/dt = x2
+    dx2/dt = (F_actuation(t) - k_eff*x1 - c_eff*x2 + F_ts_hat) / m_eff
+    dx3/dt = (-F_ts_hat - ks*x3) / cs
+
+In AFM05, F_actuation(t) is evaluated inside the RHS by linear interpolation at
+the solver's queried time.
+
+
+stage1pluslight / st1pl
+-----------------------
+For AFM04 and AFM05 stage1pluslight, the rollout backend is SciPy:
+
+    scipy.integrate.solve_ivp
+
+Default settings:
+
+    primary solver  = Radau
+    fallback solver = BDF
+    rtol            = 1e-8
+    atol            = 1e-8
+
+The solver integrates over the full requested time span and returns states at
+the requested observation times via t_eval=times. Radau/BDF are adaptive
+implicit solvers, so the internal substeps are chosen by the solver and are not
+limited to the observation time spacing.
+
+There is an RK4 branch in the code, but it is only used if ode_solver is
+explicitly set to "rk4". It is not the default.
+
+
+prestage2 / stage2light
+-----------------------
+For AFM04 and AFM05 prestage2 and stage2light, the rollout backend is
+torchdiffeq:
+
+    torchdiffeq.odeint
+
+Default settings:
+
+    method = dopri5
+    rtol   = 1e-10
+    atol   = 1e-12
+
+dopri5 is the adaptive Dormand-Prince 5(4) Runge-Kutta method. This path is
+differentiable and is therefore used during Adam/L-BFGS optimization.
+
+
+Practical interpretation
+------------------------
+st1pl and prest2/st2l do not use the same integration backend:
+
+    st1pl        -> SciPy solve_ivp, Radau with BDF fallback
+    prest2/st2l  -> torchdiffeq odeint, dopri5
+
+Both are adaptive ODE solvers. Therefore, after F_ts_hat is inserted into the
+RHS, the next observation-time state is obtained by adaptive numerical
+integration over the interval, not by a simple single-step finite-difference
+update.

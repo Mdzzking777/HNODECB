@@ -1,9 +1,0 @@
-[2026-04-21 14:57:28] launcher start | shard_count=8 result_dir=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage1pluslight\results_afm
-[2026-04-21 14:57:28] launched shard 1/8 | pid=25468 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage1pluslight\logs\afm04_stage1pluslight_local_p1of8_20260421_145728.txt
-[2026-04-21 14:57:28] launched shard 2/8 | pid=15556 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage1pluslight\logs\afm04_stage1pluslight_local_p2of8_20260421_145728.txt
-[2026-04-21 14:57:28] launched shard 3/8 | pid=656 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage1pluslight\logs\afm04_stage1pluslight_local_p3of8_20260421_145728.txt
-[2026-04-21 14:57:28] launched shard 4/8 | pid=5688 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage1pluslight\logs\afm04_stage1pluslight_local_p4of8_20260421_145728.txt
-[2026-04-21 14:57:28] launched shard 5/8 | pid=26984 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage1pluslight\logs\afm04_stage1pluslight_local_p5of8_20260421_145728.txt
-[2026-04-21 14:57:28] launched shard 6/8 | pid=1996 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage1pluslight\logs\afm04_stage1pluslight_local_p6of8_20260421_145728.txt
-[2026-04-21 14:57:28] launched shard 7/8 | pid=6548 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage1pluslight\logs\afm04_stage1pluslight_local_p7of8_20260421_145728.txt
-[2026-04-21 14:57:28] launched shard 8/8 | pid=16564 | log=C:\Users\Public\Documents\GitHub\HNODECB\AFM04\stage1pluslight\logs\afm04_stage1pluslight_local_p8of8_20260421_145728.txt

@@ -67,8 +67,6 @@ def prest2_extra_hover(rec: dict[str, Any]) -> str:
             f"<br>top mech winner A={int(field_or(rec, 'top_mech_winner_a', field_or(rec, 'source_top_mech_winner_a', field_or(rec, 'newrank_a', field_or(rec, 'source_newrank_a', 0)))))}",
             f"<br>candidate B={candidate if candidate > 0 else 'None'}",
             f"<br>source {mech_seed_rank_label(rec)}",
-            f"<br>prest2 final val_loss={fmt_e_html(field_or(rec, 'final_val_loss', math.nan))}",
-            f"<br>prest2 final val epoch={int(field_or(rec, 'final_val_epoch', -1))}",
             f"<br>prest2 final train_loss={fmt_e_html(field_or(rec, 'final_train_loss', math.nan))}",
             f"<br>prest2 val x1 rec={fmt_f_html(field_or(rec, 'val_x1_rec', math.nan), 2)}%",
             f"<br>prest2 val x3 rec={fmt_f_html(field_or(rec, 'val_x3_rec', math.nan), 2)}%",
@@ -102,8 +100,6 @@ def prest2_endpoint_hover_text(rec: dict[str, Any], *, phase_label: str) -> str:
         f"<br>candidate B={candidate if candidate > 0 else 'None'}",
         f"<br>epochs_completed={int(field_or(rec, 'epochs_completed', -1))}",
         f"<br>current_layer_epochs={int(field_or(rec, 'current_layer_epochs', -1))}",
-        f"<br>final val_loss={fmt_e_html(field_or(rec, 'final_val_loss', math.nan))}",
-        f"<br>final val epoch={int(field_or(rec, 'final_val_epoch', -1))}",
         f"<br>final train_loss={fmt_e_html(field_or(rec, 'final_train_loss', math.nan))}",
         f"<br>ks0={fmt_e_html(field_or(rec, 'ks0', math.nan))}",
         f"<br>cs0={fmt_e_html(field_or(rec, 'cs0', math.nan))}",
@@ -142,7 +138,7 @@ def layer_b_best_envelope_surface(final_records: list[dict[str, Any]]) -> dict[s
     for rec in final_records:
         if not isinstance(rec, dict):
             continue
-        loss = finite_float_or(field_or(rec, "final_val_loss", math.nan), field_or(rec, "candidate_loss", math.nan))
+        loss = finite_float_or(field_or(rec, "final_train_loss", math.nan))
         if not math.isfinite(loss) or loss <= 0.0:
             continue
         ks_hat = finite_float_or(field_or(rec, "ks_hat", math.nan))
@@ -162,7 +158,7 @@ def layer_b_best_envelope_surface(final_records: list[dict[str, Any]]) -> dict[s
             key = (round(math.log10(ks0), 12), round(math.log10(cs0), 12))
 
         previous = best_by_grid.get(key)
-        previous_loss = finite_float_or(field_or(previous or {}, "final_val_loss", math.nan), field_or(previous or {}, "candidate_loss", math.nan))
+        previous_loss = finite_float_or(field_or(previous or {}, "final_train_loss", math.nan))
         if previous is None or loss < previous_loss:
             best_by_grid[key] = rec
 
@@ -185,7 +181,7 @@ def layer_b_best_envelope_surface(final_records: list[dict[str, Any]]) -> dict[s
     for rec in records:
         ks_hat = finite_float_or(field_or(rec, "ks_hat", math.nan))
         cs_hat = finite_float_or(field_or(rec, "cs_hat", math.nan))
-        loss = finite_float_or(field_or(rec, "final_val_loss", math.nan), field_or(rec, "candidate_loss", math.nan))
+        loss = finite_float_or(field_or(rec, "final_train_loss", math.nan))
         xs.append(math.log10(ks_hat))
         ys.append(math.log10(cs_hat))
         zs.append(math.log10(loss))
@@ -201,8 +197,7 @@ def layer_b_best_envelope_surface(final_records: list[dict[str, Any]]) -> dict[s
                     f"<br>source cs0={fmt_e_html(field_or(rec, 'cs0', math.nan))}",
                     f"<br>Layer-B ks_hat={fmt_e_html(ks_hat)}",
                     f"<br>Layer-B cs_hat={fmt_e_html(cs_hat)}",
-                    f"<br>Layer-B final val_loss={fmt_e_html(loss)}",
-                    f"<br>Layer-B final train_loss={fmt_e_html(field_or(rec, 'final_train_loss', math.nan))}",
+                    f"<br>Layer-B final train_loss={fmt_e_html(loss)}",
                     f"<br>epochs_completed={int(field_or(rec, 'epochs_completed', -1))}",
                 ]
             )
@@ -277,7 +272,7 @@ def write_plot_html(
             z0 = math.log10(float(metric_value(rec, spec)))
             x1 = math.log10(float(field_or(entrant_rec, "ks_hat", math.nan)))
             y1 = math.log10(float(field_or(entrant_rec, "cs_hat", math.nan)))
-            z1 = math.log10(float(field_or(entrant_rec, "final_val_loss", math.nan)))
+            z1 = math.log10(float(field_or(entrant_rec, "final_train_loss", math.nan)))
             if all(math.isfinite(v) for v in [x0, y0, z0, x1, y1, z1]):
                 entrant_stage1_to_layer_a_segments.append((x0, y0, z0, x1, y1, z1))
                 entrant_overlay_records.append(entrant_rec)
@@ -290,12 +285,12 @@ def write_plot_html(
             finalist_set.add(i)
             x2 = math.log10(float(field_or(final_rec, "ks_hat", math.nan)))
             y2 = math.log10(float(field_or(final_rec, "cs_hat", math.nan)))
-            z2 = math.log10(float(field_or(final_rec, "final_val_loss", math.nan)))
+            z2 = math.log10(float(field_or(final_rec, "final_train_loss", math.nan)))
             entrant_rec = entrant_by_trial.get(trial_id)
             if entrant_rec is not None:
                 x1 = math.log10(float(field_or(entrant_rec, "ks_hat", math.nan)))
                 y1 = math.log10(float(field_or(entrant_rec, "cs_hat", math.nan)))
-                z1 = math.log10(float(field_or(entrant_rec, "final_val_loss", math.nan)))
+                z1 = math.log10(float(field_or(entrant_rec, "final_train_loss", math.nan)))
                 if all(math.isfinite(v) for v in [x1, y1, z1, x2, y2, z2]):
                     finalist_layer_a_to_final_segments.append((x1, y1, z1, x2, y2, z2))
             if all(math.isfinite(v) for v in [x2, y2, z2]):
@@ -736,12 +731,9 @@ def main(argv: list[str] | None = None) -> int:
     entrant_by_trial, finalist_by_trial = merged_prest2_maps(layer_a_records, final_records)
     candidate1_loss = math.nan
     if final_records:
-        candidate1_loss = finite_float_or(
-            field_or(final_records[0], "final_val_loss", math.nan),
-            field_or(final_records[0], "candidate_loss", math.nan),
-        )
+        candidate1_loss = finite_float_or(field_or(final_records[0], "final_train_loss", math.nan))
 
-    html_path = out_dir / "afm_prest2_04_allcandidates_ks_logcs_final_val_loss_3d.html"
+    html_path = out_dir / "afm_prest2_04_allcandidates_ks_logcs_final_train_loss_3d.html"
     write_plot_html(
         html_path,
         stage1_result_path,
