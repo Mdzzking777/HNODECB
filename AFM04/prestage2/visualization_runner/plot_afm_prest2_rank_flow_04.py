@@ -13,7 +13,7 @@ from matplotlib.lines import Line2D
 def find_repo_root(start_dir: str | Path) -> Path:
     here = Path(start_dir).resolve()
     for path in [here, *here.parents]:
-        if (path / "AFM04").is_dir() and (path / "user requirements").is_dir():
+        if (path / "AFM04" / "prestage2").is_dir():
             return path
     raise RuntimeError(f"Could not locate repo root from {start_dir}")
 
@@ -48,6 +48,16 @@ def _records(payload: dict[str, Any], *, prefer_final: bool) -> list[dict[str, A
         return [rec for rec in records if isinstance(rec, dict)]
     records = payload.get(secondary, [])
     return [rec for rec in records if isinstance(rec, dict)]
+
+
+def _record_rank(record: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = record.get(key)
+        if value is not None:
+            rank = int(value)
+            if rank > 0:
+                return rank
+    return None
 
 
 def _driver_label(path: Path) -> str:
@@ -92,6 +102,8 @@ def build_flow_plot(
     top_stage1: int,
     top_newrank: int,
     top_candidate: int,
+    layer_b_epoch: float = 30.0,
+    out_filename: str = "afm_prest2_rank_flow_04.png",
 ) -> Path:
     layer_a_payload = _load_pickle(layer_a_result_path)
     final_payload = _load_pickle(final_result_path)
@@ -103,22 +115,27 @@ def build_flow_plot(
     if not final_records:
         raise RuntimeError(f"No final candidate records found in: {final_result_path}")
 
-    mech_to_top_a = {
-        int(rec["source_mech_winner"]): int(rec.get("top_mech_winner_a", rec.get("newrank_a", 0)))
-        for rec in layer_a_records
-        if "source_mech_winner" in rec and ("top_mech_winner_a" in rec or "newrank_a" in rec)
-    }
-    mech_to_candidate_b = {
-        int(rec["source_mech_winner"]): int(rec.get("candidate_b", rec.get("candidate", 0)))
-        for rec in final_records
-        if "source_mech_winner" in rec and ("candidate_b" in rec or "candidate" in rec)
-    }
+    stage1_to_layer_a: dict[int, int] = {}
+    for record in layer_a_records:
+        stage1_rank = _record_rank(record, "source_mech_winner", "source_stage1_rank")
+        layer_a_rank = _record_rank(record, "top_mech_winner_a", "newrank_a")
+        if stage1_rank is not None and layer_a_rank is not None:
+            stage1_to_layer_a[stage1_rank] = layer_a_rank
+
+    stage1_to_layer_b: dict[int, int] = {}
+    for record in final_records:
+        stage1_rank = _record_rank(record, "source_mech_winner", "source_stage1_rank")
+        layer_b_rank = _record_rank(record, "candidate_b", "candidate")
+        if stage1_rank is not None and layer_b_rank is not None:
+            stage1_to_layer_b[stage1_rank] = layer_b_rank
 
     tracked_mech_winners = list(range(1, top_stage1 + 1))
     tracked_top_a = list(range(1, top_newrank + 1))
     tracked_candidates_b = list(range(1, top_candidate + 1))
     finalist_mech_winners = sorted(
-        mech for mech, candidate in mech_to_candidate_b.items() if mech <= top_stage1 and candidate <= top_candidate
+        stage1_rank
+        for stage1_rank, candidate in stage1_to_layer_b.items()
+        if stage1_rank <= top_stage1 and candidate <= top_candidate
     )
     non_finalist_mech_winners = [mech for mech in tracked_mech_winners if mech not in set(finalist_mech_winners)]
 
@@ -129,10 +146,10 @@ def build_flow_plot(
     fig, ax = plt.subplots(figsize=(15.5, 13.5))
 
     for mech_winner in tracked_mech_winners:
-        top_a = mech_to_top_a.get(mech_winner)
+        top_a = stage1_to_layer_a.get(mech_winner)
         if top_a is None:
             continue
-        candidate = mech_to_candidate_b.get(mech_winner)
+        candidate = stage1_to_layer_b.get(mech_winner)
         is_finalist = candidate is not None and candidate <= top_candidate
         _edge_line(
             ax,
@@ -152,7 +169,7 @@ def build_flow_plot(
                 ax,
                 10.0,
                 top_a,
-                20.0,
+                layer_b_epoch,
                 candidate,
                 shrink_a=SHRINK_NEWRANK_PT,
                 shrink_b=SHRINK_CANDIDATE_PT,
@@ -178,10 +195,10 @@ def build_flow_plot(
             finalist_mech_winners,
             s=34,
             marker="o",
-            facecolors="#1a8f3f",
-            edgecolors="#dc2626",
-            linewidths=0.9,
-            zorder=5,
+            color="#1a8f3f",
+            edgecolors="white",
+            linewidths=0.5,
+            zorder=3,
         )
         for mech_winner in finalist_mech_winners:
             ax.text(
@@ -206,7 +223,7 @@ def build_flow_plot(
         zorder=3,
     )
     ax.scatter(
-        [20.0] * len(tracked_candidates_b),
+        [layer_b_epoch] * len(tracked_candidates_b),
         tracked_candidates_b,
         s=38,
         marker="o",
@@ -218,33 +235,33 @@ def build_flow_plot(
 
     ax.axvline(0.0, color="#b9c0c7", linewidth=1.0, linestyle="--", zorder=0)
     ax.axvline(10.0, color="#b9c0c7", linewidth=1.0, linestyle="--", zorder=0)
-    ax.axvline(20.0, color="#b9c0c7", linewidth=1.0, linestyle="--", zorder=0)
+    ax.axvline(layer_b_epoch, color="#b9c0c7", linewidth=1.0, linestyle="--", zorder=0)
 
-    ax.set_xlim(-4.0, 24.0)
+    ax.set_xlim(-4.0, layer_b_epoch + 4.0)
     ax.set_ylim(0, ymax + 2)
-    ax.set_xticks([10.0, 20.0], labels=["10", "20"])
+    ax.set_xticks([10.0, layer_b_epoch], labels=["10", f"{layer_b_epoch:g}"])
     ax.set_xlabel("epochs")
-    ax.set_ylabel("placements")
+    ax.set_ylabel("rank")
     ax.grid(True, axis="y", alpha=0.20)
 
     title = "AFM04 Gradient-Based Optimization Preliminary Test"
     fig.suptitle(title, y=0.992)
 
     legend_handles = [
-        Line2D([0], [0], marker="o", color="none", markerfacecolor="#1a8f3f", markeredgecolor="white", markersize=8, label=f"mech winner 1-{top_stage1}"),
-        Line2D([0], [0], marker="o", color="none", markerfacecolor="#1a8f3f", markeredgecolor="#dc2626", markeredgewidth=1.2, markersize=8, label=f"mech winners reaching candidate B 1-{top_candidate}"),
-        Line2D([0], [0], marker="o", color="none", markerfacecolor="#2563eb", markeredgecolor="white", markersize=8, label=f"top mech winner A 1-{top_newrank}"),
-        Line2D([0], [0], marker="o", color="none", markerfacecolor="#dc2626", markeredgecolor="white", markersize=8, label=f"candidate B 1-{top_candidate}"),
-        Line2D([0], [0], color="black", linewidth=1.0, label="mech winner flow"),
+        Line2D([0], [0], marker="o", color="none", markerfacecolor="#1a8f3f", markeredgecolor="white", markersize=8, label="trails in Step 2.1"),
+        Line2D([0], [0], color="#dc2626", linewidth=1.2, label="promotion of candidates"),
+        Line2D([0], [0], marker="o", color="none", markerfacecolor="#2563eb", markeredgecolor="white", markersize=8, label="reranked trails in Layer A"),
+        Line2D([0], [0], marker="o", color="none", markerfacecolor="#dc2626", markeredgecolor="white", markersize=8, label="candidates in Layer B"),
+        Line2D([0], [0], color="black", linewidth=1.0, label="reranking flow"),
     ]
     ax.legend(handles=legend_handles, loc="upper right", framealpha=0.95)
 
-    ax.text(0.0, 1.01, "mech winner", transform=ax.get_xaxis_transform(), ha="center", va="bottom", fontsize=10)
-    ax.text(10.0, 1.01, "top mech winner A", transform=ax.get_xaxis_transform(), ha="center", va="bottom", fontsize=10)
-    ax.text(20.0, 1.01, "candidate B", transform=ax.get_xaxis_transform(), ha="center", va="bottom", fontsize=10)
+    ax.text(0.0, 1.01, "Step 2.1 Global Grid Search", transform=ax.get_xaxis_transform(), ha="center", va="bottom", fontsize=10)
+    ax.text(10.0, 1.01, "Layer A", transform=ax.get_xaxis_transform(), ha="center", va="bottom", fontsize=10)
+    ax.text(layer_b_epoch, 1.01, "Layer B", transform=ax.get_xaxis_transform(), ha="center", va="bottom", fontsize=10)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "afm_prest2_mech_winner_flow_04.png"
+    out_path = out_dir / out_filename
     fig.tight_layout(rect=(0, 0, 1, 0.955))
     fig.savefig(out_path, dpi=220, bbox_inches="tight")
     plt.close(fig)

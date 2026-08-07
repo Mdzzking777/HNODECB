@@ -1,0 +1,207 @@
+AFM04/AFM05 derivative-loss state choice and gradient implications
+=================================================================
+
+Purpose
+-------
+This note records the distinction between the current rollout-state x2dot loss
+and a possible partially observed-state alternative. It also explains why
+substituting observed x1 and x2 into the known stiffness and damping terms can
+change not only the magnitude of the x2dot loss, but also the sign and direction
+of its parameter gradient.
+
+This is a conceptual and diagnostic note only. No AFM04, AFM05, or AFM06
+training implementation is changed by this document.
+
+
+1. State dependence of the tip-side RHS
+---------------------------------------
+Suppressing normalization and range-penalty details, the AFM04/AFM05 tip-side
+equation has the form
+
+    f2(t, x; theta)
+      = a_act(t)
+        - (k/m) x1
+        - (c/m) x2
+        + (1/m) Fts_hat(x1, x2, x3; theta),
+
+where
+
+    Fts_hat
+      = g_NN M(x1, x3; theta_mask)
+        r_KAN(x1_norm, x2_norm, x3_norm; theta_KAN).
+
+Consequently:
+
+    * x1 enters f2 directly through the stiffness term;
+    * x2 enters f2 directly through the viscous/damping term;
+    * x1 and x2 also enter indirectly through the learned force model;
+    * x3 has no separate linear term in f2, but affects f2 through Fts_hat
+      (including the KAN and, where applicable, the soft mask).
+
+The unavailable x3 trajectory is therefore the reason that AFM04/AFM05 cannot
+construct a fully observed-state evaluation of the complete learned RHS without
+using unavailable or oracle information.
+
+
+2. Current rollout-state x2dot loss
+-----------------------------------
+The current derivative prediction is evaluated along the model rollout:
+
+    x2dot_hat_roll(t_i)
+      = f2(t_i, x1_hat(t_i), x2_hat(t_i), x3_hat(t_i); theta).
+
+Its normalized residual and loss can be written as
+
+    r_roll,i
+      = [x2dot_bar(t_i) - x2dot_hat_roll(t_i)] / s_x2dot,
+
+    L_x2dot_roll
+      = (1/N) sum_i r_roll,i^2.
+
+This definition is dynamically self-consistent: every RHS term is evaluated at
+the same model-predicted state. However, the residual simultaneously contains:
+
+    * error caused directly by x1_hat - x1_bar;
+    * error caused directly by x2_hat - x2_bar;
+    * error in the learned Fts_hat;
+    * error transmitted through the latent x3_hat trajectory.
+
+The x1 and x2 state losses already penalize the first two errors. The rollout
+x2dot loss therefore applies an additional, dynamically coupled penalty to them.
+
+
+3. Possible partially observed-state alternative
+-------------------------------------------------
+AFM04 has observed/simulated x1_bar and x2_bar. These values could be inserted
+only into the known stiffness and damping terms while retaining the predicted
+state in the learned force branch:
+
+    x2dot_hat_mixed(t_i)
+      = a_act(t_i)
+        - (k/m) x1_bar(t_i)
+        - (c/m) x2_bar(t_i)
+        + (1/m) Fts_hat(x_hat(t_i); theta).
+
+The corresponding residual is
+
+    r_mixed,i
+      = [x2dot_bar(t_i) - x2dot_hat_mixed(t_i)] / s_x2dot.
+
+Let
+
+    e1_i = x1_hat(t_i) - x1_bar(t_i),
+    e2_i = x2_hat(t_i) - x2_bar(t_i).
+
+Then
+
+    r_mixed,i
+      = r_roll,i
+        - [(k/m)e1_i + (c/m)e2_i] / s_x2dot.
+
+This operation will often reduce L_x2dot because it removes the direct
+stiffness- and damping-induced contributions of the rollout state errors. A
+smaller loss under this definition does not, by itself, demonstrate that
+Fts_hat or the complete rollout dynamics are more accurate.
+
+This is a mixed-state RHS rather than a fully observed-state collocation
+constraint: the known mechanical terms use observed x1 and x2, whereas the
+learned force still depends on the predicted state, including x3_hat.
+
+
+4. Why the gradient can change sign and direction
+-------------------------------------------------
+For an arbitrary trainable parameter theta_j,
+
+    dL_x2dot/dtheta_j
+      = (2/N) sum_i r_i (dr_i/dtheta_j).
+
+Changing from r_roll to r_mixed changes both factors in this expression.
+
+First, the residual changes by
+
+    -[(k/m)e1_i + (c/m)e2_i] / s_x2dot.
+
+Even if the residual Jacobian were unchanged, this change can alter the
+weighted inner product, make a gradient component cross zero, and therefore
+reverse its sign.
+
+Second, the gradient-propagation paths change. In the rollout-state definition,
+the derivative contains the direct paths
+
+    (k/m) d(x1_hat)/dtheta_j
+      + (c/m) d(x2_hat)/dtheta_j,
+
+in addition to the total derivative through Fts_hat and x3_hat. In the mixed
+definition, the observed x1_bar and x2_bar are constants, so these two direct
+paths disappear.
+
+Therefore, replacing the rollout states in only the known mechanical terms can:
+
+    * increase or decrease individual gradient components;
+    * reverse the sign of individual gradient components;
+    * rotate the full gradient vector in parameter space;
+    * change its cosine similarity with the state-loss gradients;
+    * change which parameter groups receive the strongest optimization signal.
+
+It is incorrect to regard the alternative merely as a numerically smaller
+version of the same x2dot loss. It defines a different optimization objective.
+
+
+5. Potential benefit and limitation in AFM04/AFM05
+--------------------------------------------------
+Potential benefit:
+
+    The derivative term would no longer repeat the direct stiffness and damping
+    consequences of x1 and x2 rollout errors. Its gradient could consequently
+    focus more strongly on the learned-force and latent-state branches, and the
+    conflict with the state-loss gradients might be reduced.
+
+Limitations:
+
+    * x3 remains unobserved, so the force branch is not evaluated at a fully
+      observed state;
+    * the mixed RHS is not the same vector field used by the rollout;
+    * a low mixed-state x2dot loss can coexist with a poor rollout trajectory;
+    * state-error propagation can be hidden rather than corrected;
+    * a lower numerical value does not establish better force recovery or
+      mechanistic identifiability.
+
+For these reasons, the change should not be justified solely by observing a
+smaller x2dot loss.
+
+
+6. Difference from the clean AFM06 observed-state construction
+--------------------------------------------------------------
+AFM06 has no latent x3 and its KAN inputs are only x1 and x2. Hence the complete
+RHS can be evaluated pointwise at the observed state:
+
+    x2dot_hat_obs(t_i)
+      = f2(t_i, x1_bar(t_i), x2_bar(t_i); theta).
+
+Because all KAN inputs are observed, this is a coherent observed-state
+vector-field/collocation constraint. In AFM06, the resulting residual is also
+algebraically equivalent to the learned effective-force error evaluated along
+the observed trajectory.
+
+AFM04/AFM05 cannot obtain the same clean construction merely by substituting
+x1_bar and x2_bar into the stiffness and damping terms, because x3_bar is not an
+available training input.
+
+
+7. Current decision and possible future diagnostic
+---------------------------------------------------
+No implementation change is made at present. The partially observed-state
+definition remains a hypothesis for later testing.
+
+If it is evaluated in the future, the decisive comparison should use the same
+saved model and trajectory and report, for both definitions:
+
+    * L_x2dot;
+    * the full x2dot-loss gradient norm;
+    * parameter-group gradient norms;
+    * cosine similarity between x2dot-loss and x1/x2 state-loss gradients;
+    * changes in gradient-component signs;
+    * rollout loss and trajectory quality after controlled optimization.
+
+Only this comparison can establish whether the alternative removes harmful
+gradient conflict or merely makes the auxiliary derivative objective easier.

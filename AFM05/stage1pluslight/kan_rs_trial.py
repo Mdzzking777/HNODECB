@@ -35,8 +35,8 @@ from AFM05.stage1pluslight.losses import (
 from AFM05.stage1pluslight.rollout import actuation_values_at, fts_from_x2dot_signal, rollout_single_shooting, x2dot_rhs
 
 
-X3_INITIAL_GRID_SUPPORT_LO = -2.0
-X3_INITIAL_GRID_SUPPORT_HI = 1.0
+X3_INITIAL_GRID_SUPPORT_OFFSET_LO = -2.0
+X3_INITIAL_GRID_SUPPORT_OFFSET_HI = 1.0
 
 
 def _safe_rms_np(values: np.ndarray, *, floor: float = SCALE_EPS) -> float | np.ndarray:
@@ -197,7 +197,8 @@ def _formal_state_normalizer(train_states_all: np.ndarray) -> tuple[np.ndarray, 
     x2_mean = float(np.mean(states[:, 1]))
     x1_scale = _safe_scale(states[:, 0])
     x2_scale = _safe_scale(states[:, 1])
-    mean = np.asarray([x1_mean, x2_mean, float(states[0, 2])], dtype=float)
+    # x3 is measured from the undeformed sample surface; no trajectory mean is observed.
+    mean = np.asarray([x1_mean, x2_mean, 0.0], dtype=float)
     scale = np.asarray([x1_scale, x2_scale, max(0.1 * x1_scale, 1.0e-30)], dtype=float)
     return mean, scale
 
@@ -207,15 +208,17 @@ def _observable_grid_inputs_from_ode(*, ode_train: torch.Tensor, state_mean: np.
     inputs = torch.empty((n, 3), dtype=ode_train.dtype, device=ode_train.device)
     inputs[:, 0:2] = ode_train[0:2, :].transpose(0, 1)
     if n <= 1:
-        inputs[:, 2] = float(np.asarray(state_mean, dtype=float)[2])
+        inputs[:, 2] = ode_train[2, 0]
     else:
         mean = np.asarray(state_mean, dtype=float).reshape(-1)
         scale = np.asarray(state_scale, dtype=float).reshape(-1)
         center = float(mean[2])
         amp = max(float(abs(scale[2])), 1.0e-30)
+        x3_init = float(ode_train[2, 0].detach().cpu())
+        x3_init_norm = (x3_init - center) / amp
         inputs[:, 2] = torch.linspace(
-            center + X3_INITIAL_GRID_SUPPORT_LO * amp,
-            center + X3_INITIAL_GRID_SUPPORT_HI * amp,
+            center + (x3_init_norm + X3_INITIAL_GRID_SUPPORT_OFFSET_LO) * amp,
+            center + (x3_init_norm + X3_INITIAL_GRID_SUPPORT_OFFSET_HI) * amp,
             n,
             dtype=ode_train.dtype,
             device=ode_train.device,
@@ -708,7 +711,7 @@ def stage1pluslight_kan_random_trial(
     initial_grid_support = initial_grid_support_from_raw_inputs(grid_inputs, runtime["state_mean"], runtime["state_scale"])
     initial_grid_support_meta = initial_grid_support_to_meta(
         initial_grid_support,
-        source="AFM05_stage1pluslight_rs_observed_x1x2_neutral_x3",
+        source="AFM05_stage1pluslight_rs_observed_x1x2_dynamic_x3_init",
     )
     initial_grid_fields = {
         "initial_grid_support_source": str(initial_grid_support_meta["source"]),

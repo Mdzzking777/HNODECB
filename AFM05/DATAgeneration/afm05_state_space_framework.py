@@ -29,7 +29,7 @@ import numpy as np
 Array = np.ndarray
 
 DEFAULT_TRACE_NPZ = Path(__file__).with_name(
-    "PS_cantilever_disp_vel_time_3_pixels_Z_63.77_a0_0.07108_file_scan04143.imp_.npz"
+    "PS_cantilever_disp_vel_time_3_pixels_Z_85.0_a0_0.07108_file_scan04143.imp_.npz"
 )
 
 

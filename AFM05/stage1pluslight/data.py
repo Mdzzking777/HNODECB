@@ -6,7 +6,14 @@ from pathlib import Path
 
 import numpy as np
 
-from AFM05.DATAgeneration.afm05_st1pl_entry_generator import generate_afm05_st1pl_entry_dataset
+from AFM05.DATAgeneration.afm05_st1pl_entry_generator import (
+    AFM05_DATASET_SIGNATURE,
+    DEFAULT_INITIAL_INDEX,
+    DEFAULT_TRAINING_WINDOW_START_S,
+    DEFAULT_TRACE_NPZ,
+    DEFAULT_Z_M,
+    generate_afm05_st1pl_entry_dataset,
+)
 
 
 def make_train_val_masks(n: int, val_stride: int, val_offset: int) -> tuple[np.ndarray, np.ndarray]:
@@ -46,7 +53,35 @@ def _metadata_matches_pixel_tag(path: Path, *, pixel_tag: str) -> bool:
 
     with path.open("r", encoding="utf-8") as fh:
         metadata = json.load(fh)
-    return str(metadata.get("pixel_tag", "")).strip() == str(pixel_tag).strip()
+    if str(metadata.get("pixel_tag", "")).strip() != str(pixel_tag).strip():
+        return False
+    if str(metadata.get("dataset_signature", "")).strip() != AFM05_DATASET_SIGNATURE:
+        return False
+    if Path(str(metadata.get("source_trace_npz", ""))).name != DEFAULT_TRACE_NPZ.name:
+        return False
+    try:
+        if int(metadata.get("start_idx_source")) != int(DEFAULT_INITIAL_INDEX):
+            return False
+        if not np.isclose(float(metadata.get("dist_Z_m")), DEFAULT_Z_M, rtol=0.0, atol=1.0e-15):
+            return False
+        x1_init = float(metadata.get("x1_init_m"))
+        x3_init = float(metadata.get("x3_init_m"))
+        a0 = float(metadata.get("a0_m"))
+        if not np.isclose(x3_init, DEFAULT_Z_M + x1_init - a0, rtol=0.0, atol=1.0e-15):
+            return False
+    except (TypeError, ValueError):
+        return False
+    window_start = metadata.get("default_training_window_start_s")
+    if window_start is None:
+        return False
+    return bool(
+        np.isclose(
+            float(window_start),
+            float(DEFAULT_TRAINING_WINDOW_START_S),
+            rtol=0.0,
+            atol=1.0e-15,
+        )
+    )
 
 
 def ensure_dataset(

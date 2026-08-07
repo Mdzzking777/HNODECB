@@ -31,6 +31,7 @@ def load_resume_trials(
     pixel_tag: str,
     arch_window_us: float,
     window_sample_stride: int,
+    expected_windows: list[Mapping[str, Any]] | None = None,
 ) -> tuple[list[Any], str]:
     checkpoint_path = Path(path)
     backup_path = checkpoint_path.with_name(checkpoint_path.name + ".bak")
@@ -92,6 +93,22 @@ def load_resume_trials(
         return [], "window_sample_stride_missing_or_invalid"
     if old_sample_stride != int(window_sample_stride):
         return [], "window_sample_stride_mismatch"
+    if expected_windows is not None:
+        old_windows = data.get("stage1plus_windows")
+        if not isinstance(old_windows, list) or len(old_windows) != len(expected_windows):
+            return [], "window_manifest_missing_or_count_mismatch"
+        for old, current in zip(old_windows, expected_windows):
+            if not isinstance(old, Mapping):
+                return [], "window_manifest_invalid"
+            for key in ("role", "pixel_tag", "start_idx", "stop_idx", "sample_stride"):
+                if str(old.get(key)) != str(current.get(key)):
+                    return [], f"window_manifest_{key}_mismatch"
+            for key in ("t_start", "t_stop"):
+                try:
+                    if abs(float(old.get(key)) - float(current.get(key))) > 1.0e-15:
+                        return [], f"window_manifest_{key}_mismatch"
+                except (TypeError, ValueError):
+                    return [], f"window_manifest_{key}_invalid"
     notes: list[str] = []
     if loaded_from == "backup":
         notes.append("loaded_from_backup")

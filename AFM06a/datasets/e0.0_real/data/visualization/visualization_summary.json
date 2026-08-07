@@ -1,0 +1,13 @@
+{
+  "generated_by": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM06a\\datasets\\plot_real_dataset_visualizations_06a.py",
+  "data_dir": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM06a\\datasets\\e0.0_real\\data",
+  "force_column": "Fts",
+  "force_plot_unit": "nN",
+  "outputs": [
+    "afm06_real_trajectory_full_x1_x2_x2dot.png",
+    "afm06_real_Fts_full_hard_switch.png",
+    "afm06_real_Fts_vs_x1.png",
+    "afm06_real_training_validation_W1_x1_x2_x2dot_Fts.png",
+    "afm06_real_training_validation_W1_weighted_10_5_1_x1_x2_x2dot_Fts_hard_switch.png"
+  ]
+}

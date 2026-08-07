@@ -14,6 +14,8 @@ SCRIPT_ORDER = [
     "plot_afm_stage2light_recon_nn_05.py",
     "plot_afm_stage2light_state_x2dot_05.py",
     "plot_afm_stage2light_x2_x2dot_traj_05.py",
+    "plot_afm_stage2light_x3_traj_05.py",
+    "plot_afm_stage2light_fts_traj_05.py",
 ]
 
 

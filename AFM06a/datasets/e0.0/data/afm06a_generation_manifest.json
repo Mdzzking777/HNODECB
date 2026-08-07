@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "system": "AFM06a_hard_sample",
+  "contact_switch_policy": "hard",
+  "contact_criterion": "s <= a0",
+  "noncontact_branch": {
+    "damping": "D1",
+    "adhesion": "C_A / s^2",
+    "hertz": "0"
+  },
+  "contact_branch": {
+    "damping": "D2",
+    "adhesion": "C_A / a0^2",
+    "hertz": "C_H * (a0 - s)^(3/2)"
+  },
+  "initial_time_s": 0.0,
+  "end_time_s": 0.02,
+  "nsteps": 1250000,
+  "num_points": 1250001,
+  "dt_s": 1.6e-08,
+  "initial_state": [
+    0.0,
+    0.0
+  ],
+  "parameter_vector": [
+    11804.0,
+    -1.27462e-06,
+    4.63118,
+    1.56598,
+    0.0017,
+    2.0285,
+    8.88249e-09,
+    0.05585,
+    1.002,
+    8.88249e-09,
+    1.17804911874e-10,
+    500000000000.0
+  ]
+}

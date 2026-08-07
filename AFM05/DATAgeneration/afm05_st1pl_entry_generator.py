@@ -34,12 +34,15 @@ AFM05_SOLUTION_COLUMNS = ("t", "x1", "x2", "x3")
 AFM05_DATA_COLUMNS = ("t", "x1", "x2", "x3", "x2dot", "contact", "s")
 
 DEFAULT_TRACE_NPZ = Path(__file__).with_name(
-    "PS_cantilever_disp_vel_time_3_pixels_Z_63.77_a0_0.07108_file_scan04143.imp_.npz"
+    "PS_cantilever_disp_vel_time_3_pixels_Z_85.0_a0_0.07108_file_scan04143.imp_.npz"
 )
 DEFAULT_IN_AIR_NPZ = Path(__file__).with_name("PS_cantilever_disp_in_air_file_scan04143.imp_.npz")
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[1] / "datasets"
 
-DEFAULT_INITIAL_INDEX = 114943
+AFM05_DATASET_SIGNATURE = "afm05_z85_t0_605488us_downward_negative_v1"
+DEFAULT_Z_M = 85.0e-9
+DEFAULT_INITIAL_INDEX = 151372
+DEFAULT_TRAINING_WINDOW_START_S = 0.605488e-3
 
 
 def pixel_tag_to_key(pixel_tag: str) -> str:
@@ -378,6 +381,7 @@ def generate_afm05_st1pl_entry_dataset(
     output_root: str | Path | None = None,
     save_outputs: bool = True,
     start_at_initial_condition: bool = True,
+    training_window_start_s: float | None = None,
 ) -> dict[str, object]:
     """Build AFM04-compatible AFM05 st1pl entry data.
 
@@ -403,10 +407,24 @@ def generate_afm05_st1pl_entry_dataset(
         meta=meta,
     )
 
-    start_idx = _initial_index_for_pixel(meta, pixel_key=str(pixel_key), pixel_tag=str(pixel_tag))
-    start_idx = min(max(start_idx, 0), t_full.size - 1)
     if not start_at_initial_condition:
         start_idx = 0
+        start_index_policy = "full_trace_start"
+    elif training_window_start_s is not None:
+        requested_start_s = float(training_window_start_s)
+        if not np.isfinite(requested_start_s):
+            raise ValueError("training_window_start_s must be finite or None")
+        start_idx = int(np.searchsorted(t_full, requested_start_s, side="left"))
+        if start_idx >= t_full.size:
+            raise ValueError(
+                "AFM05 training-window start is outside the source trace: "
+                f"{requested_start_s:.12e} s > {float(t_full[-1]):.12e} s"
+            )
+        start_index_policy = "fixed_training_window_start_s"
+    else:
+        start_idx = _initial_index_for_pixel(meta, pixel_key=str(pixel_key), pixel_tag=str(pixel_tag))
+        start_idx = min(max(start_idx, 0), t_full.size - 1)
+        start_index_policy = "source_initial_condition_metadata"
 
     t = t_full[start_idx:].copy()
     x1 = x1_full[start_idx:].copy()
@@ -429,7 +447,7 @@ def generate_afm05_st1pl_entry_dataset(
 
     dist = _meta_float(meta, "Z", "dist")
     a0 = _meta_float(meta, "a0")
-    x3_init = _meta_float(meta, "x3_init", default=a0)
+    x3_init = float(dist + x1[0] - a0)
     x3 = np.full_like(x1, x3_init, dtype=float)
     s = dist + x1 - x3
     contact = (s <= a0).astype(int)
@@ -462,19 +480,31 @@ def generate_afm05_st1pl_entry_dataset(
     c_eff = k_eff / (q_factor * omega0)
     metadata = {
         "dataset": "AFM05 experimental AFM04-compatible st1pl entry",
+        "dataset_signature": AFM05_DATASET_SIGNATURE,
+        "coordinate_convention": "tip displacement toward the sample is negative",
         "source_trace_npz": str(trace_path),
         "source_in_air_npz": str(in_air_path),
         "pixel_tag": str(pixel_tag),
         "pixel_key": str(pixel_key),
         "start_idx_source": int(start_idx),
+        "initial_condition_index_source": int(start_idx),
         "start_at_initial_condition": bool(start_at_initial_condition),
+        "start_index_policy": start_index_policy,
+        "training_window_start_requested_s": (
+            float(training_window_start_s) if start_at_initial_condition and training_window_start_s is not None else None
+        ),
+        "default_training_window_start_s": float(DEFAULT_TRAINING_WINDOW_START_S),
         "time_start_s": float(t[0]),
         "time_stop_s": float(t[-1]),
+        "initial_time_s": float(t[0]),
+        "x1_init_m": float(x1[0]),
+        "x2_init_m_per_s": float(x2[0]),
         "points": int(t.size),
         **pixel_info,
         "dist_Z_m": float(dist),
         "a0_m": float(a0),
         "x3_init_m": float(x3_init),
+        "x3_init_definition": "x3(t0) = Z + x1(t0) - a0",
         "AFM05_initial_condition": [float(x1[0]), float(x2[0]), float(x3_init)],
         "k_eff": float(k_eff),
         "omega0": float(omega0),

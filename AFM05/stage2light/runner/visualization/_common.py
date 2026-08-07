@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pickle
 import re
 from pathlib import Path
@@ -16,10 +17,16 @@ def find_repo_root(start_dir: str | Path) -> Path:
 
 
 REPO_ROOT = find_repo_root(__file__)
-RESULT_DIR = REPO_ROOT / "AFM05" / "stage2light" / "results"
-CHECKPOINT_DIR = REPO_ROOT / "AFM05" / "stage2light" / "checkpoints"
-OUT_DIR = REPO_ROOT / "AFM05" / "stage2light" / "logs" / "visualization"
-LOG_DIR = REPO_ROOT / "AFM05" / "stage2light" / "logs" / "window_per_shard"
+_OUTPUT_ROOT_RAW = os.environ.get("HNODECB_AFM05_STAGE2LIGHT_OUTPUT_ROOT", "").strip()
+OUTPUT_ROOT = (
+    Path(_OUTPUT_ROOT_RAW).expanduser().resolve()
+    if _OUTPUT_ROOT_RAW
+    else REPO_ROOT / "AFM05" / "stage2light"
+)
+RESULT_DIR = OUTPUT_ROOT / "results"
+CHECKPOINT_DIR = OUTPUT_ROOT / "checkpoints"
+OUT_DIR = OUTPUT_ROOT / "logs" / "visualization"
+LOG_DIR = OUTPUT_ROOT / "logs" / "window_per_shard"
 
 _RESULT_VIZ_RE = re.compile(r"stage2light_result_p(\d+)\.viz\.pkl$")
 _RESULT_PT_RE = re.compile(r"stage2light_result_p(\d+)\.pt$")

@@ -1,0 +1,99 @@
+AFM05 Z / t0 / initial-condition consistency audit
+Date: 2026-08-04
+
+1. Current operational baseline
+
+Z = 85.000000 nm
+a0 = 4.532842680 nm
+pixel = 184_152
+source index at t0 = 151372
+t0 = 0.605488 ms
+x1(t0) = -68.659252088 nm
+x2(t0) = -5.8005377547e-3 m/s
+x3(t0) = Z + x1(t0) - a0 = 11.807905232 nm
+s(t0) = Z + x1(t0) - x3(t0) = a0
+coordinate convention: displacement toward the sample is negative
+
+The earlier time 0.602492 ms is not the current operational t0. In the stored
+source coordinate system it has x1 = +68.654348490 nm. Keeping both that time
+and the downward-negative convention would require a coordinated sign change
+of the source state channels; the current implementation does not do that.
+
+2. Confirmed stale settings that were corrected
+
+- The source NPZ had a correct AFM05_initial_condition array but stale
+  AFM05_x3_init and x3_init scalar fields inherited from Z = 63.771 nm.
+  Both now equal +11.807905232 nm.
+- Gain-reference metadata still described the old source window beginning at
+  index 114943. It now describes index 151372 through 157660, stride 16,
+  394 sampled points, 315 training points, and 79 validation points.
+- The generated-dataset cache previously checked only pixel_tag and window
+  start. It now also checks the dataset signature, source filename, Z, source
+  initial index, and the x3(t0) formula.
+- st1pl resume previously checked only mode/span/stride. It now also checks the
+  actual window manifest, including time and index boundaries.
+- st1pl and prest2 PowerShell launchers now clear stale stage-specific
+  environment variables before writing the current formal settings.
+- The obsolete window comment saying the loss window starts later than the
+  entry initial condition was corrected. Both begin at the current t0.
+
+3. Formal training window and split
+
+window mode = window_05_initial
+window = [0.605488, 0.630640] ms
+span = 25.152 us
+source sampling interval = 4 ns
+formal sample stride = 16
+formal sampling interval = 64 ns
+formal points = 394
+train/validation split = periodic 4:1
+training points = 315
+validation points = 79
+
+st1pl and st2l were programmatically verified to use identical time arrays,
+training indices, validation indices, state normalizer, and state scales.
+prest2 delegates to the same st2l data preparation and now receives these
+settings explicitly from its launcher.
+
+4. Current normalizer and initial KAN support
+
+state mean = [-2.28488272e-9 m, 8.87735584e-4 m/s, 5.90395262e-9 m]
+state scale = [4.97244357e-8 m, 5.03464838e-2 m/s, 4.97244357e-9 m]
+x3 normalized initial value = 1.1873342619
+
+The initial support is computed from the current training states. It is not
+hard-coded to the old x3 initialization. The normalized support is
+x1: [-1.36592071, 1.45550926]
+x2: [-1.46047242, 1.42094503]
+x3: [-0.812665738, 2.18733426]
+
+5. Guard and downstream behavior
+
+- The st1pl absolute-x1 guard is calculated from the current selected window,
+  not from an old W0 value. In the formal launcher its multiplier is 1.0.
+- The online x1 reconstruction guard is explicitly disabled by the formal
+  st1pl launcher.
+- st2l uses the same current data and normalizer. Its launcher already clears
+  stale stage2 environment variables.
+- Epoch-0 preparation calls the same stage2 prepare_data path and therefore
+  follows the same dataset, window, initial condition, and normalizer.
+- Step3 is archive-bound by design: it reads the exact time grid, initial state,
+  normalizer, known parameters, and model from the chosen st2l archive. An old
+  archive remains self-consistent with its old experiment and is not silently
+  rewritten to the current baseline.
+
+6. Runtime-area status and verification
+
+The active st1pl, prest2, st2l, and step3 result/log areas contain no experiment
+files. Archives were not modified.
+
+Verified:
+- source and generated metadata agree;
+- x3(t0) = Z + x1(t0) - a0 exactly;
+- s(t0) - a0 = 0;
+- generated dataset begins at source index 151372;
+- st1pl/st2l window and split arrays are identical;
+- stale Z/index/signature metadata are rejected by the dataset loader;
+- an old-window st1pl checkpoint is rejected by resume validation;
+- modified Python files compile;
+- modified PowerShell launchers parse successfully.

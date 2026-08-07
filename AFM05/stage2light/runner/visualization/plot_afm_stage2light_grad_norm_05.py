@@ -10,6 +10,9 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from AFM05.stage2light.runner.visualization._common import (
+    LOG_DIR,
+    OUT_DIR,
+    RESULT_DIR,
     discover_log_paths,
     finalize_and_save,
     load_result_payloads,
@@ -40,9 +43,9 @@ def find_repo_root(start_dir: str | Path) -> Path:
 
 
 REPO_ROOT = find_repo_root(__file__)
-DEFAULT_LOG_DIR = REPO_ROOT / "AFM05" / "stage2light" / "logs" / "window_per_shard"
-DEFAULT_RESULT_DIR = REPO_ROOT / "AFM05" / "stage2light" / "results"
-DEFAULT_OUT_DIR = REPO_ROOT / "AFM05" / "stage2light" / "logs" / "visualization"
+DEFAULT_LOG_DIR = LOG_DIR
+DEFAULT_RESULT_DIR = RESULT_DIR
+DEFAULT_OUT_DIR = OUT_DIR
 DEFAULT_OUT_FILE = "afm_param_stage2light_05_grad_norm_triptych.png"
 DEFAULT_SAMPLE_EVERY = 1
 HISTORY_RE = re.compile(r"stage2light_history_p(\d+)\.json$")

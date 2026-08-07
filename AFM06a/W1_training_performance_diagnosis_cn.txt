@@ -1,0 +1,284 @@
+AFM06a W1 训练表现问题：当前结论、候选原因与验证顺序
+========================================================
+
+更新时间：2026-07-25
+
+
+一、问题背景
+------------
+
+AFM06a 当前实验表现为：
+
+1. W0 的窗口内拟合效果最好，但对不同 Q 的 full-time-span extrapolation
+   仍然不理想。
+2. W1 下的多种配置表现参差不齐，整体没有稳定复现 W0 的训练效果。
+3. W1 中的 Fts 已进入近稳定周期，其物理接触区也可以通过
+
+       s(t) = dist + x1(t)
+
+   和已知阈值
+
+       contact <=> s(t) <= a0
+
+   确定。
+
+当前目标不是重新选择窗口，而是在固定 W1 的前提下，定位导致训练效果不佳
+的代码、模型和优化因素。
+
+
+二、当前需要固定的实验条件
+--------------------------
+
+1. KAN 只使用 x1 作为输入
+
+   AFM06a 真实 Fts 由 tip-sample separation
+
+       s = dist + x1
+
+   决定。引入 x2 虽然可能降低单窗口训练 loss，但容易形成非物理的 x2
+   compensation，并破坏不同 Q 条件下的 extrapolation。
+
+2. 保持 transition/contact/noncontact = 10:5:1 加权采样
+
+   均匀的 1:1:1 时间采样无法充分表示 Fts 在接触进入和退出附近的快速变化。
+   加权采样不改变总样本数量，但增加 transition 和 contact 区域在训练数据中的
+   表达密度。
+
+3. 保持使用 W1
+
+   W1 中接触已经稳定建立，避免将 W0 中强烈变化的 transient envelope 与目标
+   force mapping 混为一谈。需要同时认识到：稳定并不自动意味着更容易辨识。
+   W1 的重复周期可能提供较少的独立信息。
+
+4. 当前 Gain 已关闭，Soft Mask 保持开启
+
+   st1pl 中 Soft Mask 固定在初始化值；st2l 中 Soft Mask 可训练。KAN 必须直接
+   学习物理单位为 m s^-2 的 effective Fts 幅值。
+
+
+三、已经确认的实验事实
+----------------------
+
+1. AFM06a 中，x2dot 方程可写为
+
+       x2dot = f_known(x1, x2, t) + bar_Fts.
+
+   在同一组状态上，
+
+       Delta x2dot = Delta bar_Fts.
+
+   因此 x2dot loss 为 Fts 提供了等价的物理误差信号。
+
+2. 在实际 rollout 训练过程中，预测状态与真实状态尚未完全相同时，
+
+       x2dot_hat - x2dot_true
+       =
+       (bar_Fts_hat - bar_Fts_true)
+       +
+       [f_known(x1_hat, x2_hat, t)
+        - f_known(x1_true, x2_true, t)].
+
+   所以直接 Fts loss 与 x2dot loss 在最终正确状态附近趋于等价，但在远离最优点
+   时拥有不同的梯度和优化条件。
+
+3. W0 中两个连续 contact peak 约为
+
+       0.0884 和 0.3450 m s^-2,
+
+   相差约 3.9 倍。W1 中两个对应 peak 约为
+
+       0.3630 和 0.3626 m s^-2,
+
+   只相差约 0.12%。W0 提供明显的 transient amplitude excitation，而 W1
+   主要重复同一个稳定周期。
+
+4. W0 归档模型的最终输出分解表明：
+
+   - raw KAN 已经学习出 contact peak 及其 transition 附近的局部形状；
+   - Soft Mask 主要消除远程 noncontact 区域中的非物理 raw KAN output；
+   - Gain 主要校准最终输出幅值。
+
+5. 关闭 Gain 前，W1 st1pl Rank 1 为：
+
+       trial 197 / seed-bank 197
+       nn_init_seed = 20260916
+       loss = 4.172443631e-03.
+
+   关闭 Gain 后，W1 st1pl Rank 1 变为：
+
+       trial 42 / seed-bank 42
+       nn_init_seed = 20260761
+       loss = 1.981040299e-02.
+
+   关闭 Gain 后的最佳 st1pl loss 约为原来的 4.75 倍。这证明 force-head
+   幅值处理会显著改变 seed 排名和初始 loss landscape。
+
+6. 历史 W1 Soft Mask 实验中，Soft Mask 梯度并不缺失，但 s0 和 alpha 几乎
+   没有产生有效更新，且 L-BFGS 最终触发 hard zero-step。这说明问题不是简单的
+   “没有误差信号”，而是误差信号没有转化为可接受的联合参数更新。
+
+
+四、目前可能导致 W1 表现不佳的原因
+----------------------------------
+
+原因 A：W1 缺乏 persistent excitation
+
+W1 虽然包含许多时间点，但各周期高度重复。大量样本不等于大量独立信息。
+KAN、Soft Mask 和其他参数只需在一条狭窄稳定轨迹上产生正确的组合输出，因而
+更容易形成参数补偿和低秩局部几何。
+
+W0 的 transient envelope 则向模型提供弱接触、强接触和不同振幅下的 transition，
+使同一种错误补偿难以同时适配整个窗口。
+
+评估：高优先级嫌疑。
+
+
+原因 B：L-BFGS 与 W1 的病态局部几何发生不良交互
+
+W1 中已经观察到：
+
+- gradient norm 仍不小；
+- 参数更新逐渐停止；
+- Strong Wolfe line search 难以接受有效步长；
+- 最终触发 hard zero-step。
+
+这与 AFM04 W1 中 Adam 配合自定义 step guard 和 epoch guard 的成功经验不同。
+但 AFM06a W0 也曾成功使用 L-BFGS，因此不能简单认定 L-BFGS 本身错误。更可能
+是 W1 的局部条件数、参数尺度与 L-BFGS line search 共同导致失败。
+
+评估：高优先级嫌疑，需要最先进行严格消融。
+
+
+原因 C：Force-output 尺度与预条件
+
+关闭 Gain 后，KAN 需要同时学习：
+
+- Fts 的函数形状；
+- Fts 的物理幅值；
+- transition 附近的快速变化。
+
+st1pl Rank 1 seed 和最低 loss 均发生显著变化，已经证明输出尺度会影响初始化
+质量和后续优化条件。关闭可训练 Gain 虽然减少了参数补偿，但也移除了一个有效
+的幅值预条件机制。
+
+评估：高优先级、已有直接实验证据。
+
+
+原因 D：KAN 的有限架构和 spline resolution
+
+Kolmogorov-Arnold representation theorem 说明在充分表达能力下存在函数表示，
+但它不能保证：
+
+- 当前 1-3-1 架构已经足够；
+- grid = 11、cubic spline 能充分解析 sharp DMT transition；
+- 当前 optimizer 能找到理论上存在的表示；
+- 训练窗口内表示具有域外 extrapolation 能力。
+
+因此，theorem 不能排除有限网络宽度和 spline grid resolution 的影响。
+
+评估：中等优先级，需要在保持其他条件完全一致时比较 1-3-1 与稍宽架构。
+
+
+原因 E：st1pl seed 的 basin 幸运性
+
+seed bank 本身没有针对 W0 设计。更合理的解释可能是：
+
+- W0 的优良 basin 较宽，较多随机 seed 都容易进入；
+- W1 的优良 basin 较窄，当前 seed bank 命中概率较低。
+
+不能仅通过 Rank 1 seed 判断该问题。需要比较完整的 1000-seed loss distribution、
+top-k 间距及优良 seed 的占比。
+
+评估：中等偏低优先级。1000 个 seed 已经较多，因此在没有分布证据前不应把
+主要问题归因于幸运性。
+
+
+原因 F：没有直接使用 Fts loss
+
+x2dot loss 已包含 Fts 的物理误差信息，因此缺少直接 Fts loss 不会改变理想状态
+下的目标解。但是直接在 observed states 上构造
+
+       L_F = ||bar_Fts_hat(x_true) - bar_Fts_true||^2
+
+可以绕开训练早期的 state-rollout 误差项，提供更点态、更直接的 force gradient。
+它可能显著改善优化过程，即使最终最优解与 x2dot loss 一致。
+
+评估：不是首要物理缺陷，但可能是有效的优化预条件或辅助目标。
+
+
+原因 G：Soft Mask、KAN 与输出幅值之间的联合补偿
+
+最终输出原本为
+
+       bar_Fts_hat = g_NN * M(s; s0, alpha) * r_KAN(x1).
+
+关闭 Gain 后变为
+
+       bar_Fts_hat = M(s; s0, alpha) * r_KAN(x1).
+
+Soft Mask 在 physical contact transition s = a0 附近已经接近 1，因此局部
+transition 细节主要由 KAN 表达；Soft Mask 主要控制较远 noncontact 区域。
+如果 st2l 继续同时优化 KAN 与 Soft Mask，仍可能存在一定的函数补偿和病态方向。
+
+评估：中等优先级。它可能影响优化路径，但不是 W1 transition 细节不足的唯一解释。
+
+
+五、当前嫌疑优先级
+------------------
+
+1. W1 的低独立信息量与 L-BFGS line search 的不良交互。
+2. Force-output 幅值尺度与关闭 Gain 后的预条件缺失。
+3. 1-3-1、grid 11 对 sharp transition 的有限表达与可优化性。
+4. st1pl seed 对窄 basin 的命中概率。
+5. Soft Mask 与 KAN 的残余补偿。
+6. 没有显式加入 Fts auxiliary loss。
+
+
+六、最有决定性的下一项对照实验
+------------------------------
+
+保持以下内容完全相同：
+
+- W1；
+- 同一个 st1pl seed；
+- x1-only KAN；
+- 10:5:1 加权采样；
+- 相同 KAN 架构和 grid；
+- Gain 关闭；
+- Soft Mask 设置不变；
+- 相同初始 checkpoint。
+
+只比较：
+
+实验 1：
+
+    Adam-only + step guard + epoch guard
+
+实验 2：
+
+    Adam warm start + L-BFGS Strong Wolfe
+
+需要比较：
+
+- 相同 epoch 下的 train/validation loss；
+- wall time；
+- Fts reconstruction error；
+- transition 区域误差；
+- gradient norm；
+- zero-step/rejected-step 次数；
+- 最终 raw KAN、masked KAN 和完整输出。
+
+若 Adam-only 明显优于 Adam + L-BFGS，则可以直接确认当前主要问题来自 W1
+局部几何与 L-BFGS 的交互，而不是 W1 数据、seed 或 KAN theorem 本身。
+
+
+七、当前不能直接得出的结论
+--------------------------
+
+1. 不能仅因为 W0 loss 更低，就认定 W0 比 W1 更适合物理辨识。
+2. 不能仅因为 W1 Soft Mask 参数几乎不动，就认定 W1 没有 Soft Mask 梯度。
+3. 不能用 KAN theorem 排除有限架构、有限 grid 和 optimizer 的实际困难。
+4. 不能仅凭一个 Rank 1 seed 判断整个 seed bank 是否适合 W0 或 W1。
+5. 不能把 W1 的所有问题归咎于 L-BFGS；必须通过相同入口的单变量消融确认。
+6. 不能把 physical contact transition s = a0 与当前 Soft Mask midpoint s0 混为一谈。
+

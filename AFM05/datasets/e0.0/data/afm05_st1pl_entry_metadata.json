@@ -1,8 +1,8 @@
 {
   "AFM05_initial_condition": [
-    -5.9242397396525987e-08,
-    -0.0066053998404145275,
-    4.53284268e-09
+    -6.865925208801074e-08,
+    -0.00580053775471967,
+    1.1807905231989253e-08
   ],
   "F_actuation_alignment": "The global F_actuation(t) trajectory is sliced or interpolated onto the selected stage1pluslight time grid so rollout inputs share the same timestamps.",
   "F_actuation_info": {
@@ -18,12 +18,17 @@
   "constructed_state_fields_not_observed_truth": [
     "x3"
   ],
+  "coordinate_convention": "tip displacement toward the sample is negative",
   "dataset": "AFM05 experimental AFM04-compatible st1pl entry",
-  "dist_Z_m": 6.3771e-08,
+  "dataset_signature": "afm05_z85_t0_605488us_downward_negative_v1",
+  "default_training_window_start_s": 0.000605488,
+  "dist_Z_m": 8.5e-08,
   "dt_median_s": 4.000000000062981e-09,
   "gain_force_reference_available": true,
   "gain_force_reference_key": "F_ts_184_152",
   "gain_force_reference_role": "AFM05 reconstructed tip-sample force for the selected pixel, used for KAN gain amplitude initialization; not synthetic oracle truth.",
+  "initial_condition_index_source": 151372,
+  "initial_time_s": 0.0006054880000000001,
   "k_eff": 24.07942342462947,
   "m_eff": 2.2470674522349705e-11,
   "omega0": 1035177.8893590668,
@@ -31,19 +36,24 @@
   "pixel_key": "pixel_184_152",
   "pixel_layout": "four_column_x1_x2_x2dot_t",
   "pixel_tag": "184_152",
-  "points": 621761,
+  "points": 585332,
   "source_column_order": "[x1_m, x2_m_per_s, x2dot_m_per_s2, t_s]",
   "source_in_air_npz": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM05\\DATAgeneration\\PS_cantilever_disp_in_air_file_scan04143.imp_.npz",
-  "source_trace_npz": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM05\\DATAgeneration\\PS_cantilever_disp_vel_time_3_pixels_Z_63.77_a0_0.07108_file_scan04143.imp_.npz",
+  "source_trace_npz": "C:\\Users\\Public\\Documents\\GitHub\\HNODECB\\AFM05\\DATAgeneration\\PS_cantilever_disp_vel_time_3_pixels_Z_85.0_a0_0.07108_file_scan04143.imp_.npz",
   "source_unit_system": "SI",
   "start_at_initial_condition": true,
-  "start_idx_source": 114943,
+  "start_idx_source": 151372,
+  "start_index_policy": "source_initial_condition_metadata",
   "strict_rule": "AFM05 has no true x3(t), x3dot(t), delta_dot(t), Fts(t), ks, or cs. Only x1, x2, x2dot, t, initial condition, and derived force references are available.",
-  "time_start_s": 0.000459772,
+  "time_start_s": 0.0006054880000000001,
   "time_stop_s": 0.002946812,
+  "training_window_start_requested_s": null,
+  "x1_init_m": -6.865925208801074e-08,
   "x1_unit_scale_to_m": 1.0,
+  "x2_init_m_per_s": -0.00580053775471967,
   "x2_unit_scale_to_m_per_s": 1.0,
   "x2dot_source": "pixel_column_2",
   "x2dot_unit_scale_to_m_per_s2": 1.0,
-  "x3_init_m": 4.53284268e-09
+  "x3_init_definition": "x3(t0) = Z + x1(t0) - a0",
+  "x3_init_m": 1.1807905231989253e-08
 }

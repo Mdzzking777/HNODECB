@@ -18,12 +18,12 @@ from AFM05.stage2light.rollout import LearnableMechModule, rollout_single_shooti
 from AFM05.stage2light.runner.visualization._common import (
     OUT_DIR,
     REPO_ROOT,
+    RESULT_DIR,
     finalize_and_save,
     load_checkpoint_payloads,
 )
 
 
-RESULT_DIR = REPO_ROOT / "AFM05" / "stage2light" / "results"
 _RESULT_PT_RE = re.compile(r"stage2light_result_p(\d+)\.pt$")
 FULL_PANEL_MAX_POINTS = 4000
 

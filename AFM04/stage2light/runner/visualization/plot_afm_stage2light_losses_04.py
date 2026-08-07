@@ -29,7 +29,7 @@ BEST_RE = re.compile(r"best: train=([0-9eE+\-.]+)\s+val=([0-9eE+\-.]+)")
 def find_repo_root(start_dir: str | Path) -> Path:
     here = Path(start_dir).resolve()
     for path in [here, *here.parents]:
-        if (path / "AFM04").is_dir() and (path / "user requirements").is_dir():
+        if (path / "AFM04" / "stage2light").is_dir():
             return path
     raise RuntimeError(f"Could not locate repo root from {start_dir}")
 

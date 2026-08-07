@@ -1,0 +1,85 @@
+AFM06a e0.0_real and External Silicon Data: Shared Constants and Ground-Truth Parameters
+=======================================================================================
+
+Scope
+-----
+This note summarizes the values currently used by
+
+    C:\Users\Public\Documents\GitHub\HNODECB\AFM06a\datasets\e0.0_real
+
+and compares them with the external silicon-data convention where applicable.
+
+Important consistency notes
+---------------------------
+1. The values of m, c, k, Z, and a0 are now aligned between the current AFM06a
+   e0.0_real synthetic dataset and the external silicon-data convention.
+
+2. The drive angular frequency is nearly, but not exactly, the same in all
+   external-data scripts:
+
+       AFM06a e0.0_real:
+           f_d = 164520 Hz
+           omega_d = 1.0337096467371855e6 rad/s
+
+       One external raw-data processing script:
+           f_d = 164526.16455353564 Hz
+           omega_d = 1.0337483797693859e6 rad/s
+
+   The current AFM06a e0.0_real dataset uses the first value.
+
+3. Fd is not directly supplied by the external raw data. The current AFM06a
+   e0.0_real dataset uses
+
+       Fd = 5.534632944831789e-9 N.
+
+   Separately, an external-data residual analysis estimated an effective
+   actuation amplitude
+
+       F_act,avg ~= 18.9 nN.
+
+   These should not be treated as the same quantity without further calibration.
+
+4. C1, C2, eta*, CA, and CH are AFM06a synthetic ground-truth force-law
+   parameters. The external raw data do not directly provide these values.
+
+5. Current AFM06a e0.0_real trains the KAN to output the physical interaction
+   force Fts [N]. In the state-space equation, this force enters as Fts/m.
+
+
+Table
+-----
+
+Explicit ground-truth force-law values:
+
+    C1   = -1.27462e-6
+    C2   = 4.63118
+    eta* = 8.88249e-9 m = 8.88249 nm
+
+| Constants | Value | Ground-truth parameters | Value |
+|---|---:|---|---:|
+| m | 2.1224912661072245e-11 kg | C1 | -1.27462e-6 |
+| c | 5.126260974043132e-8 N*s/m | C2 | 4.63118 |
+| k | 22.68 N/m | eta* | 8.88249e-9 m = 8.88249 nm |
+| a0 | 1.65e-10 m = 0.165 nm | CA = -AR/(6m) | -1.244652615141573e-22 m^3/s^2 |
+| Z | 1.0e-7 m = 100 nm | CH = 4E*sqrt(R)/(3m) | 6.84643513160807e12 m^(-1/2)/s^2 |
+| omega_d | 1.0337096467371855e6 rad/s |  |  |
+| Fd | 5.534632944831789e-9 N = 5.534632944831789 nN |  |  |
+
+
+Pure-force coefficients used by the current AFM06a e0.0_real generator
+----------------------------------------------------------------------
+Because the current AFM06a KAN-output convention is physical force Fts [N],
+the generator stores the physical DMT force coefficients:
+
+    CA_F = -2.641764304975505e-33 N*m^2
+    CH_F = 145.31498770807795 N*m^(-3/2)
+
+These are related to the mass-normalized coefficients in the table by
+
+    CA = CA_F / m
+    CH = CH_F / m
+
+and the RHS uses
+
+    x1dot = x2
+    x2dot = (Fd/m) sin(omega_d t) - (k/m) x1 - (c/m) x2 + Fts/m

@@ -1,0 +1,561 @@
+AFM06a 含噪数据方法 A/C 独立实施初步计划
+========================================
+
+更新日期：2026-07-29
+
+
+第 1 章  文档目的与方法边界
+--------------------------
+
+本计划面向 AFM06a 从无噪 synthetic data 迁移到 noisy synthetic data，并最终评估其
+应用于 external AFM data 的可能性。
+
+本文只讨论两套彼此独立的方法：
+
+    方法 A：Weak/integral-form dynamics
+    方法 C：Latent states + relaxed discrete dynamics
+
+“独立应用”的含义是：
+
+1. 方法 A 不使用方法 C 估计出的 latent trajectory。
+2. 方法 C 不使用方法 A 的 weak residual 或 test functions。
+3. 两者使用相同的 noisy observations、KAN 结构、已知物理常数、训练窗口和计算预算。
+4. 两者最终使用相同的外部评价指标比较，不能直接比较各自训练 loss 的数值。
+5. 在 noisy synthetic benchmark 通过前，任何方法都不能直接用于 external data 并据此
+   作出物理结论。
+
+方法 A 是将 Weak SINDy 的 weak/Galerkin 思想移植到 HNODE/KAN 中。由于未知力仍由
+KAN 表示，而不是由预定义稀疏函数库和线性系数表示，因此它应称为
+“weak-form HNODE/KAN”，不能称为严格复现了 WSINDy。
+
+方法 C 保留 partial-measurement PINODE 文献中的核心思想：交替校正 latent states 和
+模型参数，并允许相邻状态之间存在受控的 discrete dynamics defect。AFM06a 中的 KAN
+描述同一个时间不变的 force law，因此 KAN 参数在整条轨迹上共享，不引入逐时间点变化的
+theta_i。
+
+
+第 2 章  共同物理模型与数据口径
+------------------------------
+
+AFM06a 的二阶 cantilever dynamics 写为
+
+    dx1/dt = x2,
+
+    dx2/dt
+    =
+    a_act(t)
+    - gamma_r * x2
+    - omega0^2 * x1
+    + bar_Fts_theta(x1),
+
+其中：
+
+    x1                    tip displacement；
+    x2                    tip velocity；
+    a_act(t)              已知 actuation acceleration；
+    gamma_r               当前 contact regime 对应的 damping coefficient；
+    bar_Fts_theta(x1)     由 KAN 表示的 unknown effective interaction force。
+
+contact/noncontact 的物理判定继续使用 AFM06a data generation 中的已知几何阈值。
+若 hard switch 被保留，则任何跨越 transition 的积分或一步动力学都必须显式尊重该切换。
+
+统一数据名称：
+
+1. Original full-resolution data
+
+   数据生成器产生的完整、高密度、无下采样真实数据。
+
+2. Sampled true data
+
+   从 Original full-resolution data 中按当前采样规则获得的无噪声真实数据点。
+
+3. Noisy observed data
+
+   在 Sampled true data 的 x1 上加入 measurement noise 后得到的观测数据。
+
+4. Latent state
+
+   方法 C 中由观测与动力学共同估计的内部状态，不是真实标签。
+
+所有 noisy synthetic experiments 中，x2、x2dot 和 bar_Fts true 只能用于事后评价，
+不能作为 A 或 C 的训练输入或训练标签。
+
+
+第 3 章  共同 noisy synthetic benchmark
+--------------------------------------
+
+首先建立完全可复现的 measurement-noise-only benchmark：
+
+    y_i = x1_true(t_i) + epsilon_i.
+
+第一轮使用独立 Gaussian observation noise。噪声幅值建议按训练窗口内 x1 去均值后的
+RMS 定义：
+
+    sigma_x / RMS(x1_true - mean(x1_true))
+    =
+    0.1%, 0.5%, 1%, 2%, 5%.
+
+每个噪声等级至少使用多个固定 noise seeds。不能分别向 x1、x2 和 x2dot 独立加噪；
+实验中唯一直接观测量是 noisy x1。
+
+第二轮再单独建立 process-noise benchmark：
+
+    dx2/dt
+    =
+    known RHS
+    + bar_Fts_theta(x1)
+    + F_thermal(t).
+
+measurement noise 和 process noise 必须先分开验证，再进行 combined-noise 实验，否则
+无法判断误差来自观测链路还是动力学过程。
+
+两种方法共享：
+
+    - 同一套 W1 时间窗口；
+    - 同一套 Sampled true data 时间点；
+    - 同一套 contact-aware sampling policy；
+    - 同一 KAN architecture 和 seed bank；
+    - 同一输入 normalizer 定义；
+    - 同一 optimizer 总预算；
+    - 同一 checkpoint/resume 规范。
+
+true quantities 只允许出现在 evaluation pipeline 中。
+
+
+第 4 章  方法 A：Weak/integral-form dynamics
+-------------------------------------------
+
+4.1 核心目标
+
+方法 A 不直接构造 noisy x2 或 noisy x2dot。它要求 governing equation 在一组局部时间
+窗口的积分意义下成立，并通过分部积分把 x1 的时间导数转移到已知 test function 上。
+
+在完全位于单一 contact regime r 内的局部窗口 I_j 上，定义 compactly supported
+test function phi_j(t)，并要求 phi_j 及必要阶导数在窗口边界满足消除边界项的条件。
+
+从
+
+    x1_ddot
+    + gamma_r * x1_dot
+    + omega0^2 * x1
+    - a_act(t)
+    - bar_Fts_theta(x1)
+    = 0
+
+得到 weak residual
+
+    R_j(theta)
+    =
+      integral_Ij x1(t) * phi_j_ddot(t) dt
+    - gamma_r * integral_Ij x1(t) * phi_j_dot(t) dt
+    + integral_Ij [
+          omega0^2 * x1(t)
+          - a_act(t)
+          - bar_Fts_theta(x1(t))
+      ] * phi_j(t) dt.
+
+训练目标为经过量纲/幅值规范后的
+
+    L_weak
+    =
+    mean_j [R_j(theta) / S_j]^2,
+
+其中 S_j 必须由窗口内已知物理项的 RMS 或固定训练集尺度确定，并在训练开始后冻结。
+不能按每个 epoch 的当前 residual 自适应缩放，否则会改变目标函数。
+
+
+4.2 数据入口
+
+方法 A 的直接入口只有：
+
+    - noisy observed x1(t_i)；
+    - observation times t_i；
+    - known actuation a_act(t_i)；
+    - known physical constants；
+    - contact threshold；
+    - KAN parameters theta。
+
+方法 A 不生成 latent x1/x2，不使用 GP，不使用 noisy numerical derivatives，也不执行
+方法 C 的 state correction。
+
+KAN 仍在 noisy x1 上被评价，因此 weak form 消除了 derivative noise amplification，但没有
+彻底消除 errors-in-variables bias。这一点必须在结果解释中保留。
+
+
+4.3 Test functions 与 transition 处理
+
+第一版采用局部、紧支撑、平滑多项式 test functions。至少测试两种支持宽度：
+
+    - short support：强调 transition 附近的局部行为；
+    - medium support：增强对高频零均值噪声的抵消。
+
+训练/validation split 必须按 test-function windows 划分，不能让高度重叠的两个窗口分别
+进入 train 和 validation，否则会产生信息泄漏。
+
+hard contact switch 下：
+
+    - contact interior windows 单独构造；
+    - noncontact interior windows 单独构造；
+    - 第一版不允许普通 test window 跨越 transition；
+    - transition 周围单独保留一组短窗口作为评价集；
+    - 若未来允许跨 transition，必须推导并实现内部边界项，不能直接套用单 regime 公式。
+
+不能使用 true contact labels。synthetic training 中也必须从 noisy observation 和已知物理
+阈值构造可用判定，并记录由噪声引起的 contact-label jitter。
+
+
+4.4 训练流程
+
+Stage A0：无噪声等价性检查
+
+    在 Sampled true x1 上验证 weak residual 的数值积分与当前 pointwise dynamics 在
+    数值精度范围内一致。
+
+Stage A1：固定 KAN 的 residual 检查
+
+    使用已训练的 clean-data KAN，检查不同 test-function width 下的 L_weak 和窗口残差
+    分布，确认 transition 处理没有引入系统偏差。
+
+Stage A2：noisy synthetic smoke test
+
+    在少量 KAN seeds 和一个噪声等级下训练，验证梯度非零、loss 可下降、checkpoint 可恢复。
+
+Stage A3：完整 noise sweep
+
+    对所有预定 noise levels 和 noise seeds 独立训练。
+
+Stage A4：外部评价
+
+    使用 clean true states/forces 进行事后评价，并执行严格 rollout；训练阶段仍不能读取
+    true x2、x2dot 或 force。
+
+
+4.5 必要输出
+
+    - 每个 test window 的位置、regime、support width 和 residual；
+    - train/validation L_weak curves；
+    - weak residual 随噪声等级的分布；
+    - recovered bar_Fts pointwise evaluation；
+    - transition timing/shape error；
+    - full rollout x1 error；
+    - runtime、peak memory 和有效窗口数量；
+    - 全部 normalizer、test-function 和 quadrature 配置。
+
+
+4.6 方法 A 的成功与失败判据
+
+成功不能只由 L_weak 小来定义。至少需要同时满足：
+
+    - force error 随噪声增加平稳恶化，而非突然失效；
+    - contact/noncontact 内部均能恢复正确 force behavior；
+    - transition timing 和峰谷结构可接受；
+    - rollout 不出现明显相位漂移或幅值崩溃；
+    - 多个 noise seeds 得到一致结论。
+
+典型失败模式：
+
+    - L_weak 很小，但 pointwise force 明显错误；
+    - 宽窗口把 transition 平均掉；
+    - KAN 利用 noisy x1 的 errors-in-variables bias 学到偏移映射；
+    - 高度重叠 test windows 造成虚假的 validation 表现；
+    - 不同 support widths 得到完全不同的 force law。
+
+
+第 5 章  方法 C：Latent states + relaxed discrete dynamics
+--------------------------------------------------------
+
+5.1 核心目标
+
+方法 C 将每个采样时刻的内部状态作为待估变量：
+
+    z_i = [x1_latent,i, x2_latent,i].
+
+观测只直接约束 x1_latent：
+
+    L_obs
+    =
+    mean_i [
+        (x1_latent,i - y_i) / sigma_x
+    ]^2.
+
+相邻 latent states 通过 AFM06a governing equations 的一步数值流映射联系：
+
+    d_i(theta, z)
+    =
+    z_(i+1) - Phi_Delta_ti(z_i; theta),
+
+    L_dyn
+    =
+    mean_i ||W_z * d_i||^2.
+
+总目标第一版定义为
+
+    L_C
+    =
+    L_obs + lambda_dyn * L_dyn.
+
+W_z 分别规范 x1 defect 和 x2 defect 的量级。sigma_x、W_z 和 lambda_dyn 在单次正式
+训练中必须有明确记录。
+
+“relaxed”表示 d_i 被惩罚但不被强制等于严格零。若 lambda_dyn 过小，latent states 会追随
+噪声；若过大，方法会退化为由单次 ODE rollout 硬生成的轨迹，并失去 state correction 的
+作用。
+
+
+5.2 与参考文献的必要区别
+
+参考方法允许 state 和 parameter sequentially evolve。AFM06a 中的 KAN 表示时间不变的
+bar_Fts(x1)，因此：
+
+    - KAN parameters theta 在全部时间点共享；
+    - 不允许为每个 i 建立 theta_i；
+    - 不使用 parameter random-walk 来吸收 measurement noise；
+    - 只允许 latent states 在 observation 与 dynamics 之间被校正。
+
+参考文献使用 Euler 离散。AFM06a 的振荡频率和 contact dynamics 对积分误差敏感，因此
+第一版应使用与当前系统验证一致的一步 RK/Dopri5 flow，或者在证明误差足够小后使用固定
+步长 RK4。不能未经验证直接改为 Euler。
+
+
+5.3 数据入口与初始化
+
+方法 C 的训练入口只有：
+
+    - noisy observed x1(t_i)；
+    - observation times；
+    - known actuation；
+    - known physical constants；
+    - contact threshold；
+    - KAN parameters；
+    - latent-state initial guesses。
+
+建议初始化：
+
+    x1_latent,i^(0) = y_i；
+
+    x2_latent,i^(0)
+    = 仅用于初始化的局部稳健差分或低阶局部拟合结果。
+
+x2 初始化不是训练标签，其数值在训练后可被完全修改。不得使用 synthetic true x2 初始化
+正式 benchmark。
+
+input normalizer 从训练窗口 noisy x1 的固定统计量构造并冻结。所有方法 C 的候选实验必须
+使用同一 normalizer policy，防止 normalizer 差异被误判为 latent-state 方法差异。
+
+
+5.4 Contact routing
+
+contact/noncontact 判定首先由当前 x1_latent 根据已知物理阈值获得：
+
+    q_i = H(contact_condition(x1_latent,i)).
+
+第一版使用 hard routing，并对离散 gate 本身停止梯度；每次 outer state-update 后重新计算
+gate。必须记录每轮 gate 改变的点数。
+
+若噪声导致 gate 在阈值附近反复切换，先加入物理尺度明确的 hysteresis diagnostic，而不是
+直接把 hard gate 改成任意 sigmoid。任何 hysteresis 宽度必须由仪器分辨率或 synthetic
+noise scale 支持。
+
+
+5.5 交替优化流程
+
+Outer iteration C-k 包含两个阶段：
+
+State phase：
+
+    固定 KAN parameters theta；
+    更新全部 latent states z_i；
+    最小化 L_obs + lambda_dyn * L_dyn。
+
+Model phase：
+
+    固定 latent states z_i；
+    更新共享 KAN parameters theta；
+    主要最小化 L_dyn。
+
+随后重新计算 contact routing、记录 diagnostics，并进入下一次 outer iteration。
+
+lambda_dyn 建议采用预先声明的 continuation schedule：
+
+    - 初期允许 observation correction；
+    - 中后期逐步收紧 dynamics consistency；
+    - 最终使用严格 rollout 检查，而不是把 relaxed trajectory 当作最终 prediction。
+
+schedule 必须在训练开始前写入 config，不能根据结果人工临时修改。
+
+
+5.6 训练流程
+
+Stage C0：无噪声恢复检查
+
+    在 Sampled true x1 作为 observation 的情况下，验证 latent states 能返回 true states，
+    dynamics defect 接近数值积分误差。
+
+Stage C1：固定 KAN 的 latent-state recovery
+
+    使用 clean-data trained KAN，只优化 latent states，确认 observation/dynamics 权重能够
+    恢复 x1、x2，而不会制造 transition 偏移。
+
+Stage C2：noisy synthetic smoke test
+
+    使用少量 KAN seeds、一个 noise level 和短窗口验证 alternating optimization、
+    checkpoint/resume 和 gate 更新。
+
+Stage C3：完整 noise sweep
+
+    联合优化 latent states 与 KAN，对全部 noise levels/noise seeds 重复。
+
+Stage C4：严格 rollout
+
+    丢弃训练得到的逐点 latent states，只保留最终 KAN 与一个初始状态，通过原始 ODE solver
+    执行 rollout。若只有 relaxed trajectory 表现良好而 rollout 失败，则方法没有恢复正确
+    dynamics。
+
+
+5.7 必要输出
+
+    - observation loss、dynamics-defect loss 和 total loss；
+    - x1/x2 defect 分量；
+    - latent x1 与 noisy observation 的差异；
+    - latent-state correction 的频谱和幅值；
+    - 每轮 contact routing 改变数量；
+    - KAN force evaluated on latent x1；
+    - final strict rollout；
+    - lambda_dyn schedule；
+    - runtime、peak memory 和 latent-state parameter count；
+    - checkpoint 中完整 latent states、KAN state 和 optimizer state。
+
+
+5.8 方法 C 的成功与失败判据
+
+成功需要：
+
+    - latent x1 去除噪声但保留 contact transition；
+    - latent x2 与 true synthetic x2 在评价阶段一致；
+    - dynamics defect 随训练下降；
+    - 最终 KAN force 在未参与训练的 true evaluation 上可靠；
+    - 丢弃 latent trajectory 后的 strict rollout 仍然成立；
+    - 多个 noise seeds 下结果稳定。
+
+典型失败模式：
+
+    - latent states 紧贴 noisy x1，L_obs 小但 dynamics defect 大；
+    - latent states 过度服从当前错误 KAN，transition 被移动或抹平；
+    - latent states 与 KAN 相互补偿，relaxed trajectory 很好但 strict rollout 失败；
+    - hard gate 在阈值附近频繁翻转；
+    - lambda_dyn 改变后得到完全不同的 force law；
+    - 状态变量数量和 optimizer state 导致内存不可接受。
+
+
+第 6 章  A 与 C 的公平比较
+-------------------------
+
+训练 loss 不可跨方法直接比较。统一评价必须基于 synthetic ground truth，并至少包含：
+
+1. Force fidelity
+
+       bar_Fts RMSE / NRMSE / R2；
+       contact 与 noncontact 分区指标；
+       transition 附近单独指标。
+
+2. State fidelity
+
+       x1、x2 和 x2dot 的 RMSE；
+       相位误差；
+       峰值和谷值误差。
+
+3. Transition fidelity
+
+       contact onset/exit timing error；
+       transition width/slope error；
+       错误 contact classification 比例。
+
+4. Dynamical self-consistency
+
+       从同一初始条件出发的 strict rollout；
+       rollout horizon 随时间的误差增长；
+       不同 Q-factor datasets 上的 generalization。
+
+5. Robustness
+
+       不同 noise levels；
+       不同 noise seeds；
+       不同 KAN seeds；
+       结果方差和失败率。
+
+6. Engineering cost
+
+       wall time；
+       peak memory；
+       checkpoint size；
+       resume 可靠性；
+       超参数数量。
+
+方法 A 的 test-function width 与方法 C 的 lambda_dyn 都属于方法超参数。两者必须在独立的
+development noise seed 上确定，再冻结后用于正式 benchmark，不能在 test seeds 上选择。
+
+
+第 7 章  推荐实施顺序
+--------------------
+
+虽然方法 C 是面向 external partial/noisy observations 更完整的最终候选方案，但方法 A 的
+工程成本明显更低，也更容易定位问题。因此推荐顺序为：
+
+Phase 1：先独立实现方法 A
+
+    目标不是预先认定 A 为最终方案，而是建立一个不依赖 numerical derivatives 的最小
+    可验证基线，并量化 weak integration 对 transition 的影响。
+
+Phase 2：独立实现方法 C
+
+    在相同 noisy synthetic benchmark 上验证 latent-state correction 是否能在不抹除
+    transition 的情况下明显优于 A。
+
+Phase 3：只作比较，不作混合
+
+    首轮结论必须来自纯 A 与纯 C。不得在尚未识别各自优缺点前把 weak loss 加入 C，
+    否则无法知道性能来自哪一部分。
+
+最终选择规则：
+
+    - 若 A 在 force、transition 和 rollout 上达到要求，且计算成本显著更低，优先 A；
+    - 若 A 的 weak loss 很低但 pointwise force/transition 持续失败，而 C 的 strict rollout
+      稳定，则选择 C；
+    - 若 C 只有 relaxed trajectory 好、strict rollout 失败，则不能选择 C；
+    - 若两者都不能在 noisy synthetic data 中恢复已知 force，则停止向 external data 迁移，
+      先处理可辨识性、noise model 或观测带宽问题。
+
+
+第 8 章  当前阶段不做的内容
+--------------------------
+
+本轮计划明确不包含：
+
+    - GP smoothing 后把轨迹当作固定真值；
+    - GP-NODE/HMC/NUTS；
+    - multiple shooting；
+    - A 与 C 的联合 loss；
+    - 使用 true x2、x2dot 或 bar_Fts 参与训练；
+    - 直接在 external data 上选择超参数；
+    - 根据已知 theoretical force formula 人工限制 KAN；
+    - 在方法尚未通过 synthetic benchmark 时进行物理解释。
+
+
+第 9 章  第一项可执行工作
+------------------------
+
+在正式改动 AFM06a training pipeline 前，首先建立只读 benchmark manifest，固定：
+
+    - clean dataset hash；
+    - sampling indices；
+    - W1 window indices；
+    - noise definition、noise levels 和 noise seeds；
+    - KAN architecture 与 seed list；
+    - input normalizer policy；
+    - contact threshold；
+    - solver/tolerance；
+    - train/validation/test 划分；
+    - 统一评价指标。
+
+随后先实现方法 A 的无噪声 weak-residual equivalence test。只有该测试通过，才开始含噪声
+训练；方法 C 也遵循相同的“clean equivalence first”原则。

@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from AFM05.stage2light.runner.visualization._common import (
+    LOG_DIR,
+    OUT_DIR,
     REPO_ROOT,
     discover_log_paths,
     finalize_and_save,
@@ -30,8 +32,8 @@ VAL_PARTS_RE = re.compile(
     r"val parts:\s*state=([0-9eE+\-.]+)\s+x1_state=([0-9eE+\-.]+)\s+x2_state=([0-9eE+\-.]+)\s+x2dot=([0-9eE+\-.]+)"
 )
 
-DEFAULT_LOG_DIR = REPO_ROOT / "AFM05" / "stage2light" / "logs" / "window_per_shard"
-DEFAULT_OUT_DIR = REPO_ROOT / "AFM05" / "stage2light" / "logs" / "visualization"
+DEFAULT_LOG_DIR = LOG_DIR
+DEFAULT_OUT_DIR = OUT_DIR
 
 
 def shard_title(role: str, label: str) -> str:

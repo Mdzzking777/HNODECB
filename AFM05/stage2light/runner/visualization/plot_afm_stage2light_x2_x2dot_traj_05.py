@@ -11,6 +11,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from AFM05.stage2light.runner.visualization._common import (
+    CHECKPOINT_DIR,
     REPO_ROOT,
     finalize_and_save,
     load_result_payloads,
@@ -20,7 +21,7 @@ from AFM05.stage2light.runner.visualization._common import (
 )
 
 
-DEFAULT_CHECKPOINT_DIR = REPO_ROOT / "AFM05" / "stage2light" / "checkpoints"
+DEFAULT_CHECKPOINT_DIR = CHECKPOINT_DIR
 _BEST_VIZ_RE = re.compile(r"stage2light_best_p(\d+)\.viz\.pkl$")
 
 

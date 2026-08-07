@@ -377,7 +377,7 @@ def _build_mech_winner_items(stage1_payload: dict[str, Any], cfg: Prestage2Confi
         )
 
     zone_filter = _canonical_low_loss_zone(cfg.layer_a_zone_filter)
-    if zone_filter == "noncorner":
+    if zone_filter in ("noncorner", "all"):
         rows.sort(
             key=lambda row: (
                 _finite_float(row.get("best_loss")),
@@ -1818,6 +1818,31 @@ def run_driver(cfg: Prestage2Config | None = None) -> dict[str, Any]:
         records_a = [rec for rec in merged_a.get("candidate_records", []) if isinstance(rec, dict)]
         _print_layer_ranking(log, layer_name=LAYER_A, records=records_a)
 
+        layer_a_result_path = _layer_merged_result_path(cfg, LAYER_A)
+        layer_a_checkpoint_path = cfg.output_root / "checkpoints" / "afm_prest2_05_after_layer_a.checkpoint.pkl"
+        _save_pickle(
+            layer_a_checkpoint_path,
+            {
+                "completed_layer": LAYER_A,
+                "layer_a_result_path": str(layer_a_result_path.resolve()),
+                "layer_a_top_candidates": int(cfg.layer_a_top_candidates),
+                "layer_a_zone_filter": str(cfg.layer_a_zone_filter),
+                "layer_a_epochs": int(cfg.layer_a_epochs),
+                "layer_b_pending": True,
+            },
+        )
+        _log_line(log, f"Layer A checkpoint saved -> {layer_a_checkpoint_path}", echo=True)
+
+        if cfg.stop_after_layer_a:
+            _log_line(log, "Stop-after-Layer-A switch is enabled; Layer B was not started.", echo=True)
+            return {
+                "driver_log": str(driver_log_path),
+                "completed_layer": LAYER_A,
+                "layer_a_result_path": str(layer_a_result_path.resolve()),
+                "layer_a_checkpoint_path": str(layer_a_checkpoint_path.resolve()),
+                "layer_b_started": False,
+            }
+
         promoted = records_a[: min(cfg.layer_b_top_candidates, len(records_a))]
         layer_b_items = [
             {
@@ -1839,7 +1864,6 @@ def run_driver(cfg: Prestage2Config | None = None) -> dict[str, Any]:
             for record in promoted
         ]
         layer_b_assignments = _write_assignments(cfg, LAYER_B, layer_b_items)
-        layer_a_result_path = _layer_merged_result_path(cfg, LAYER_A)
 
         _run_layer_processes(
             cfg,

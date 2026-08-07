@@ -1,0 +1,148 @@
+AFM06a Loss and Physics-Informed Definition
+===========================================
+
+Purpose
+-------
+
+AFM06a learns the unknown effective tip-sample interaction force from the
+known cantilever dynamics. The optimization objective is evaluated on the
+sampled true x1, x2, and x2dot values; a rollout is retained as a diagnostic
+and is not the quantity minimized by the optimizer.
+
+KAN target
+----------
+
+The single-input 1-3-1 KAN receives normalized x1 and predicts the effective
+interaction acceleration
+
+    bar_F_ts_pred = KAN(x1_norm).
+
+Gain and Soft Mask are disabled. Therefore the KAN output is used directly in
+the governing equation.
+
+Governing equation
+------------------
+
+For the hard-sample system,
+
+    x1dot = x2,
+
+    x2dot
+    =
+    A_act sin(omega0 t)
+    - omega0^2 x1
+    - D(s) omega0 x2
+    + bar_F_ts,
+
+where D(s) is the known distance-dependent damping coefficient.
+
+Dynamics residual
+-----------------
+
+At every sampled true state, the predicted force is inserted into the known
+right-hand side:
+
+    r_dyn(t_i)
+    =
+    x2dot_true(t_i)
+    - [
+        A_act sin(omega0 t_i)
+        - omega0^2 x1_true(t_i)
+        - D(s_true(t_i)) omega0 x2_true(t_i)
+        + bar_F_ts_pred(t_i)
+      ].
+
+The only learned quantity in this expression is bar_F_ts_pred.
+
+Normalized dynamics-residual loss
+---------------------------------
+
+For a selected train or validation index set I, define
+
+    A_x2dot
+    =
+    sqrt[
+        (1 / |I|) sum_(i in I) x2dot_true(t_i)^2
+    ].
+
+Then
+
+    L_dyn
+    =
+    (1 / |I|) sum_(i in I)
+    [
+        r_dyn(t_i) / A_x2dot
+    ]^2.
+
+Its target is exactly zero for the noiseless synthetic system.
+
+Residual-smoothness loss
+------------------------
+
+Within each uninterrupted contact or noncontact segment, the normalized
+residual curvature is evaluated on the nonuniform sampled time grid. For an
+interior point i,
+
+    kappa_i
+    =
+    2
+    [
+        (r_(i+1) - r_i) / h_right
+        - (r_i - r_(i-1)) / h_left
+    ]
+    /
+    (h_left + h_right),
+
+where r is the normalized dynamics residual. The dimensionless local
+curvature contribution is
+
+    kappa_i [0.5 (h_left + h_right)]^2.
+
+The smoothness term is the mean square of these contributions:
+
+    L_sm
+    =
+    mean_i
+    {
+        kappa_i [0.5 (h_left + h_right)]^2
+    }^2.
+
+Triplets crossing a contact transition are excluded so the known physical
+regime switch is not penalized as artificial roughness.
+
+Final loss
+----------
+
+    L_total = L_dyn + lambda_sm L_sm,
+
+with
+
+    lambda_sm = 1.
+
+The saved policy name is
+
+    force_scaled_dynamics_residual_true_x1_residual_smooth
+
+Why this is physics-informed
+----------------------------
+
+The KAN is not trained against force labels. Its output is judged by whether
+it satisfies the known cantilever governing equation at the observed states.
+The residual-smoothness term regularizes oscillatory residual errors without
+replacing the governing-equation objective.
+
+The differentiable rollout is used for trajectory reconstruction diagnostics,
+entry replay, and final reporting. The Adam and L-BFGS optimization closures
+minimize the pointwise physics residual and residual-smoothness terms.
+
+Code locations
+--------------
+
+Loss:
+    AFM06a/stage1pluslight/losses.py
+
+st1pl evaluation:
+    AFM06a/stage1pluslight/kan_rs_trial.py
+
+st2l optimization and diagnostic rollout:
+    AFM06a/stage2light/train.py

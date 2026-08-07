@@ -1,0 +1,275 @@
+AFM04 / AFM05 KAN configuration and adaptive grid update
+========================================================
+
+Purpose
+-------
+This note records the KAN configuration used by AFM04 and AFM05 and explains
+how the adaptive grid update (AGU) is constructed and scheduled. It covers the
+mapping from normalized states to the raw KAN output only. The normalizer,
+Soft Mask, and Gain are separate components and are documented elsewhere.
+
+
+1. KAN input and output
+-----------------------
+Both AFM04 and AFM05 use the three normalized state variables as the KAN input:
+
+  x_norm = [x1_norm, x2_norm, x3_norm]
+
+The KAN returns one scalar raw output:
+
+  r_N = KAN(x_norm; theta_KAN)
+
+The effective predicted interaction force is formed outside the KAN as:
+
+  F_ts_hat = g_NN * M(x_hat; theta_mask) * r_N(x_norm; theta_KAN)
+
+Therefore, this KAN section describes only the map from x_norm to r_N. Gain
+controls its physical amplitude, while the Soft Mask controls the smooth
+contact/non-contact modulation.
+
+
+2. Network architecture
+-----------------------
+The shared AFM04/AFM05 numerical KAN configuration is:
+
+  architecture                 3-7-1
+  number of hidden layers      1
+  hidden nodes                 7
+  output dimension             1
+  grid intervals G             11
+  spline order k               3 (cubic B-splines)
+  base function b(x)           SiLU(x)
+  grid_eps                     0.02
+  fallback grid_range          [-1, 1]
+  symbolic branch              disabled
+  auto_save                    disabled
+  save_act                     disabled
+  affine parameters            frozen
+  numerical precision          float64
+  device                       CPU in the local workflows
+
+The only initialization difference relevant here is:
+
+  AFM04 noise_scale            0.2
+  AFM05 noise_scale            0.1
+
+For layer l, the node update is:
+
+  h_j^(l+1) = sum_i phi_ij^(l)(h_i^(l)),
+  h^(0)     = x_norm,
+  r_N       = h_1^(2).
+
+Each numerical edge function is:
+
+  phi_ij^(l)(z)
+    = w_b,ij^(l) * SiLU(z)
+      + w_s,ij^(l) * sum_m c_ijm^(l) B_m,k(z; g_i^(l)).
+
+Here:
+
+  c_ijm  = trainable B-spline coefficients;
+  w_b,ij = trainable scale of the residual/base-function branch;
+  w_s,ij = trainable scale of the spline branch;
+  B_m,k  = B-spline basis function of order k on knot vector g.
+
+
+3. Trainable KAN parameters
+---------------------------
+There are 3*7 + 7*1 = 28 numerical KAN edges. With G = 11 and k = 3,
+each edge has G+k = 14 spline coefficients. The active numerical parameters
+are therefore:
+
+  spline coefficients c        28 * 14 = 392
+  base scales w_b               28
+  spline scales w_s             28
+  total active KAN parameters   448
+
+The following quantities are not optimized by back-propagation in the current
+configuration:
+
+  grid knots                    requires_grad = False
+  edge mask                     fixed at one unless explicitly changed
+  node/subnode affine terms     frozen
+  symbolic branch parameters    inactive because the symbolic branch is off
+
+The grid can still move through AGU. This is an explicit knot-relocation and
+coefficient-refit operation, not a gradient update of the knot coordinates.
+
+
+4. Input normalizer context
+---------------------------
+Before entering the KAN, every state is transformed as:
+
+  x_n_norm = (x_n - mu_n) / s_n.
+
+At the Stage-1-plus-light entry, the observed x1 and x2 statistics are computed
+from the training samples. The initial x3 scale is based on the x1 scale:
+
+  s_x3 = 0.1 * s_x1.
+
+The initial x3 center differs between the two cases:
+
+  AFM04 Stage 1: mu_x3 = mean(x1_train)
+  AFM05 Stage 1: mu_x3 = x3(t0)
+
+At the Stage-2-light/prestage-2 entry, x3 mean and scale may be updated from the
+inherited predicted x3 trajectory. The x1 and x2 statistics remain tied to the
+observed training states. See normalizer.txt for the general definition.
+
+
+5. Adaptive grid update algorithm
+---------------------------------
+AGU is enabled in both AFM04 and AFM05. For one input dimension, pykan first
+sorts the supplied samples and constructs an adaptive quantile grid:
+
+  g_adaptive = empirical quantile knots of the supplied samples.
+
+It also constructs a uniform grid spanning the same minimum and maximum:
+
+  g_uniform = uniformly spaced knots from sample_min to sample_max.
+
+The new core grid is:
+
+  g_new = (1 - grid_eps) * g_adaptive + grid_eps * g_uniform.
+
+With grid_eps = 0.02:
+
+  g_new = 0.98 * g_adaptive + 0.02 * g_uniform.
+
+Thus, the x1 and x2 knot distributions are predominantly data-adaptive. AGU
+does not make the input samples uniformly distributed; it relocates knots in
+response to the supplied sample distribution.
+
+After moving the grid, the old spline is evaluated and its coefficients are
+refitted on the new grid using curve2coef. This approximately preserves the
+represented edge function while changing its B-spline basis.
+
+For G = 11, the core grid has G+1 = 12 knots. Cubic extension with k = 3 adds
+boundary knots, giving a stored knot vector of length 18 and 14 active spline
+basis functions per edge.
+
+
+6. Data supplied to AGU
+-----------------------
+For the first KAN layer:
+
+  x1 axis = normalized observed x1 training samples;
+  x2 axis = normalized observed x2 training samples;
+  x3 axis = a synthetic neutral axis spanning the prescribed x3 support.
+
+The x3 AGU samples are therefore not claimed to reproduce the empirical x3
+density. They deliberately provide controlled support for an initially hidden
+state. The current Stage-1-plus-light supports are:
+
+  AFM04 x3 normalized support    [-1, 1]
+  AFM05 x3 normalized support    [-2, 1]
+
+The configured grid_range = [-1, 1] is only a construction fallback. Before
+the first-layer update, the actual per-input support is rebuilt from the
+normalized minimum and maximum of the AGU inputs. Consequently, x1 and x2 use
+their empirical normalized ranges, while x3 uses its prescribed synthetic
+support.
+
+For deeper KAN layers, AGU is performed sequentially: activations produced by
+the preceding updated layers become the samples used to update the next layer.
+
+
+7. AGU schedule by stage
+------------------------
+Stage 1 plus light
+~~~~~~~~~~~~~~~~~~
+For each trial, AGU is applied once before the rollout. There is no subsequent
+grid update because Stage 1 plus light performs screening without
+back-propagation.
+
+Stage 2 light and prestage 2 entry
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+At optimization entry, the x3 statistics/support are updated first, followed
+by an AGU and Gain reinitialization. The exact source of the entry x3 statistics
+depends on the workflow:
+
+  AFM04: the historical/current Stage-2 workflow obtains them from its pre-opt
+         rollout preparation;
+
+  AFM05: the current workflow inherits the saved Stage-1 x3 trajectory
+         statistics directly and skips the redundant Stage-1 reproduction
+         rollout before performing the entry update.
+
+Prestage 2 does not define an independent KAN or AGU implementation. It invokes
+the Stage-2-light optimization core with shorter screening schedules and hence
+inherits the same model and grid behavior.
+
+Adam phase
+~~~~~~~~~~
+The standard configuration requests 10 grid updates over the interval from
+epoch 0 to epoch 50. The implementation computes an update frequency of five,
+so updates are due at zero-based epochs:
+
+  0, 5, 10, 15, ..., 45
+
+provided the Adam phase extends that far. In one-based human-readable epoch
+numbers, these are epochs 1, 6, 11, ..., 46.
+
+L-BFGS phase
+~~~~~~~~~~~~
+The AGU grid is frozen during L-BFGS. This avoids changing the spline basis
+while the quasi-Newton optimizer is building and using its local curvature
+history.
+
+
+8. Interpretation and reproducibility
+--------------------------------------
+The KAN raw function is not determined by the integer seed alone. Exact
+reproduction also requires the same:
+
+  noise_scale;
+  architecture, grid size, and spline order;
+  base function;
+  grid_eps and initial grid construction;
+  dtype and device numerical behavior;
+  normalizer and AGU input states;
+  masks and all model-state transformations applied before rollout.
+
+The seed controls the random realization, while these settings define the
+construction in which that realization is used. Gain does not change the raw
+KAN edge parameters, but it changes the physical force amplitude after the raw
+output. The Soft Mask similarly acts outside the raw KAN map.
+
+
+9. Main AFM04/AFM05 comparison
+------------------------------
+The core numerical KAN and AGU mechanism is shared. The important differences
+are concentrated in initialization and hidden-state support:
+
+  item                        AFM04                 AFM05
+  ----------------------------------------------------------------------
+  KAN architecture            3-7-1                 3-7-1
+  grid intervals / order      11 / cubic            11 / cubic
+  base function               SiLU                   SiLU
+  grid_eps                    0.02                   0.02
+  initialization noise        0.2                    0.1
+  Stage-1 x3 center           mean(x1_train)         x3(t0)
+  Stage-1 x3 support          [-1, 1]                [-2, 1]
+  Stage-2 entry               pre-opt preparation    inherited x3 statistics
+
+
+10. Primary implementation locations
+------------------------------------
+AFM04:
+
+  AFM04/stage1pluslight/kan_rs_trial.py
+  AFM04/stage2light/config.py
+  AFM04/stage2light/kan_backend.py
+  AFM04/stage2light/train.py
+
+AFM05:
+
+  AFM05/stage1pluslight/kan_rs_trial.py
+  AFM05/stage2light/config.py
+  AFM05/stage2light/kan_backend.py
+  AFM05/stage2light/train.py
+
+Underlying pykan implementation:
+
+  C:/Users/Public/Documents/GitHub/pykan/kan/KANLayer.py
+

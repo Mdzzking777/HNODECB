@@ -115,8 +115,8 @@ def default_config(repo_root: str | Path | None = None) -> Stage1PlusLightConfig
         run_tag=os.environ.get("HNODECB_AFM05_STAGE1_RUN_TAG", "").strip(),
         shard_index=_env_int("HNODECB_AFM05_STAGE1_SHARD_INDEX", 1),
         shard_count=max(1, _env_int("HNODECB_AFM05_STAGE1_SHARD_COUNT", 1)),
-        ks_node_count=max(1, _env_int("HNODECB_AFM05_STAGE1PLUS_GRID_KS_NODES", 20)),
-        cs_node_count=max(1, _env_int("HNODECB_AFM05_STAGE1PLUS_GRID_CS_NODES", 50)),
+        ks_node_count=max(1, _env_int("HNODECB_AFM05_STAGE1PLUS_GRID_KS_NODES", 10)),
+        cs_node_count=max(1, _env_int("HNODECB_AFM05_STAGE1PLUS_GRID_CS_NODES", 10)),
         nn_seed_bank_size=max(
             1,
             _env_int(

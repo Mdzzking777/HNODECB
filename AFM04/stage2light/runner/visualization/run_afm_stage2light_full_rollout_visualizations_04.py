@@ -18,7 +18,7 @@ SCRIPT_ORDER = [
 def _repo_root() -> Path:
     here = Path(__file__).resolve()
     for path in [here.parent, *here.parents]:
-        if (path / "AFM04").is_dir() and (path / "user requirements").is_dir():
+        if (path / "AFM04" / "stage2light").is_dir():
             return path
     raise RuntimeError(f"Could not locate repository root from {here}")
 

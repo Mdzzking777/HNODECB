@@ -524,8 +524,8 @@ def _observable_grid_inputs_from_ode(
 ) -> torch.Tensor:
     """Build AGU inputs in raw physical coordinates before normalization.
 
-    x1/x2 come from observed data.  x3 is a neutral raw-domain axis only; it
-    does not encode true/predicted x3 density and therefore does not guide AGU.
+    x1/x2 come from observed data. When no rollout-derived x3 support is
+    available, the x3 axis follows the current normalized x3 initial state.
     """
 
     n = int(ode_train.shape[1])
@@ -539,7 +539,9 @@ def _observable_grid_inputs_from_ode(
         x3_center = float(mean[2])
         x3_scale = max(float(abs(scale[2])), 1.0e-30)
         if x3_norm_support is None:
-            norm_lo, norm_hi = -1.0, 1.0
+            x3_init = float(ode_train[2, 0].detach().cpu())
+            x3_init_norm = (x3_init - x3_center) / x3_scale
+            norm_lo, norm_hi = x3_init_norm - 2.0, x3_init_norm + 1.0
         else:
             norm_lo = float(x3_norm_support[0])
             norm_hi = float(x3_norm_support[1])
@@ -1050,7 +1052,7 @@ def _prepared_with_initial_x3_from_warmstart(
 ) -> tuple[PreparedData, tuple[float, float] | None, str]:
     init = _x3_init_from_warmstart_meta(warmstart_meta)
     if init is None:
-        return prepared, None, "x1_prior_neutral_x3"
+        return prepared, None, "x1_prior_dynamic_x3_init"
     x3_mean, x3_scale, x3_support, source = init
     mean = np.asarray(prepared.state_mean, dtype=float).copy()
     scale = np.asarray(prepared.state_scale, dtype=float).copy()
@@ -1776,7 +1778,7 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
         )
         initial_grid_support_meta = initial_grid_support_to_meta(
             initial_grid_support,
-            source=f"stage2light_initial_observed_x1x2_neutral_x3__{x3_init_source}",
+            source=f"stage2light_initial_observed_x1x2_dynamic_x3__{x3_init_source}",
         )
         model_seed = int(warmstart.init_seed) if warmstart is not None else int(cfg.seed)
         ks_init = float(warmstart.ks0) if warmstart is not None else _geometric_midpoint(cfg.ks_lo, cfg.ks_hi)
@@ -1891,7 +1893,7 @@ def run_stage2light_shard(cfg=None, *, shard_index: int | None = None, log_path:
                         x3_norm_support=x3_agu_support_current,
                     )
         else:
-            if isinstance(stage1_entry_meta, dict) and str(x3_init_source) != "x1_prior_neutral_x3":
+            if isinstance(stage1_entry_meta, dict) and str(x3_init_source) != "x1_prior_dynamic_x3_init":
                 try:
                     with torch.no_grad():
                         gain_before = float(model.initialize_gain_from_reference(train_states, train_gain_force_reference))

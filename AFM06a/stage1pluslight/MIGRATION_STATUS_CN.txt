@@ -1,0 +1,31 @@
+AFM06a stage1pluslight configuration
+====================================
+
+AFM06a is an independent, source-only case library.
+
+Core contracts
+--------------
+1. State-space system: x1 and x2.
+2. KAN input: globally normalized x1 only.
+3. KAN architecture: 1-3-1.
+4. Contact and noncontact samples share the same input node and KAN.
+5. KAN output: effective interaction force bar_fts in m/s^2.
+6. Gain: disabled in both stage1pluslight and stage2light.
+7. Soft Mask: disabled in both stage1pluslight and stage2light.
+8. Loss: RMS-normalized noiseless governing-equation residual r_dyn plus
+   within-regime residual smoothness.
+9. Sampling: fixed-count 10:5:1 transition/contact/noncontact weighting.
+10. Seed bank: 2000 deterministic KAN initializations.
+
+Data and runtime outputs are intentionally not bundled in AFM06a. On a formal
+run, the launcher generates the AFM06a dataset automatically when the required
+NPZ files are absent, then starts the shards:
+
+    .\AFM06a\stage1pluslight\runner\run_stage1pluslight_06a_local.ps1
+
+Readiness-only check:
+
+    .\AFM06a\stage1pluslight\runner\run_stage1pluslight_06a_local.ps1 -CheckOnly
+
+All AFM06a results, logs, checkpoints, visualizations, and archives are written
+under AFM06a and use the 06a filename suffix.

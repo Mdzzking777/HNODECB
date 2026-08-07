@@ -5,6 +5,8 @@ import re
 import shutil
 import subprocess
 import sys
+import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -109,14 +111,62 @@ def _resolve_archive_run_dir(family_dir: Path, *, stage1_rank: int) -> Path:
     return family_dir / f"rank{stage1_rank}_{_timestamp_compact()}"
 
 
-def _ensure_archive_layout(archive_dir: Path) -> dict[str, Path]:
+def _resolve_explicit_archive_run_dir(cfg) -> Path | None:
+    raw = os.environ.get("HNODECB_AFM05_STAGE2LIGHT_ARCHIVE_DIR", "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = cfg.repo_root / path
+    return path.resolve()
+
+
+def _ensure_archive_layout(archive_dir: Path, *, compact: bool = False) -> dict[str, Path]:
     archive_dir.mkdir(parents=True, exist_ok=True)
     out: dict[str, Path] = {"root": archive_dir}
-    for subdir in _ARCHIVE_SUBDIRS:
+    subdirs = tuple(item for item in _ARCHIVE_SUBDIRS if not (compact and item == "conditional dependency"))
+    for subdir in subdirs:
         path = archive_dir / subdir
         path.mkdir(parents=True, exist_ok=True)
         out[subdir] = path
     return out
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _archive_shared_data_file(src: Path, *, archive_dir: Path, data_dir: Path) -> dict[str, Any] | None:
+    if not src.is_file():
+        return None
+    digest = _sha256(src)
+    shared_dir = archive_dir.parent / "_shared" / "data"
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    shared_name = f"{src.stem}_{digest[:16]}{src.suffix}"
+    shared_path = shared_dir / shared_name
+    if not shared_path.is_file():
+        shutil.copy2(src, shared_path)
+
+    destination = data_dir / src.name
+    if destination.exists() or destination.is_symlink():
+        destination.unlink()
+    storage = "hardlink"
+    try:
+        os.link(shared_path, destination)
+    except OSError:
+        shutil.copy2(shared_path, destination)
+        storage = "copy_fallback"
+    return {
+        "name": src.name,
+        "sha256": digest,
+        "bytes": int(src.stat().st_size),
+        "shared_path": str(shared_path),
+        "storage": storage,
+    }
 
 
 def _copy_glob(src_dir: Path, pattern: str, dst_dir: Path) -> int:
@@ -170,9 +220,24 @@ def _run_all_visualizations(cfg, log) -> None:
 def archive_completed_stage2light_run(cfg, *, log=None) -> dict[str, Any]:
     payload = _load_primary_result_payload(cfg)
     stage1_rank = _infer_stage1_rank(payload, cfg)
-    family_dir = _resolve_archive_family_dir(cfg.repo_root)
-    archive_dir = _resolve_archive_run_dir(family_dir, stage1_rank=stage1_rank)
-    layout = _ensure_archive_layout(archive_dir)
+    compact = os.environ.get("HNODECB_AFM05_STAGE2LIGHT_ARCHIVE_COMPACT", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    archive_dir = _resolve_explicit_archive_run_dir(cfg)
+    if archive_dir is None:
+        family_dir = _resolve_archive_family_dir(cfg.repo_root)
+        archive_dir = _resolve_archive_run_dir(family_dir, stage1_rank=stage1_rank)
+    else:
+        _log_line(log, f"archive: using explicit candidate directory | dir={archive_dir}")
+    layout = _ensure_archive_layout(archive_dir, compact=compact)
+    if compact:
+        stale_conditional = archive_dir / "conditional dependency"
+        if stale_conditional.is_dir():
+            shutil.rmtree(stale_conditional)
+        for pattern in ("stage2light_best_p*.viz.pkl", "stage2light_final_p*.pt", "stage2light_final_p*.viz.pkl"):
+            for stale in layout["checkpoint"].glob(pattern):
+                if stale.is_file():
+                    stale.unlink()
 
     _run_all_visualizations(cfg, log)
 
@@ -184,21 +249,35 @@ def archive_completed_stage2light_run(cfg, *, log=None) -> dict[str, Any]:
     checkpoint_count = 0
     checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_checkpoint_p*.pt", layout["checkpoint"])
     checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_best_p*.pt", layout["checkpoint"])
-    checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_best_p*.viz.pkl", layout["checkpoint"])
-    checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_final_p*.pt", layout["checkpoint"])
-    checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_final_p*.viz.pkl", layout["checkpoint"])
+    if not compact:
+        checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_best_p*.viz.pkl", layout["checkpoint"])
+        checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_final_p*.pt", layout["checkpoint"])
+        checkpoint_count += _copy_glob(cfg.checkpoint_dir, "stage2light_final_p*.viz.pkl", layout["checkpoint"])
 
     log_count = _copy_glob(cfg.shard_log_dir, "log2_05_step2a_stage2light_local_p*.txt", layout["logs"])
 
     data_dir = cfg.dataset_root / cfg.error_level / "data"
     data_count = 0
-    data_count += _copy_file(data_dir / "ode_data_afm_dmt_kv.npz", layout["data"])
-    data_count += _copy_file(data_dir / "pert_df_afm_dmt_kv.npz", layout["data"])
-
-    cond_count = _copy_glob(cfg.result_dir, "stage2light_result_p*.pt", layout["conditional dependency"])
+    shared_data: list[dict[str, Any]] = []
+    if compact:
+        for name in ("ode_data_afm_dmt_kv.npz", "pert_df_afm_dmt_kv.npz"):
+            record = _archive_shared_data_file(data_dir / name, archive_dir=archive_dir, data_dir=layout["data"])
+            if record is not None:
+                shared_data.append(record)
+        data_count = len(shared_data)
+        (layout["data"] / "shared_data_manifest.json").write_text(
+            json.dumps({"schema": "afm05_shared_archive_data_v1", "files": shared_data}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        cond_count = 0
+    else:
+        data_count += _copy_file(data_dir / "ode_data_afm_dmt_kv.npz", layout["data"])
+        data_count += _copy_file(data_dir / "pert_df_afm_dmt_kv.npz", layout["data"])
+        cond_count = _copy_glob(cfg.result_dir, "stage2light_result_p*.pt", layout["conditional dependency"])
     viz_count = _copy_glob(cfg.visualization_dir, "afm_param_stage2light_05_*", layout["visualization"])
 
     summary = {
+        "complete": True,
         "archive_dir": str(archive_dir),
         "stage1_rank": int(stage1_rank),
         "result_files": int(result_count),
@@ -207,7 +286,14 @@ def archive_completed_stage2light_run(cfg, *, log=None) -> dict[str, Any]:
         "data_files": int(data_count),
         "conditional_dependency_files": int(cond_count),
         "visualization_files": int(viz_count),
+        "compact": bool(compact),
+        "shared_data": shared_data,
     }
+    if compact:
+        (archive_dir / "archive_manifest.json").write_text(
+            json.dumps(summary, indent=2) + "\n",
+            encoding="utf-8",
+        )
     _log_line(
         log,
         "archive complete | "

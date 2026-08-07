@@ -118,9 +118,8 @@ def _state_normalizer(train_states_all: np.ndarray) -> tuple[np.ndarray, np.ndar
     x2_mean = float(np.mean(states[:, 1]))
     x1_scale = _safe_scale(states[:, 0])
     x2_scale = _safe_scale(states[:, 1])
-    # Match AFM05 st1pl: x3 is initialized from the known window initial condition,
-    # not from the x1 mean.
-    mean = np.asarray([x1_mean, x2_mean, float(states[0, 2])], dtype=float)
+    # Match AFM05 st1pl: use the undeformed sample surface as the x3 center.
+    mean = np.asarray([x1_mean, x2_mean, 0.0], dtype=float)
     scale = np.asarray([x1_scale, x2_scale, max(0.1 * x1_scale, 1.0e-30)], dtype=float)
     return mean, scale
 

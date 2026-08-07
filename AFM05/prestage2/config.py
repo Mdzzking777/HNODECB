@@ -38,6 +38,7 @@ class Prestage2Config:
     layer_a_epochs: int
     layer_b_top_candidates: int
     layer_b_epochs: int
+    stop_after_layer_a: bool
     checkpoint_every: int
     auto_generate_dataset: bool
     candidate_metric: str
@@ -89,14 +90,15 @@ def default_config(repo_root: str | Path | None = None) -> Prestage2Config:
         stage1_input_path=stage1_input_path,
         shard_index=max(1, _env_int("HNODECB_AFM05_PREST2_SHARD_INDEX", 1)),
         shard_count=max(1, _env_int("HNODECB_AFM05_PREST2_SHARD_COUNT", 6)),
-        layer_a_top_candidates=max(1, _env_int("HNODECB_AFM05_PREST2_LAYER_A_TOP_CANDIDATES", 100)),
+        layer_a_top_candidates=max(1, _env_int("HNODECB_AFM05_PREST2_LAYER_A_TOP_CANDIDATES", 30)),
         layer_a_zone_filter=(
-            os.environ.get("HNODECB_AFM05_PREST2_LAYER_A_ZONE_FILTER", "noncorner").strip().lower()
-            or "noncorner"
+            os.environ.get("HNODECB_AFM05_PREST2_LAYER_A_ZONE_FILTER", "all").strip().lower()
+            or "all"
         ),
         layer_a_epochs=max(1, _env_int("HNODECB_AFM05_PREST2_LAYER_A_EPOCHS", 20)),
-        layer_b_top_candidates=max(1, _env_int("HNODECB_AFM05_PREST2_LAYER_B_TOP_CANDIDATES", 20)),
+        layer_b_top_candidates=max(1, _env_int("HNODECB_AFM05_PREST2_LAYER_B_TOP_CANDIDATES", 10)),
         layer_b_epochs=max(1, _env_int("HNODECB_AFM05_PREST2_LAYER_B_EPOCHS", 20)),
+        stop_after_layer_a=_env_bool("HNODECB_AFM05_PREST2_STOP_AFTER_LAYER_A", False),
         checkpoint_every=max(1, _env_int("HNODECB_AFM05_PREST2_CHECKPOINT_EVERY", 1)),
         auto_generate_dataset=_env_bool("HNODECB_AFM05_PREST2_AUTOGEN_DATASET", False),
         candidate_metric=(

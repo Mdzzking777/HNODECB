@@ -380,6 +380,7 @@ def prepare_stage1pluslight_context(
             pixel_tag=config.pixel_tag,
             arch_window_us=config.arch_window_us,
             window_sample_stride=config.window_sample_stride,
+            expected_windows=_window_manifest_payload(main_windows, pixel_tag=str(config.pixel_tag)),
         )
 
     completed_trial_ids = {trial_id_or_zero(rec) for rec in trial_parameters if trial_id_or_zero(rec) > 0}

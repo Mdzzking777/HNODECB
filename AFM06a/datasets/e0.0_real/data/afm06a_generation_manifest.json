@@ -1,0 +1,243 @@
+{
+  "schema_version": 3,
+  "system": "AFM06a_hard_sample",
+  "data_status": "generated",
+  "governing_equation": "x1dot = x2; x2dot = (Fd/m)*sin(omega0*t) - (k/m)*x1 - (c/m)*x2 + (1/m)*Fts",
+  "contact_switch_policy": "hard",
+  "contact_criterion": "s <= a0",
+  "noncontact_branch": {
+    "damping": "c",
+    "Fts": "CA_F / s^2",
+    "hertz": "0"
+  },
+  "contact_branch": {
+    "damping": "c",
+    "Fts": "CA_F / a0^2 + CH_F * (a0 - s)^(3/2)"
+  },
+  "state_and_contact_definitions": {
+    "x1": "tip displacement state; negative x1 means the tip moves toward the sample",
+    "s": "s = dist + x1; instantaneous tip-sample separation",
+    "delta": "delta = max(a0 - s, 0); contact indentation depth",
+    "contact": "contact if s <= a0; noncontact if s > a0"
+  },
+  "fixed_dmt_coefficients": {
+    "policy": "infer the mass-normalized CA_bar and CH_bar once from the AFM06a equivalent coefficients, then convert to physical force coefficients CA_F=m*CA_bar and CH_F=m*CH_bar for Fts",
+    "CA_bar_definition": "CA_bar = -A*R/(6*m) = C1 * eta_star_length^3 * omega0_ref^2",
+    "CH_bar_definition": "CH_bar = 4*E_star*sqrt(R)/(3*m) = C2 * omega0_ref^2 / sqrt(eta_star_length)",
+    "CA_F_definition": "CA_F = m * CA_bar = -A*R/6",
+    "CH_F_definition": "CH_F = m * CH_bar = 4*E_star*sqrt(R)/3",
+    "C1": -1.27462e-06,
+    "C2": 4.63118,
+    "eta_star_length_m": 8.88249e-09,
+    "omega0_ref_rad_s": 74166.71936594784,
+    "CA_bar_value": -4.913636766607893e-21,
+    "CH_bar_value": 270297753246861.06,
+    "mass_for_conversion_kg": 2.1224912661072245e-11,
+    "CA_F_value": -1.0429151121948596e-31,
+    "CH_F_value": 5737.046205148683,
+    "invariance": "CA_F and CH_F are fixed physical tip-sample force coefficients; changing omega0 later does not rescale them"
+  },
+  "rhs_coefficient_policy": {
+    "omega0_policy": "use external silicon data resonance/drive angular frequency",
+    "omega0_rad_s": 1033709.6467371855,
+    "f0_Hz": 164520.0,
+    "Fd_over_m_definition": "Fd/m = omega0^2 * eta_star_length * B1 * omega_bar^2 * ybar",
+    "Fd_over_m_m_s2": 260.7611646375646,
+    "x1_coefficient": "k/m",
+    "x1_coefficient_value_s_minus2": 1068555633757.517,
+    "damping_coefficient": "c/m",
+    "damping_coefficient_value_s_minus1": 2415.209454993424,
+    "single_damping_policy": "external data provides one cantilever damping c; no separate in-air/contact damping is used"
+  },
+  "initial_time_s": 0.0,
+  "end_time_s": 0.015,
+  "nsteps": 937500,
+  "num_points": 937501,
+  "dt_s": 1.6e-08,
+  "initial_state": [
+    0.0,
+    0.0
+  ],
+  "parameter_names": [
+    "k",
+    "omega0",
+    "m",
+    "c",
+    "Fd",
+    "CA_F",
+    "CH_F",
+    "dist",
+    "a0",
+    "beta"
+  ],
+  "parameter_vector": [
+    22.68,
+    1033709.6467371855,
+    2.1224912661072245e-11,
+    5.126260974043132e-08,
+    5.534632944831789e-09,
+    -1.0429151121948596e-31,
+    5737.046205148683,
+    1e-07,
+    1.65e-10,
+    500000000000.0
+  ],
+  "physical_constants": {
+    "k_N_m": 22.68,
+    "omega0_rad_s": 1033709.6467371855,
+    "f0_Hz": 164520.0,
+    "m_kg": 2.1224912661072245e-11,
+    "c_N_s_m": 5.126260974043132e-08,
+    "Q": 428.0,
+    "Fd_N": 5.534632944831789e-09,
+    "Fd_over_m_m_s2": 260.7611646375646,
+    "CA_F": -1.0429151121948596e-31,
+    "CH_F": 5737.046205148683,
+    "CA_bar": -4.913636766607893e-21,
+    "CH_bar": 270297753246861.06,
+    "dist_m": 1e-07,
+    "a0_m": 1.65e-10,
+    "k_over_m_s_minus2": 1068555633757.517,
+    "c_over_m_s_minus1": 2415.209454993424,
+    "Fd_adjustment_policy": {
+      "purpose": "match e0.0_real stable x1 amplitude to external index109 raw x1",
+      "external_reference": "raw displacement_fwd_sweep[index109], 400-800 us",
+      "target_x1_half_range_nm": 104.3712630655375,
+      "previous_e0_0_real_W1_start_ms": 6.0,
+      "previous_x1_half_range_nm_at_6ms_W1": 315.65344540360854,
+      "linear_scale_applied_to_Fd": 0.33065142986823337,
+      "old_Fd_N": 1.7689787221439648e-08,
+      "new_Fd_N": 5.849153438833823e-09,
+      "new_Fd_over_m_m_s2": 275.5796234470033,
+      "second_pass_previous_x1_half_range_nm_at_6ms_W1": 110.30244252155595,
+      "second_pass_scale_applied_to_Fd": 0.9462280315790892,
+      "final_Fd_N_before_regeneration": 5.534632944831789e-09,
+      "final_Fd_over_m_m_s2_before_regeneration": 260.7611646375646
+    }
+  },
+  "legacy_parameter_names": [
+    "omega0",
+    "c1",
+    "c2",
+    "b1",
+    "d1",
+    "d2",
+    "eta_star_length",
+    "y_bar",
+    "omega_bar",
+    "dist",
+    "a0",
+    "beta"
+  ],
+  "legacy_parameter_vector": [
+    1033709.6467371855,
+    -6.56147878038649e-09,
+    0.023840351868125643,
+    0.48995074900863217,
+    0.002336448598130841,
+    0.002336448598130841,
+    8.88249e-09,
+    0.05585,
+    1.002,
+    1e-07,
+    1.65e-10,
+    500000000000.0
+  ],
+  "z_dist_override": {
+    "name": "Z/dist",
+    "value_m": 1e-07,
+    "value_nm": 100.0,
+    "reason": "match external silicon raw data static separation convention"
+  },
+  "external_single_damping_and_actuation_policy": {
+    "Q": 428.0,
+    "c_definition": "c = m * omega0 / Q",
+    "c_N_s_m": 5.126260974043132e-08,
+    "Fd_over_m_definition": "Fd/m = omega0^2 * eta_star_length * B1 * omega_bar^2 * ybar",
+    "Fd_over_m_m_s2": 833.4445236085128,
+    "Fd_N": 1.7689787221439648e-08,
+    "no_D1_D2_split": true
+  },
+  "integration_extension": {
+    "previous_end_time_s": 0.02,
+    "current_end_time_s": 0.04,
+    "dt_s": 1.6e-08,
+    "reason": "allow W1 middle and W2 tail windows to both lie in stable-amplitude regime"
+  },
+  "contact_and_amplitude_summary": {
+    "status": "copied_reference_summary_only; not generated from e0.0_real",
+    "source": "AFM06a/datasets/e0.0_x1_100nm/data",
+    "contact_points_full": 169795,
+    "contact_fraction_full": 0.06791797283281087,
+    "first_contact_ms": 9.559391999999999,
+    "x1_min_nm_full": -104.49387327166303,
+    "x1_max_nm_full": 105.26480585752122,
+    "x1_half_range_nm_full": 104.87933956459213,
+    "bar_fts_min": -0.008968388889250492,
+    "bar_fts_max": 2.135260684989017,
+    "s_min_nm": -4.493873271663044,
+    "s_max_nm": 205.26480585752122,
+    "contact_fraction_W1_middle": 0.09020127683564169,
+    "x1_half_range_nm_W1_middle": 104.4661961038954,
+    "bar_fts_min_W1_middle": -0.008962155824405202,
+    "bar_fts_max_W1_middle": 1.9007223280150072,
+    "contact_fraction_W2_tail": 0.0878839590443686,
+    "x1_half_range_nm_W2_tail": 104.16704830297648,
+    "bar_fts_min_W2_tail": -0.008964913477084927,
+    "bar_fts_max_W2_tail": 1.7250520564138434
+  },
+  "windows": {
+    "manifest_path": "windows_manifest.json",
+    "policy": "W0 first-contact window; W1 middle stable-amplitude window; W2 tail stable-amplitude window; all use AFM04-equivalent duration",
+    "W0_ms": [
+      9.559391999999999,
+      10.609488
+    ],
+    "W1_ms": [
+      19.474944,
+      20.525056
+    ],
+    "W2_ms": [
+      38.949904000000004,
+      40.0
+    ]
+  },
+  "generated_data_policy": {
+    "generator": "AFM06a/datasets/generate_real_dataset_06a.py",
+    "time_span_s": [
+      0.0,
+      0.015
+    ],
+    "dt_s": 1.6e-08,
+    "nsteps": 937500,
+    "num_points": 937501,
+    "force_column": "Fts",
+    "force_unit": "N",
+    "rhs_force_usage": "(1/m)*Fts"
+  },
+  "data_columns": {
+    "t": "time [s]",
+    "x1": "tip displacement [m]",
+    "x2": "tip velocity [m/s]",
+    "x2dot": "tip acceleration [m/s^2]",
+    "contact": "1 if s <= a0 else 0",
+    "s": "tip-sample separation [m]",
+    "delta": "indentation max(a0-s,0) [m]",
+    "Fts": "physical tip-sample interaction force [N]"
+  },
+  "generated_contact_and_amplitude_summary": {
+    "contact_points_full": 70341,
+    "contact_fraction_full": 0.0750303199676587,
+    "first_contact_s": 0.002589328,
+    "first_contact_ms": 2.589328,
+    "x1_min_nm_full": -104.38323350336583,
+    "x1_max_nm_full": 104.38457380755969,
+    "x1_half_range_nm_full": 104.38390365546277,
+    "Fts_min_N": -3.8307250400986914e-12,
+    "Fts_max_N": 1.7559253652129259e-09,
+    "Fts_over_m_min_m_s2": -0.18048248778542536,
+    "Fts_over_m_max_m_s2": 82.72945068148138,
+    "s_min_nm": -4.383233503365838,
+    "s_max_nm": 204.3845738075597
+  }
+}

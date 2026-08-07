@@ -1,4 +1,4 @@
-AFM04 Step 3: local identifiability analysis by trajectory sensitivities
+wAFM04 Step 3: local identifiability analysis by trajectory sensitivities
 ===========================================================================
 
 Purpose
@@ -29,9 +29,13 @@ of global or structural identifiability.
 
 2. Entry point and fixed experimental context
 ---------------------------------------------
-The pipeline first selects one completed st2l result, best payload, or checkpoint.
-The current local runner defaults to the completed result payload. From that
-payload Step 3 reconstructs:
+The reported AFM04 analyses select the completed result payload of one st2l
+candidate. The center theta_star is the parameter state at the final completed
+epoch, not the epoch with the minimum historical validation loss. Although the
+entry utility can technically be pointed at a compatible checkpoint for a
+diagnostic calculation, checkpoint-centered calculations are not the results
+reported for the archived AFM04 candidates. From the completed result payload,
+Step 3 reconstructs:
 
   - the trained KAN force model;
   - gain and soft-mask state;
@@ -46,6 +50,10 @@ The initial state is taken from the first point of the selected data window:
 
 The initial condition is held fixed and is not included in the formal Step 3
 parameter vector.
+
+Every baseline and finite-difference evaluation uses the same u0, output-time
+grid, known forcing, solver, and tolerances. Only the selected parameter
+coordinate is changed between the plus and minus evaluations.
 
 
 3. Formal trained-parameter vector
@@ -73,6 +81,73 @@ Important coordinate qualification:
   internal trainable coordinates, not automatically the physical k_s and c_s
   axes. Their physical interpretation depends on the mechanistic parameterization
   stored in the st2l payload.
+
+The complete internal-to-physical maps used by the reconstructed model are:
+
+  g_NN = exp(log_gNN),
+
+  s0 = s0_min + (s0_max - s0_min) sigmoid(theta_s0),
+
+  alpha = alpha_min + (alpha_max - alpha_min) sigmoid(theta_alpha),
+
+where theta_s0 = soft_mask_s0_raw and
+theta_alpha = soft_mask_alpha_raw. The mechanistic map depends on the payload:
+
+  sigmoid-bounded mode:
+
+    k_s = k_s,min + (k_s,max - k_s,min) sigmoid(raw_ks),
+
+    c_s = c_s,min + (c_s,max - c_s,min) sigmoid(raw_cs);
+
+  log-relative mode:
+
+    k_s = k_s,ref exp(raw_ks),
+
+    c_s = c_s,ref exp(raw_cs),
+
+    k_s,ref = sqrt(k_s,min k_s,max),
+
+    c_s,ref = sqrt(c_s,min c_s,max);
+
+  direct-unbounded mode:
+
+    k_s = raw_ks,    c_s = raw_cs.
+
+For every newly launched AFM04 st2l run, the current configuration default and
+the official local runner both set
+
+  mech_parameterization = log_relative.
+
+Accordingly, a new result payload is expected to store the log-relative
+coordinates explicitly. The sigmoid-bounded interpretation below is only the
+backward-compatibility rule for historical payloads in which this field is
+absent; it is not the default for a new experiment.
+
+The archived AFM04 W0 Step 3 payloads are not completely uniform in this field.
+The payload audit gives
+
+  B01, B10, B11, B14, B19: field absent -> legacy sigmoid-bounded mode;
+  B04                    : explicit log_relative mode.
+
+The reconstruction code intentionally maps an absent field to the legacy
+sigmoid-bounded mode. Consequently, the reported B04 mechanistic projection
+coordinates are not identical to those of the other five candidates. This is
+an important reproducibility and comparison qualification, not a cosmetic
+metadata difference.
+
+For these formal W0 calculations the complete parameter dimension is
+
+  P = 453
+    = 448 KAN + 1 Gain + 2 Soft Mask + 2 Mechanistic.
+
+The 448 KAN scalars are the active numeric spline coefficients and edge scales:
+
+  first layer : 294 coef + 21 scale_base + 21 scale_sp,
+  second layer:  98 coef +  7 scale_base +  7 scale_sp.
+
+The KAN grid locations, state-normalizer buffers, fixed known physical
+constants, symbolic parameters when symbolic_enabled is false, and u0 are not
+included in theta.
 
 
 4. Fast mechanistic diagnostic mode
@@ -120,6 +195,30 @@ with length
 
 for the default three-channel calculation.
 
+The time samples are all points in the selected data window:
+
+  idx = start_idx, start_idx + 1, ..., stop_idx.
+
+Step 3 does not reapply the periodic 4:1 train/validation split. Thus both the
+former training and validation points contribute to the sensitivity matrix.
+For the archived AFM04 W0 analyses,
+
+  start_idx = 0,
+  stop_idx  = 393,
+  T         = 394,
+  t_start   = 2.35136e-4 s,
+  t_stop    = 2.41424e-4 s,
+  N         = 3T = 1182.
+
+The W0 reference RMS scales recorded for this observable construction are
+
+  s_x1    = 1.6767694911185492e-8 m,
+  s_x2    = 3.341265071261724e-2 m/s,
+  s_x2dot = 6.507112838291148e4 m/s^2.
+
+These scales belong only to the Step 3 observable metric. They are distinct
+from state_mean/state_scale used inside the KAN input normalizer.
+
 The implementation differentiates the normalized predicted outputs rather than
 explicitly storing a residual Jacobian. This is equivalent for local curvature
 because the reference trajectory is independent of theta. If
@@ -128,7 +227,9 @@ because the reference trajectory is independent of theta. If
 
 then
 
-  d r / d theta = d y_obs / d theta.
+  d r / d zeta = d y_obs / d zeta,
+
+where zeta is the relative perturbation coordinate defined in Sections 6 and 9.
 
 
 6. Formal finite-difference sensitivity matrix
@@ -167,6 +268,16 @@ Exact zero-base policy:
   This policy matches the current relative-coordinate code but can create an
   artificial null direction for parameters whose stored base value is exactly
   zero. This limitation must be remembered when interpreting the spectrum.
+
+For all six archived AFM04 W0 candidates used in the comparative analysis
+(B01, B04, B10, B11, B14, and B19), the formal calculation has P = 453 and
+contains zero zero-base/skipped columns. The limitation above remains part of
+the method, but it was not activated for these six reported calculations.
+
+The value epsilon = 1e-4 is the configured Step 3 perturbation size. It should
+not be described as universally optimal. A numerical robustness check may be
+performed by repeating the construction at neighboring epsilon values and
+confirming that the relevant eigenspaces and projection conclusions are stable.
 
 
 7. Mechanistic-mode finite differences
@@ -223,17 +334,35 @@ Interpretation:
     factor, if the normalized observation errors are assumed independent,
     Gaussian, and homoscedastic.
 
-For example, if
+Let zeta denote the dimensionless relative perturbation coordinates introduced
+by the formal finite-difference convention,
 
-  L(theta) = (1 / (2N)) ||r(theta)||_2^2,
+  theta_i(zeta_i) = theta_i_star (1 + zeta_i),
 
-then the Gauss-Newton Hessian is
+with zeta = 0 at the analyzed candidate. If
 
-  nabla^2_GN L = (1/N) S^T S = F.
+  L(zeta) = (1 / (2N)) ||r(theta(zeta))||_2^2,
+
+then the Gauss-Newton Hessian with respect to zeta is
+
+  nabla^2_GN,zeta L |_(zeta=0) = (1/N) S^T S = F.
 
 Calling F an exact statistical FIM without stating an observation-noise model
 would be stronger than what the current code establishes. "Approximate FIM" or
 "trajectory-sensitivity Gram matrix" is the most precise terminology.
+
+More precisely, define the auxiliary Step 3 trajectory discrepancy
+
+  L_step3(zeta) = (1 / (2N))
+                  ||y_obs(theta(zeta)) - y_true_norm||_2^2.
+
+Then F is the Gauss-Newton Hessian of L_step3 with respect to zeta at zeta = 0.
+It is not the Hessian with respect to the unscaled raw theta coordinates, and
+it must not be silently equated with the exact Hessian of the complete st2l
+training loss:
+Step 3 uses its own three-channel RMS metric, the complete selected window, and
+no train/validation subsampling. The st2l objective may contain different term
+weights, penalties, and sampling conventions.
 
 
 10. Eigensystem and local parameter directions
@@ -246,10 +375,10 @@ with orthonormal eigenvectors and eigenvalues sorted in ascending order:
 
   lambda_1 <= lambda_2 <= ... <= lambda_P.
 
-For a small perturbation delta_theta,
+For a small perturbation delta_zeta in the formal relative-coordinate system,
 
-  ||S delta_theta||_2^2 / N
-      = delta_theta^T F delta_theta.
+  ||S delta_zeta||_2^2 / N
+      = delta_zeta^T F delta_zeta.
 
 Along an eigenvector v_i,
 
@@ -258,7 +387,7 @@ Along an eigenvector v_i,
 Hence:
 
   large lambda_i : a locally sensitive or stiff parameter combination;
-  small lambda_i : a weakly observable, sloppy, or compensating combination.
+  small lambda_i : a weakly constrained, sloppy, or compensating combination.
 
 Small negative eigenvalues at machine precision may appear from floating-point
 roundoff even though S^T S is theoretically positive semidefinite. The code
@@ -298,6 +427,17 @@ currently configured to show
 
 The thesis figures that retain only tau = 1e-5 are a selected post-analysis view;
 they do not change the matrix F or the underlying eigendecomposition.
+
+Threshold reporting convention for the AFM04 W0 thesis comparison:
+
+  - tau = 1e-5 is the selected threshold shown in the six-candidate thesis
+    projection-energy figure;
+  - tau in {1e-6, 1e-7, 1e-8} is retained as a threshold-robustness sweep;
+  - tau = 1e-8 remains the software's default primary post-analysis threshold.
+
+Therefore, a numerical value or conclusion quoted from a projection plot must
+always be accompanied by its tau. Results at tau = 1e-5 must not be described
+as though they were computed using the software default tau = 1e-8.
 
 
 12. Projection of k_s and c_s axes onto the null space
@@ -340,6 +480,34 @@ Interpretation:
 
 This is a local coordinate-dependent statement, not a global confidence interval.
 
+There is an additional coordinate detail in formal trained mode. Because the
+finite difference is
+
+  theta_i -> theta_i (1 +/- epsilon),
+
+the i-th column is a derivative with respect to the dimensionless relative
+coordinate zeta_i in theta_i(zeta_i) = theta_i_star (1 + zeta_i). Hence e_j is
+the unit axis of the relative internal coordinate represented by column j. For
+the legacy sigmoid-bounded mechanistic map, for example,
+
+  d k_s / d zeta_ks
+    = raw_ks_star (k_s,max - k_s,min)
+      sigmoid(raw_ks_star) [1 - sigmoid(raw_ks_star)],
+
+and analogously for c_s. Thus E_ks and E_cs are not invariant to rescaling or
+reparameterizing the internal coordinates, and they do not represent a
+one-SI-unit perturbation of k_s or c_s. In log-relative mode,
+
+  d k_s / d zeta_ks = raw_ks_star k_s_star,
+
+and analogously for c_s. Because B04 uses this log-relative map while the other
+five archived W0 candidates use the sigmoid-bounded map, an unqualified direct
+comparison of the absolute B04 mechanistic projection energies with those five
+is not coordinate-invariant. A strictly controlled cross-candidate comparison
+should recompute every candidate in one common mechanistic coordinate system,
+for example additive log-physical coordinates. Until that is done, B04 should
+be interpreted with this parameterization caveat stated explicitly.
+
 
 13. Parameter-group decomposition of null-projection energy
 -----------------------------------------------------------
@@ -373,7 +541,7 @@ while the compensation energy excluding the target itself is
 If the null projection of raw_ks contains substantial KAN-group energy, the
 linearized system admits a combination of raw_ks and KAN changes for which
 
-  S delta_theta approximately equals 0.
+  S delta_zeta approximately equals 0.
 
 This is the mathematical meaning of local KAN-mechanistic compensation: the
 observable channels x1, x2, and x2dot cannot strongly distinguish that joint
@@ -403,6 +571,17 @@ The current pipeline proceeds as follows:
      other mechanistic groups.
  14. Produce eigen-spectrum, threshold-sweep, and null-projection visualizations.
 
+For the archived AFM04 W0 formal calculations, every rollout above is executed
+on CPU in float64 using adaptive DOPRI5 with
+
+  rtol = 1e-10,
+  atol = 1e-12.
+
+Each sensitivity column requires two complete single-shooting ODE rollouts on
+the same 394-point output-time grid. The solver may evaluate the RHS at
+additional adaptive internal times; the 394 points are the requested output
+samples used to assemble y_obs.
+
 
 15. What Step 3 can and cannot establish
 ----------------------------------------
@@ -426,6 +605,17 @@ The conclusions are conditional on:
   theta_star, the selected window, u0, the observable set, RMS scaling, the
   finite-difference epsilon, the internal parameterization, the ODE tolerances,
   and the null threshold tau.
+
+Method/result separation:
+
+  This document defines the Step 3 method and the reproducibility settings. It
+  does not by itself contain all candidate-level scientific conclusions. A
+  thesis appendix that discusses B01, B04, B10, B11, B14, and B19 must also use
+  the archived eigenvalue, threshold-sweep, and group-projection outputs for
+  those candidates. Gradient, finite-difference Delta L, slope, or curvature
+  diagnostics are separate supplementary analyses and must not be presented as
+  quantities that were used to construct the Step 3 projection energy unless
+  they are introduced independently.
 
 
 16. Recommended concise mathematical description

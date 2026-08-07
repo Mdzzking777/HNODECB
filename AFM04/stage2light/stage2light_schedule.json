@@ -1,5 +1,5 @@
 {
-  "epochs": 500,
-  "adam_epochs": 10,
-  "lbfgs_epochs": 490
+  "epochs": 220,
+  "adam_epochs": 220,
+  "lbfgs_epochs": 0
 }

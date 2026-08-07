@@ -8,8 +8,8 @@ from dataclasses import dataclass
 
 # AFM05 experimental data has no known true ks/cs. These bounds are
 # 05experimentPS mechanistic prior bounds, not a GT-centered range.
-KS_BOUNDS = (0.1, 100.0)
-CS_BOUNDS = (5.0e-9, 5.0e-5)
+KS_BOUNDS = (1.0e-3, 5.0e-1)
+CS_BOUNDS = (5.0e-6, 5.0e-3)
 
 
 @dataclass(frozen=True)

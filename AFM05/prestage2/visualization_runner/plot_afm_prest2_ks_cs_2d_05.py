@@ -27,8 +27,8 @@ from AFM05.stage1pluslight.grid import CS_BOUNDS, KS_BOUNDS, loggrid_value  # no
 
 DEFAULT_RESULT_PATH = REPO_ROOT / "AFM05" / "prestage2" / "results" / "afm_prest2_05_candidates_b.pkl"
 DEFAULT_OUT_DIR = REPO_ROOT / "AFM05" / "prestage2" / "visualization"
-KS_GRID_NODE_COUNT = max(1, int(os.environ.get("HNODECB_AFM05_STAGE1PLUS_GRID_KS_NODES", "20")))
-CS_GRID_NODE_COUNT = max(1, int(os.environ.get("HNODECB_AFM05_STAGE1PLUS_GRID_CS_NODES", "50")))
+KS_GRID_NODE_COUNT = max(1, int(os.environ.get("HNODECB_AFM05_STAGE1PLUS_GRID_KS_NODES", "10")))
+CS_GRID_NODE_COUNT = max(1, int(os.environ.get("HNODECB_AFM05_STAGE1PLUS_GRID_CS_NODES", "10")))
 KS_VIS_RANGE = (float(KS_BOUNDS[0]), float(KS_BOUNDS[1]))
 CS_VIS_RANGE = (float(CS_BOUNDS[0]), float(CS_BOUNDS[1]))
 

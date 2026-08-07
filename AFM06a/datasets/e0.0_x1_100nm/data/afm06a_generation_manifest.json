@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "system": "AFM06a_hard_sample",
+  "contact_switch_policy": "hard",
+  "contact_criterion": "s <= a0",
+  "noncontact_branch": {
+    "damping": "D1",
+    "adhesion": "C_A / s^2",
+    "hertz": "0"
+  },
+  "contact_branch": {
+    "damping": "D2",
+    "adhesion": "C_A / a0^2",
+    "hertz": "C_H * (a0 - s)^(3/2)"
+  },
+  "initial_time_s": 0.0,
+  "end_time_s": 0.04,
+  "nsteps": 2500000,
+  "num_points": 2500001,
+  "dt_s": 1.6e-08,
+  "initial_state": [
+    0.0,
+    0.0
+  ],
+  "parameter_vector": [
+    11804.0,
+    -1.27462e-06,
+    4.63118,
+    3.9149499999999997,
+    0.002336448598130841,
+    2.787932930181418,
+    8.88249e-09,
+    0.05585,
+    1.002,
+    1e-07,
+    1.17804911874e-10,
+    500000000000.0
+  ],
+  "z_dist_override": {
+    "name": "Z/dist",
+    "value_m": 1e-07,
+    "value_nm": 100.0,
+    "reason": "match external silicon raw data static separation convention"
+  },
+  "q_fd_override": {
+    "q_reference": 588.2352941176471,
+    "q_effective": 428.0,
+    "damping_scale": 1.3743815283122593,
+    "d1_reference": 0.0017,
+    "d2_reference": 2.0285,
+    "d1_effective": 0.002336448598130841,
+    "d2_effective": 2.787932930181418,
+    "fd_over_m_reference": 0.10867707987934552,
+    "fd_over_m_multiplier": 2.5,
+    "fd_over_m_effective": 0.2716926996983638,
+    "actuation_scale": 2.5,
+    "selection_criterion": "match external index109 raw x1 amplitude in the steady 400-800 us region"
+  },
+  "integration_extension": {
+    "previous_end_time_s": 0.02,
+    "current_end_time_s": 0.04,
+    "dt_s": 1.6e-08,
+    "reason": "allow W1 middle and W2 tail windows to both lie in stable-amplitude regime"
+  },
+  "contact_and_amplitude_summary": {
+    "contact_points_full": 169795,
+    "contact_fraction_full": 0.06791797283281087,
+    "first_contact_ms": 9.559391999999999,
+    "x1_min_nm_full": -104.49387327166303,
+    "x1_max_nm_full": 105.26480585752122,
+    "x1_half_range_nm_full": 104.87933956459213,
+    "bar_fts_min": -0.008968388889250492,
+    "bar_fts_max": 2.135260684989017,
+    "s_min_nm": -4.493873271663044,
+    "s_max_nm": 205.26480585752122,
+    "contact_fraction_W1_middle": 0.09020127683564169,
+    "x1_half_range_nm_W1_middle": 104.4661961038954,
+    "bar_fts_min_W1_middle": -0.008962155824405202,
+    "bar_fts_max_W1_middle": 1.9007223280150072,
+    "contact_fraction_W2_tail": 0.0878839590443686,
+    "x1_half_range_nm_W2_tail": 104.16704830297648,
+    "bar_fts_min_W2_tail": -0.008964913477084927,
+    "bar_fts_max_W2_tail": 1.7250520564138434
+  },
+  "windows": {
+    "manifest_path": "windows_manifest.json",
+    "policy": "W0 first-contact window; W1 middle stable-amplitude window; W2 tail stable-amplitude window; all use AFM04-equivalent duration",
+    "W0_ms": [
+      9.559391999999999,
+      10.609488
+    ],
+    "W1_ms": [
+      19.474944,
+      20.525056
+    ],
+    "W2_ms": [
+      38.949904000000004,
+      40.0
+    ]
+  }
+}

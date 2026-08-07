@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from AFM05.DATAgeneration.afm05_st1pl_entry_generator import DEFAULT_TRAINING_WINDOW_START_S
+
 
 @dataclass(frozen=True)
 class WindowManifest:
@@ -32,19 +34,21 @@ def _as_times(times: np.ndarray) -> np.ndarray:
 
 
 def window_05_initial_indices(times: np.ndarray, window_span: float) -> np.ndarray:
-    """Select the AFM05 initial-condition anchored window.
+    """Select the fixed AFM05 training/validation window.
 
-    The AFM05 entry dataset is already sliced from the initial-condition index
-    stored in the experimental NPZ. Therefore the first row of the entry dataset
-    is the AFM05 initial-condition point, not the start of the original full
-    experimental trace.
+    The entry dataset and the loss window both begin at the current operational
+    AFM05 initial/contact-side point.
     """
 
     times = _as_times(times)
     if not np.isfinite(window_span) or window_span <= 0.0:
         return np.arange(times.size, dtype=int)
-    t0 = float(times[0])
+    start_idx = int(np.searchsorted(times, DEFAULT_TRAINING_WINDOW_START_S, side="left"))
+    if start_idx >= times.size:
+        raise ValueError("AFM05 default training-window start is outside the entry dataset")
+    t0 = float(times[start_idx])
     idxs = np.flatnonzero((times - t0) <= float(window_span))
+    idxs = idxs[idxs >= start_idx]
     return idxs if idxs.size > 0 else np.array([0], dtype=int)
 
 

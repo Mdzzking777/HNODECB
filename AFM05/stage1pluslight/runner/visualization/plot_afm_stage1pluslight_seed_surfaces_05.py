@@ -1,13 +1,9 @@
-"""AFM05 stage1pluslight seed-specific mechanistic loss surfaces.
+"""Draw the AFM05 stage1pluslight best-over-seeds loss surface.
 
-This complements the existing best-over-seeds envelope plot by drawing:
-- fixed NN seed 45
-- fixed NN seed 55
-- fixed NN seed 142
-- mean over all finite viable seeds at each mechanistic grid point
-
-The z axis is log10(train_loss).  The underlying loss is not redefined; only
-the grouping over NN seeds is changed for visualization.
+At every mechanistic ``(ks, cs)`` grid point, the finite viable seed with the
+lowest training loss is selected.  Those winners form one lower-envelope
+surface, with the selected seed retained in each point's hover information.
+The z axis is ``log10(train_loss)``.
 """
 
 from __future__ import annotations
@@ -19,6 +15,12 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def finite_float(value: Any, default: float = math.nan) -> float:
@@ -139,6 +141,22 @@ def fixed_seed_surface(records: list[dict[str, Any]], seed_idx: int) -> dict[tup
         key = (f"{pair[0]:.16e}", f"{pair[1]:.16e}")
         prev = points.get(key)
         if prev is None or loss < prev[0]:
+            points[key] = (loss, rec)
+    return points
+
+
+def best_over_seeds_surface(
+    records: list[dict[str, Any]],
+) -> dict[tuple[str, str], tuple[float, dict[str, Any]]]:
+    points: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+    for rec in records:
+        pair = record_ks_cs(rec)
+        loss = record_loss(rec)
+        if pair is None or not (math.isfinite(loss) and loss > 0.0):
+            continue
+        key = (f"{pair[0]:.16e}", f"{pair[1]:.16e}")
+        previous = points.get(key)
+        if previous is None or loss < previous[0]:
             points[key] = (loss, rec)
     return points
 
@@ -391,6 +409,52 @@ def write_surface_html(
     out_path.write_text(html, encoding="utf-8")
 
 
+def _log_grid_edges(values: list[float]) -> np.ndarray:
+    coordinates = np.log10(np.asarray(values, dtype=float))
+    if coordinates.size < 2:
+        raise RuntimeError("At least two grid coordinates are required for a heatmap.")
+    edges = np.empty(coordinates.size + 1, dtype=float)
+    edges[1:-1] = 0.5 * (coordinates[:-1] + coordinates[1:])
+    edges[0] = coordinates[0] - 0.5 * (coordinates[1] - coordinates[0])
+    edges[-1] = coordinates[-1] + 0.5 * (coordinates[-1] - coordinates[-2])
+    return np.power(10.0, edges)
+
+
+def write_surface_heatmap(
+    *,
+    out_path: Path,
+    points: dict[tuple[str, str], tuple[float, dict[str, Any]]],
+    ks_values: list[float],
+    cs_values: list[float],
+) -> None:
+    z = np.full((len(cs_values), len(ks_values)), np.nan, dtype=float)
+    for cs_index, cs in enumerate(cs_values):
+        for ks_index, ks in enumerate(ks_values):
+            item = points.get((f"{ks:.16e}", f"{cs:.16e}"))
+            if item is not None:
+                z[cs_index, ks_index] = math.log10(item[0])
+
+    fig, axis = plt.subplots(figsize=(8.2, 6.5))
+    heatmap = axis.pcolormesh(
+        _log_grid_edges(ks_values),
+        _log_grid_edges(cs_values),
+        np.ma.masked_invalid(z),
+        shading="flat",
+        cmap="viridis",
+    )
+    axis.set_xscale("log")
+    axis.set_yscale("log")
+    axis.set_xlabel(r"$k_s$ [N m$^{-1}$]", fontsize=14)
+    axis.set_ylabel(r"$c_s$ [N s m$^{-1}$]", fontsize=14)
+    axis.tick_params(axis="both", labelsize=12)
+    colorbar = fig.colorbar(heatmap, ax=axis, pad=0.025)
+    colorbar.set_label(r"$\log_{10}(\mathrm{training\ loss})$", fontsize=14)
+    colorbar.ax.tick_params(labelsize=12)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     script_dir = Path(__file__).resolve().parent
@@ -402,41 +466,28 @@ def main(argv: list[str] | None = None) -> int:
     records = viable_records(load_records(result_path))
     ks_values, cs_values = grid_values(records)
 
-    jobs: list[tuple[str, str, dict[tuple[str, str], tuple[float, dict[str, Any]]], str, int]] = []
-    for seed_idx in (45, 55, 142):
-        jobs.append(
-            (
-                f"AFM05 st1pl seed {seed_idx} mechanistic loss surface",
-                f"afm_param_stage1pluslight_05_seed{seed_idx:03d}_ks_logcs_train_loss_3d.html",
-                fixed_seed_surface(records, seed_idx),
-                f"fixed NN seed_idx={seed_idx}",
-                0,
-            )
-        )
-    jobs.append(
-        (
-            "AFM05 st1pl mean-over-seeds mechanistic loss surface",
-            "afm_param_stage1pluslight_05_mean_over_seeds_ks_logcs_train_loss_3d.html",
-            mean_seed_surface(records),
-            "mean over finite viable NN seeds at this mech point",
-            30,
-        )
+    points = best_over_seeds_surface(records)
+    out_path = out_dir / "afm_param_stage1pluslight_05_best_over_seeds_ks_logcs_train_loss_3d.html"
+    write_surface_html(
+        out_path=out_path,
+        result_path=result_path,
+        title="AFM05 st1pl best-over-seeds mechanistic loss surface",
+        points=points,
+        ks_values=ks_values,
+        cs_values=cs_values,
+        seed_label="best seed at this mechanistic grid point",
+        highlight_lowest_n=50,
+        highlight_name="Top 50",
     )
-
-    for title, filename, points, seed_label, highlight_lowest_n in jobs:
-        out_path = out_dir / filename
-        write_surface_html(
-            out_path=out_path,
-            result_path=result_path,
-            title=title,
-            points=points,
-            ks_values=ks_values,
-            cs_values=cs_values,
-            seed_label=seed_label,
-            highlight_lowest_n=highlight_lowest_n,
-            highlight_name=f"lowest {highlight_lowest_n} mean-loss points" if highlight_lowest_n else None,
-        )
-        print(f"saved {out_path} ({len(points)} grid points)")
+    print(f"saved {out_path} ({len(points)} best-seed grid points)")
+    heatmap_path = out_dir / "afm_param_stage1pluslight_05_best_over_seeds_ks_logcs_train_loss_2d.png"
+    write_surface_heatmap(
+        out_path=heatmap_path,
+        points=points,
+        ks_values=ks_values,
+        cs_values=cs_values,
+    )
+    print(f"saved {heatmap_path} ({len(points)} best-seed grid points)")
     return 0
 
 

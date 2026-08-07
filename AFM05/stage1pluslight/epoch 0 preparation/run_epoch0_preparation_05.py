@@ -5,7 +5,7 @@ prest2/st2l after the st1pl endpoint:
 
 1. load each viable st1pl trial;
 2. replace the x3 normalizer by the saved st1pl x3_pred statistics;
-3. rebuild the neutral x3 AGU support/grid;
+3. rebuild the x3-init-aligned AGU support/grid;
 4. re-initialize g_NN from the gain reference;
 5. evaluate the stage2/prest2 loss once without any optimizer step.
 
@@ -260,7 +260,7 @@ def _build_model_and_eval(
     )
     initial_grid_support_meta = initial_grid_support_to_meta(
         initial_grid_support,
-        source=f"epoch0_preparation_observed_x1x2_neutral_x3__{x3_source}",
+        source=f"epoch0_preparation_observed_x1x2_dynamic_x3__{x3_source}",
     )
     known_fields = _afm05_known_fields(prepared.known_pars)
     model_seed = int(params.get("nn_init_seed", record.get("seed", cfg.seed)))
